@@ -1,0 +1,28 @@
+{
+  "RegistryPaths": [
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\GupdateS",
+    "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\GupdateU"
+  ],
+  "TaskNames": [
+    "UpdateSystem",
+    "UpdateUser",
+    "DefU",
+    "UpdateGU",
+    "UpdateGU2"
+  ],
+  "ServiceNames": [
+    "DefSvc",
+    "UpdateSvc",
+    "UpdateSvc2"
+  ],
+  "FileNames": [
+    "README-GENTLEMEN.txt",
+    "wipefile.tmp"
+  ],
+  "CommandLinePatterns": [
+    "live\\.sysinternals\\.com/tools/psexec\\.exe",
+    "wevtutil\\s+cl\\s+System",
+    "wevtutil\\s+cl\\s+Security",
+    "vssadmin\\s+delete\\s+shadows"
+  ]
+}

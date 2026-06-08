@@ -1,0 +1,25 @@
+# Generated reports
+HOST_*.json
+HOST_*.md
+THREAT_RSS_*.json
+THREAT_RSS_*.md
+ALERT_*.json
+ALERT_*.md
+SYSTEM_SECURITY_BASELINE_*.md
+
+# Local state
+host-tripwire-state.json
+threat-rss-state.json
+toast-detached-test.log
+codex-monitor.settings.json
+
+# Runtime copies outside the repo should not be tracked here
+Program Files/
+
+# Local helper/test scratch
+detached-toast-test.ps1
+
+# PowerShell/editor noise
+*.tmp
+*.bak
+*.orig
