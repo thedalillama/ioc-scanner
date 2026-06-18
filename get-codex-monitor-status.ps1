@@ -169,7 +169,7 @@ function Get-ScheduledTaskStatus {
         State = [string]$task.State
         LastRunTime = if ($info) { [string]$info.LastRunTime } else { $null }
         NextRunTime = if ($info) { [string]$info.NextRunTime } else { $null }
-        LastTaskResult = if ($info) { [int]$info.LastTaskResult } else { $null }
+        LastTaskResult = if ($info) { [long]$info.LastTaskResult } else { $null }
     }
 }
 

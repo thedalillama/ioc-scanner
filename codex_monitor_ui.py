@@ -1,6 +1,7 @@
 import argparse
 import html
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -46,6 +47,43 @@ def pretty_time(value: Any) -> str:
         except ValueError:
             continue
     return text
+
+
+def normalize_iso_candidate(text: str) -> str:
+    match = re.match(r"^(?P<prefix>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<suffix>Z|[+-]\d{2}:\d{2})?$", text)
+    if not match:
+        return text
+    prefix = match.group("prefix")
+    fraction = match.group("fraction") or ""
+    suffix = match.group("suffix") or ""
+    if fraction:
+        fraction = (fraction[:6]).ljust(6, "0")
+        return f"{prefix}.{fraction}{suffix}"
+    return f"{prefix}{suffix}"
+
+
+def render_metric_time_value(value: Any) -> str:
+    if value in (None, ""):
+        return esc("-")
+    text = str(value).strip()
+    if not text:
+        return esc("-")
+    candidates = [normalize_iso_candidate(text)]
+    if text.endswith("Z"):
+        candidates.append(normalize_iso_candidate(text.replace("Z", "+00:00")))
+    for candidate in candidates:
+        try:
+            dt = datetime.fromisoformat(candidate)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone()
+            tenths = int(dt.microsecond / 100000)
+            return (
+                f'{esc(dt.strftime("%Y-%m-%d"))}'
+                f'<span class="metric-time-sub">{esc(dt.strftime("%H:%M:%S"))}.{tenths}</span>'
+            )
+        except ValueError:
+            continue
+    return esc(text)
 
 
 def parse_json(path: Path) -> Any:
@@ -152,6 +190,12 @@ def html_page(title: str, body: str) -> str:
       font-weight: 700;
       margin-top: 4px;
       overflow-wrap: anywhere;
+    }}
+    .metric .value .metric-time-sub {{
+      display: block;
+      font-size: 16px;
+      line-height: 1.2;
+      margin-top: 4px;
     }}
     .status-pill {{
       display: inline-flex;
@@ -621,6 +665,11 @@ def render_metric(label: str, value: Any, tone: str = "") -> str:
     return f'<div class="metric"><div class="label">{esc(label)}</div><div class="value{tone_class}">{esc(value)}</div></div>'
 
 
+def render_metric_time(label: str, value: Any, tone: str = "") -> str:
+    tone_class = f" status-{tone}" if tone else ""
+    return f'<div class="metric"><div class="label">{esc(label)}</div><div class="value{tone_class}">{render_metric_time_value(value)}</div></div>'
+
+
 def render_task(task: Dict[str, Any]) -> str:
     actions = task.get("Actions") or []
     triggers = task.get("Triggers") or []
@@ -775,8 +824,8 @@ def render_dashboard(config: AppConfig, snapshot: Dict[str, Any], message: str =
     {render_metric("Seen alerts", status["State"]["SeenAlertCount"])}
     {render_metric("Archived alerts", status["State"]["ArchivedAlertCount"])}
     {render_metric("Indicators", indicators["indicator_count"])}
-    {render_metric("Tripwire baseline", pretty_time(status["State"]["TripwireBaselineCollectionTimeUtc"]) if status["State"]["TripwireBaselineCollectionTimeUtc"] else "Missing")}
-    {render_metric("RSS last run", pretty_time(status["State"]["ThreatRssLastRunUtc"]) if status["State"]["ThreatRssLastRunUtc"] else "Missing")}
+    {render_metric_time("Tripwire baseline", status["State"]["TripwireBaselineCollectionTimeUtc"] or "Missing")}
+    {render_metric_time("RSS last run", status["State"]["ThreatRssLastRunUtc"] or "Missing")}
   </div>
 </section>
 
