@@ -6,15 +6,23 @@ THREAT_RSS_*.md
 ALERT_*.json
 ALERT_*.md
 SYSTEM_SECURITY_BASELINE_*.md
+indicators/
 
 # Local state
 host-tripwire-state.json
 threat-rss-state.json
 toast-detached-test.log
 codex-monitor.settings.json
+state/
+*.db
 
 # Runtime copies outside the repo should not be tracked here
 Program Files/
+alerts/
+deploy-test/
+deploy-test-2/
+CodexAlertNotifierTask.xml
+CodexAlertNotifierTask.generated.xml
 
 # Local helper/test scratch
 detached-toast-test.ps1
@@ -23,3 +31,12 @@ detached-toast-test.ps1
 *.tmp
 *.bak
 *.orig
+__pycache__/
+*.pyc
+ui-*.json
+ui-server.*.log
+deploy-*/
+vm-transfer/
+vm-win11-fresh/
+codex-vm2-*.png
+*-VirtualBoxVM-*.log

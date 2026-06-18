@@ -1,0 +1,67 @@
+{
+  "Metadata": {
+    "Format": "normalized-indicator-set",
+    "Description": "Example normalized indicators for invoke-host-ioc.ps1"
+  },
+  "Indicators": [
+    {
+      "indicator_id": "example-sha256-1",
+      "type": "sha256",
+      "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "source": "example",
+      "confidence": 90,
+      "severity": "high",
+      "first_seen": "2026-06-08T00:00:00Z",
+      "last_seen": "2026-06-08T00:00:00Z",
+      "valid_from": "2026-06-08T00:00:00Z",
+      "valid_until": "",
+      "tlp": "clear",
+      "malware_family": "ExampleFamily",
+      "campaign": "ExampleCampaign",
+      "threat_actor": "",
+      "attack_technique": "T1059",
+      "reference_url": "https://example.org/sha256",
+      "raw_source_record": {
+        "note": "Replace with the original feed record."
+      }
+    },
+    {
+      "indicator_id": "example-ipv4-1",
+      "type": "ipv4",
+      "value": "203.0.113.10",
+      "source": "example",
+      "confidence": 60,
+      "severity": "medium",
+      "first_seen": "2026-06-08T00:00:00Z",
+      "last_seen": "2026-06-08T00:00:00Z",
+      "valid_from": "2026-06-08T00:00:00Z",
+      "valid_until": "",
+      "tlp": "clear",
+      "malware_family": "",
+      "campaign": "",
+      "threat_actor": "",
+      "attack_technique": "",
+      "reference_url": "https://example.org/ipv4",
+      "raw_source_record": {}
+    },
+    {
+      "indicator_id": "example-domain-1",
+      "type": "domain",
+      "value": "bad.example",
+      "source": "example",
+      "confidence": 60,
+      "severity": "medium",
+      "first_seen": "2026-06-08T00:00:00Z",
+      "last_seen": "2026-06-08T00:00:00Z",
+      "valid_from": "2026-06-08T00:00:00Z",
+      "valid_until": "",
+      "tlp": "clear",
+      "malware_family": "",
+      "campaign": "",
+      "threat_actor": "",
+      "attack_technique": "",
+      "reference_url": "https://example.org/domain",
+      "raw_source_record": {}
+    }
+  ]
+}

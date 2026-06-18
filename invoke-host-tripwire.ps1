@@ -2,8 +2,10 @@ param(
     [ValidateSet("Baseline", "Check")]
     [string]$Mode = "Baseline",
 
-    [string]$StatePath = (Join-Path $PSScriptRoot "host-tripwire-state.json"),
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "host-tripwire-config.json")
+    [string]$StatePath = "",
+    [string]$StateDbPath = "",
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "host-tripwire-config.json"),
+    [string]$IocLocationConfigPath = (Join-Path $PSScriptRoot "ioc-monitor-locations.json")
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,7 +15,119 @@ $collectionTimeUtc = (Get-Date).ToUniversalTime().ToString("o")
 $outBase = Join-Path $PSScriptRoot ("HOST_TRIPWIRE_{0}_{1}" -f $Mode.ToUpperInvariant(), $timestamp)
 $jsonFile = "$outBase.json"
 $mdFile = "$outBase.md"
-$alertBase = Join-Path $PSScriptRoot ("ALERT_HOST_TRIPWIRE_{0}" -f $timestamp)
+
+function Ensure-Directory {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function Get-TripwireLockPath {
+    param([string]$DbPath)
+
+    $stateDirectory = Split-Path -Path $DbPath -Parent
+    if ([string]::IsNullOrWhiteSpace($stateDirectory)) {
+        $stateDirectory = $PSScriptRoot
+    }
+    return (Join-Path $stateDirectory 'host-tripwire-run.lock.json')
+}
+
+function Get-TripwireLockInfo {
+    param([string]$LockPath)
+
+    if (-not (Test-Path -LiteralPath $LockPath)) {
+        return $null
+    }
+
+    try {
+        return (Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Json)
+    } catch {
+        return [PSCustomObject]@{
+            Mode = 'unknown'
+            Pid = $null
+            ComputerName = $env:COMPUTERNAME
+            StartedUtc = $null
+            LockPath = $LockPath
+            ParseError = $_.Exception.Message
+        }
+    }
+}
+
+function Test-TripwireBaselineRunning {
+    param([string]$LockPath)
+
+    $lockInfo = Get-TripwireLockInfo -LockPath $LockPath
+    if ($null -eq $lockInfo) {
+        return $null
+    }
+
+    if ([string]$lockInfo.Mode -ine 'Baseline') {
+        return $null
+    }
+
+    $pidValue = 0
+    try {
+        $pidValue = [int]$lockInfo.Pid
+    } catch {
+        $pidValue = 0
+    }
+
+    if ($pidValue -le 0) {
+        return $null
+    }
+
+    $runningProcess = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+    if ($null -eq $runningProcess) {
+        return $null
+    }
+
+    return $lockInfo
+}
+
+function Set-TripwireRunLock {
+    param(
+        [string]$LockPath,
+        [string]$Mode
+    )
+
+    $lockInfo = [PSCustomObject]@{
+        Mode = $Mode
+        Pid = $PID
+        ComputerName = $env:COMPUTERNAME
+        StartedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    [System.IO.File]::WriteAllText($LockPath, ($lockInfo | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Clear-TripwireRunLock {
+    param([string]$LockPath)
+
+    if (Test-Path -LiteralPath $LockPath) {
+        [System.IO.File]::Delete($LockPath)
+    }
+}
+
+function Get-AlertInboxPath {
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.AlertInboxPath)) {
+                Ensure-Directory -Path ([string]$settings.AlertInboxPath)
+                return [string]$settings.AlertInboxPath
+            }
+        } catch {
+        }
+    }
+
+    $defaultInbox = Join-Path (Join-Path $PSScriptRoot "alerts") "pending"
+    Ensure-Directory -Path $defaultInbox
+    return $defaultInbox
+}
+
+$alertBase = Join-Path (Get-AlertInboxPath) ("ALERT_HOST_TRIPWIRE_{0}" -f $timestamp)
 
 function Write-JsonFile {
     param(
@@ -25,6 +139,147 @@ function Write-JsonFile {
     $json = ConvertTo-Json -InputObject $Object -Depth $Depth
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
+}
+
+function Get-PythonCommand {
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.PythonCommand) -and (Test-Path -LiteralPath ([string]$settings.PythonCommand))) {
+                return [string]$settings.PythonCommand
+            }
+        } catch {
+        }
+    }
+
+    $candidates = @(
+        @{ Command = "python"; Arguments = @() },
+        @{ Command = "py"; Arguments = @("-3") }
+    )
+
+    foreach ($candidate in $candidates) {
+        try {
+            $output = & $candidate.Command @($candidate.Arguments + @("-c", "import sys; print(sys.executable)")) 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $resolved = (@($output) | Select-Object -Last 1).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($resolved) -and (Test-Path -LiteralPath $resolved)) {
+                    return $resolved
+                }
+            }
+        } catch {
+        }
+    }
+
+    throw "A usable Python runtime was not found. Update codex-monitor.settings.json or install Python."
+}
+
+function Get-StateStoreScriptPath {
+    $path = Join-Path $PSScriptRoot "ioc_store.py"
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "SQLite state helper not found: $path"
+    }
+    return $path
+}
+
+function Invoke-StateStore {
+    param(
+        [string]$DbPath,
+        [string[]]$Arguments
+    )
+
+    $scriptPath = Get-StateStoreScriptPath
+    $pythonCommand = Get-PythonCommand
+    $output = & $pythonCommand $scriptPath --db $DbPath @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ("State store command failed: {0} {1} --db {2} {3}`n{4}" -f $pythonCommand, $scriptPath, $DbPath, ($Arguments -join ' '), (@($output) -join [Environment]::NewLine))
+    }
+    return (@($output) -join [Environment]::NewLine)
+}
+
+function Get-StateDbPath {
+    param(
+        [string]$ConfiguredStateDbPath,
+        [string]$LegacyStatePath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredStateDbPath)) {
+        return $ConfiguredStateDbPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_MONITOR_STATEDBPATH)) {
+        return $env:CODEX_MONITOR_STATEDBPATH
+    }
+
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
+                return [string]$settings.StateDbPath
+            }
+        } catch {
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($LegacyStatePath)) {
+        $legacyParent = Split-Path -Path $LegacyStatePath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($legacyParent) -and $legacyParent -ne $PSScriptRoot) {
+            return (Join-Path $legacyParent "ioc-store.db")
+        }
+    }
+
+    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+}
+
+function Read-LegacyStateFile {
+    param([string]$Path)
+
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path)) {
+        try {
+            return (Get-Content $Path -Raw | ConvertFrom-Json)
+        } catch {
+        }
+    }
+
+    return $null
+}
+
+function Get-SqliteState {
+    param(
+        [string]$DbPath,
+        [string]$Namespace,
+        [string]$Key
+    )
+
+    $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("state-get", "--namespace", $Namespace, "--key", $Key)
+    $payload = $raw | ConvertFrom-Json
+    if ($payload.found) {
+        return $payload.value
+    }
+    return $null
+}
+
+function Save-SqliteState {
+    param(
+        [string]$DbPath,
+        [string]$Namespace,
+        [string]$Key,
+        $Object,
+        [int]$Depth = 16
+    )
+
+    $json = ConvertTo-Json -InputObject $Object -Depth $Depth
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempPath, $json, $utf8NoBom)
+        [void](Invoke-StateStore -DbPath $DbPath -Arguments @("state-put", "--namespace", $Namespace, "--key", $Key, "--input", $tempPath))
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            [System.IO.File]::Delete($tempPath)
+        }
+    }
 }
 
 function Write-MdLine {
@@ -57,7 +312,18 @@ function New-ChangeRecord {
 function Get-ChangeSeverity {
     param($Change)
 
+    if ($Change.Category -eq "ScheduledTask" -and -not [string]::IsNullOrWhiteSpace([string]$Change.Name) -and ([string]$Change.Name).StartsWith('\Codex ', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return "Low"
+    }
+
     if ($Change.Category -in @("LocalGroupMember", "ScheduledTask", "Autorun")) {
+        return "High"
+    }
+
+    if ($Change.Category -eq "WatchedFile" -and -not [string]::IsNullOrWhiteSpace([string]$Change.Path) -and ([string]$Change.Path).ToLowerInvariant().StartsWith('c:\windows\system32\tasks\')) {
+        if ([string]$Change.Notes -like "LikelySystemManagedTask:*" -or [string]$Change.Notes -like "LikelySelfManagedTask:*") {
+            return "Low"
+        }
         return "High"
     }
 
@@ -66,6 +332,20 @@ function Get-ChangeSeverity {
     }
 
     return "Low"
+}
+
+function Format-ChangeHeadline {
+    param($Change)
+
+    if ($null -eq $Change) {
+        return "Host change detected"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Change.Path)) {
+        return "{0} {1}: {2}" -f $Change.Category, $Change.ChangeType, $Change.Name
+    }
+
+    return "{0} {1}: {2} ({3})" -f $Change.Category, $Change.ChangeType, $Change.Name, $Change.Path
 }
 
 function ConvertTo-StableDateString {
@@ -90,11 +370,39 @@ function ConvertTo-StableDateString {
 function Get-DefaultConfig {
     [PSCustomObject]@{
         LocalGroups = @("Administrators")
+        WatchAllExecutables = $true
+        WatchPathExecutables = $true
+        ExecutableRoots = @(
+            "$($env:SystemDrive)\"
+        )
+        ExecutableExtensions = @(
+            "*.exe",
+            "*.dll",
+            "*.com",
+            "*.scr",
+            "*.ocx",
+            "*.cpl",
+            "*.sys",
+            "*.drv",
+            "*.bat",
+            "*.cmd",
+            "*.ps1",
+            "*.psm1",
+            "*.psd1",
+            "*.vbs",
+            "*.vbe",
+            "*.js",
+            "*.jse",
+            "*.wsf",
+            "*.wsh",
+            "*.hta"
+        )
         WatchFiles = @(
             "C:\Windows\System32\drivers\etc\hosts",
             (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\desktop.ini"),
             (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\desktop.ini")
         )
+        ExcludePathPrefixes = @()
         WatchDirectories = @(
             [PSCustomObject]@{
                 Path = (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup")
@@ -131,6 +439,219 @@ function Get-DefaultConfig {
     }
 }
 
+function Get-DefaultIocLocationConfig {
+    [PSCustomObject]@{
+        WatchFiles = @(
+            "C:\Windows\System32\drivers\etc\hosts"
+        )
+        ExcludePathPrefixes = @(
+            "C:\Windows\System32\Tasks\Microsoft\Windows\Flighting\OneSettings",
+            "C:\Windows\System32\Tasks\Microsoft\Windows\SoftwareProtectionPlatform",
+            "C:\Windows\System32\Tasks\Microsoft\Windows\UpdateOrchestrator"
+        )
+        WatchDirectories = @(
+            [PSCustomObject]@{
+                Path = "C:\Windows\System32\Tasks"
+                Filters = @("*")
+                Recurse = $true
+            },
+            [PSCustomObject]@{
+                Path = "C:\Windows\Temp"
+                Filters = @("*.exe", "*.dll", "*.ps1", "*.vbs", "*.js", "*.jse", "*.hta", "*.bat", "*.cmd", "*.scr", "*.tmp")
+                Recurse = $true
+            },
+            [PSCustomObject]@{
+                Path = "C:\ProgramData"
+                Filters = @("*.exe", "*.dll", "*.ps1", "*.vbs", "*.js", "*.jse", "*.hta", "*.bat", "*.cmd", "*.scr", "*.lnk")
+                Recurse = $false
+            },
+            [PSCustomObject]@{
+                Path = "C:\Users\me\AppData\Roaming"
+                Filters = @("*.exe", "*.dll", "*.ps1", "*.vbs", "*.js", "*.jse", "*.hta", "*.bat", "*.cmd", "*.scr", "*.lnk")
+                Recurse = $false
+            },
+            [PSCustomObject]@{
+                Path = "C:\Users\me\AppData\Local"
+                Filters = @("*.exe", "*.dll", "*.ps1", "*.vbs", "*.js", "*.jse", "*.hta", "*.bat", "*.cmd", "*.scr", "*.lnk")
+                Recurse = $false
+            },
+            [PSCustomObject]@{
+                Path = "C:\Users\Public"
+                Filters = @("*.exe", "*.dll", "*.ps1", "*.vbs", "*.js", "*.jse", "*.hta", "*.bat", "*.cmd", "*.scr", "*.lnk")
+                Recurse = $false
+            },
+            [PSCustomObject]@{
+                Path = "C:\Users\me\Downloads"
+                Filters = @("*.exe", "*.dll", "*.ps1", "*.vbs", "*.js", "*.jse", "*.hta", "*.bat", "*.cmd", "*.scr", "*.lnk")
+                Recurse = $false
+            },
+            [PSCustomObject]@{
+                Path = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
+                Filters = @("*")
+                Recurse = $false
+            },
+            [PSCustomObject]@{
+                Path = "C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+                Filters = @("*")
+                Recurse = $false
+            }
+        )
+    }
+}
+
+function Merge-UniqueStringLists {
+    param(
+        [object[]]$Primary,
+        [object[]]$Secondary
+    )
+
+    @(
+        @($Primary) + @($Secondary) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            ForEach-Object { [string]$_ } |
+            Sort-Object -Unique
+    )
+}
+
+function Test-ExcludedPath {
+    param(
+        [string]$Path,
+        $Config
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    $candidate = $Path.Trim().TrimEnd('\').ToLowerInvariant()
+    foreach ($prefix in @($Config.ExcludePathPrefixes)) {
+        $value = [string]$prefix
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            continue
+        }
+
+        $normalized = $value.Trim().TrimEnd('\').ToLowerInvariant()
+        if ($candidate -eq $normalized -or $candidate.StartsWith($normalized + "\")) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Merge-WatchDirectories {
+    param(
+        [object[]]$Primary,
+        [object[]]$Secondary
+    )
+
+    $merged = @()
+    foreach ($entry in @($Primary) + @($Secondary)) {
+        if ($null -eq $entry) {
+            continue
+        }
+
+        $path = [string]$entry.Path
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            continue
+        }
+
+        $filters = @()
+        if ($entry.PSObject.Properties.Name -contains "Filters") {
+            $filters = @($entry.Filters | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+        } elseif ($entry.PSObject.Properties.Name -contains "Filter" -and -not [string]::IsNullOrWhiteSpace([string]$entry.Filter)) {
+            $filters = @([string]$entry.Filter)
+        } else {
+            $filters = @("*")
+        }
+
+        $record = [PSCustomObject]@{
+            Path = $path
+            Filters = @($filters)
+            Recurse = [bool]$entry.Recurse
+        }
+
+        $key = "{0}|{1}|{2}" -f $record.Path.ToLowerInvariant(), (($record.Filters | Sort-Object) -join ';').ToLowerInvariant(), $record.Recurse
+        if (-not ($merged | Where-Object {
+            ("{0}|{1}|{2}" -f $_.Path.ToLowerInvariant(), (($_.Filters | Sort-Object) -join ';').ToLowerInvariant(), $_.Recurse) -eq $key
+        })) {
+            $merged += $record
+        }
+    }
+
+    return @($merged)
+}
+
+function Get-ExecutableFileRecords {
+    param($Config)
+
+    if (-not $Config.PSObject.Properties.Name.Contains('WatchAllExecutables') -or -not [bool]$Config.WatchAllExecutables) {
+        return @()
+    }
+
+    $roots = @($Config.ExecutableRoots | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $patterns = @($Config.ExecutableExtensions | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+
+    if (@($roots).Count -eq 0 -or @($patterns).Count -eq 0) {
+        return @()
+    }
+
+    $records = @()
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath ([string]$root))) {
+            continue
+        }
+
+        $items = Get-ChildItem -LiteralPath ([string]$root) -Recurse -File -Include $patterns -Force -ErrorAction SilentlyContinue
+        foreach ($item in $items) {
+            if (Test-ExcludedPath -Path $item.FullName -Config $Config) {
+                continue
+            }
+            $records += Get-FileRecord -Path $item.FullName
+        }
+    }
+
+    return @($records)
+}
+
+function Get-PathExecutableFileRecords {
+    param($Config)
+
+    if (-not $Config.PSObject.Properties.Name.Contains('WatchPathExecutables') -or -not [bool]$Config.WatchPathExecutables) {
+        return @()
+    }
+
+    $patterns = @($Config.ExecutableExtensions | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if (@($patterns).Count -eq 0) {
+        return @()
+    }
+
+    $pathDirectories = @(
+        ($env:Path -split ';') |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { $_.Trim() }
+    ) | Sort-Object -Unique
+
+    $records = @()
+    foreach ($directoryPath in $pathDirectories) {
+        if (-not (Test-Path -LiteralPath $directoryPath)) {
+            continue
+        }
+
+        foreach ($pattern in $patterns) {
+            $items = Get-ChildItem -LiteralPath $directoryPath -File -Filter $pattern -Force -ErrorAction SilentlyContinue
+            foreach ($item in $items) {
+                if (Test-ExcludedPath -Path $item.FullName -Config $Config) {
+                    continue
+                }
+                $records += Get-FileRecord -Path $item.FullName
+            }
+        }
+    }
+
+    return @($records)
+}
+
 function Get-TripwireConfig {
     param([string]$Path)
 
@@ -141,6 +662,37 @@ function Get-TripwireConfig {
     $config = Get-DefaultConfig
     Write-JsonFile -Path $Path -Object $config
     return $config
+}
+
+function Get-IocLocationConfig {
+    param([string]$Path)
+
+    if (Test-Path $Path) {
+        return (Get-Content $Path -Raw | ConvertFrom-Json)
+    }
+
+    $config = Get-DefaultIocLocationConfig
+    Write-JsonFile -Path $Path -Object $config
+    return $config
+}
+
+function Merge-TripwireAndIocConfig {
+    param(
+        $BaseConfig,
+        $IocConfig
+    )
+
+    [PSCustomObject]@{
+        LocalGroups = @($BaseConfig.LocalGroups)
+        WatchAllExecutables = [bool]$BaseConfig.WatchAllExecutables
+        WatchPathExecutables = [bool]$BaseConfig.WatchPathExecutables
+        ExecutableRoots = @($BaseConfig.ExecutableRoots)
+        ExecutableExtensions = @($BaseConfig.ExecutableExtensions)
+        WatchFiles = Merge-UniqueStringLists -Primary @($BaseConfig.WatchFiles) -Secondary @($IocConfig.WatchFiles)
+        ExcludePathPrefixes = Merge-UniqueStringLists -Primary @($BaseConfig.ExcludePathPrefixes) -Secondary @($IocConfig.ExcludePathPrefixes)
+        WatchDirectories = Merge-WatchDirectories -Primary @($BaseConfig.WatchDirectories) -Secondary @($IocConfig.WatchDirectories)
+        RecentWindowHours = [int]$BaseConfig.RecentWindowHours
+    }
 }
 
 function Get-LocalUsersSnapshot {
@@ -261,8 +813,14 @@ function Get-WatchedFilesSnapshot {
 
     $records = @()
 
+    $records += Get-ExecutableFileRecords -Config $Config
+    $records += Get-PathExecutableFileRecords -Config $Config
+
     foreach ($path in @($Config.WatchFiles)) {
         if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+            if (Test-ExcludedPath -Path ([string]$path) -Config $Config) {
+                continue
+            }
             $records += Get-FileRecord -Path ([string]$path)
         }
     }
@@ -292,6 +850,9 @@ function Get-WatchedFilesSnapshot {
         foreach ($filter in $filters) {
             $items = Get-ChildItem -LiteralPath $directoryPath -File -Filter $filter -Recurse:$recurse -Force -ErrorAction SilentlyContinue
             foreach ($item in $items) {
+                if (Test-ExcludedPath -Path $item.FullName -Config $Config) {
+                    continue
+                }
                 $records += Get-FileRecord -Path $item.FullName
             }
         }
@@ -339,6 +900,126 @@ function Get-KeyEventSnapshot {
             @()
         }
     }
+}
+
+function Get-TaskRelativePathFromFilePath {
+    param([string]$Path)
+
+    $prefix = 'C:\Windows\System32\Tasks\'
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not $Path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    return ('\' + $Path.Substring($prefix.Length).TrimStart('\'))
+}
+
+function Get-TaskProvenanceNote {
+    param(
+        [string]$Path,
+        $TaskSnapshot,
+        $RecentEvents
+    )
+
+    $taskPath = Get-TaskRelativePathFromFilePath -Path $Path
+    if ([string]::IsNullOrWhiteSpace($taskPath)) {
+        return ""
+    }
+
+    $matchingTask = @($TaskSnapshot | Where-Object { ([string]$_.Name) -ieq $taskPath } | Select-Object -First 1)
+    $author = ""
+    $actions = ""
+    if (@($matchingTask).Count -gt 0) {
+        $author = [string]$matchingTask[0].Author
+        $actions = [string]$matchingTask[0].Actions
+    }
+
+    $nearbyEvents = @()
+    foreach ($event in @($RecentEvents.TaskSchedulerOperational) + @($RecentEvents.Security4698) + @($RecentEvents.Security4702) + @($RecentEvents.Security4699)) {
+        if ($null -eq $event) {
+            continue
+        }
+
+        $message = [string]$event.Message
+        if ($message -like "*$taskPath*") {
+            $nearbyEvents += $event
+        }
+    }
+
+    $eventSummary = @($nearbyEvents | Select-Object -First 3 | ForEach-Object { "{0}:{1}" -f $_.ProviderName, $_.Id }) -join ', '
+
+    if ($taskPath.StartsWith('\Codex ', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $details = @()
+        if (-not [string]::IsNullOrWhiteSpace($author)) {
+            $details += ("author={0}" -f $author)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($eventSummary)) {
+            $details += ("events={0}" -f $eventSummary)
+        }
+        return "LikelySelfManagedTask: {0}{1}" -f $taskPath, ($(if (@($details).Count -gt 0) { " [" + ($details -join '; ') + "]" } else { "" }))
+    }
+
+    $isMicrosoftPath = $taskPath.StartsWith('\Microsoft\Windows\', [System.StringComparison]::OrdinalIgnoreCase)
+    $isMicrosoftAuthor = -not [string]::IsNullOrWhiteSpace($author) -and $author.ToLowerInvariant().Contains('microsoft')
+    $isWindowsAction = -not [string]::IsNullOrWhiteSpace($actions) -and (
+        $actions.ToLowerInvariant().Contains('c:\windows\') -or
+        $actions.ToLowerInvariant().Contains('program files\windowsapps')
+    )
+
+    if ($isMicrosoftPath -and ($isMicrosoftAuthor -or $isWindowsAction -or @($nearbyEvents).Count -gt 0 -or @($matchingTask).Count -gt 0)) {
+        $details = @()
+        if (-not [string]::IsNullOrWhiteSpace($author)) {
+            $details += ("author={0}" -f $author)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($eventSummary)) {
+            $details += ("events={0}" -f $eventSummary)
+        }
+        return "LikelySystemManagedTask: {0}{1}" -f $taskPath, ($(if (@($details).Count -gt 0) { " [" + ($details -join '; ') + "]" } else { "" }))
+    }
+
+    if (@($nearbyEvents).Count -gt 0) {
+        return "TaskFileChangeObserved: {0} [events={1}]" -f $taskPath, $eventSummary
+    }
+
+    if (@($matchingTask).Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($author)) {
+        return "TaskFileChangeObserved: {0} [author={1}]" -f $taskPath, $author
+    }
+
+    return "TaskFileChangeObserved: {0}" -f $taskPath
+}
+
+function Add-TaskFileProvenanceAnnotations {
+    param(
+        $Changes,
+        $TaskSnapshot,
+        $RecentEvents
+    )
+
+    foreach ($change in @($Changes)) {
+        if ($change.Category -ne 'WatchedFile') {
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace([string]$change.Path)) {
+            continue
+        }
+
+        $note = Get-TaskProvenanceNote -Path ([string]$change.Path) -TaskSnapshot $TaskSnapshot -RecentEvents $RecentEvents
+        if (-not [string]::IsNullOrWhiteSpace($note)) {
+            $change.Notes = $note
+        }
+    }
+
+    return @($Changes)
+}
+
+function Get-AlertableChanges {
+    param($Changes)
+
+    return @(
+        @($Changes) | Where-Object {
+            (Get-ChangeSeverity $_) -ne "Low"
+        }
+    )
 }
 
 function ConvertTo-Map {
@@ -459,144 +1140,196 @@ function Compare-FileRecords {
     return @($changes)
 }
 
-$config = Get-TripwireConfig -Path $ConfigPath
+$baseConfig = Get-TripwireConfig -Path $ConfigPath
+$iocLocationConfig = Get-IocLocationConfig -Path $IocLocationConfigPath
+$config = Merge-TripwireAndIocConfig -BaseConfig $baseConfig -IocConfig $iocLocationConfig
+$resolvedStateDbPath = Get-StateDbPath -ConfiguredStateDbPath $StateDbPath -LegacyStatePath $StatePath
+$tripwireLockPath = Get-TripwireLockPath -DbPath $resolvedStateDbPath
+$tripwireLockAcquired = $false
 
-$snapshot = [PSCustomObject]@{
-    Metadata = [PSCustomObject]@{
-        ComputerName = $env:COMPUTERNAME
-        CollectionTimeUtc = $collectionTimeUtc
-        ConfigPath = $ConfigPath
+if ($Mode -eq "Check") {
+    $runningBaseline = Test-TripwireBaselineRunning -LockPath $tripwireLockPath
+    if ($null -ne $runningBaseline) {
+        $message = "Tripwire Check cannot run because a Baseline is currently in progress on {0} (PID {1}, started {2}). Wait for the baseline to finish and run Check again." -f $runningBaseline.ComputerName, $runningBaseline.Pid, $runningBaseline.StartedUtc
+        Write-Warning $message
+        exit 1
     }
-    LocalUsers = @(Get-LocalUsersSnapshot)
-    LocalGroups = @(Get-LocalGroupMembersSnapshot -Groups @($config.LocalGroups))
-    Services = @(Get-ServiceSnapshot)
-    ScheduledTasks = @(Get-TaskSnapshot)
-    Autoruns = @(Get-RunKeySnapshot)
-    WatchedFiles = @(Get-WatchedFilesSnapshot -Config $config)
-    RecentEvents = Get-KeyEventSnapshot -RecentWindowHours ([int]$config.RecentWindowHours)
 }
 
 if ($Mode -eq "Baseline") {
-    Write-JsonFile -Path $StatePath -Object $snapshot
-    Write-JsonFile -Path $jsonFile -Object $snapshot
+    Set-TripwireRunLock -LockPath $tripwireLockPath -Mode $Mode
+    $tripwireLockAcquired = $true
+}
 
-    Set-Content -LiteralPath $mdFile -Value "# Host Tripwire Baseline`r`n"
+try {
+    $snapshot = [PSCustomObject]@{
+        Metadata = [PSCustomObject]@{
+            ComputerName = $env:COMPUTERNAME
+            CollectionTimeUtc = $collectionTimeUtc
+            ConfigPath = $ConfigPath
+            IocLocationConfigPath = $IocLocationConfigPath
+            StateDbPath = $resolvedStateDbPath
+        }
+        LocalUsers = @(Get-LocalUsersSnapshot)
+        LocalGroups = @(Get-LocalGroupMembersSnapshot -Groups @($config.LocalGroups))
+        Services = @(Get-ServiceSnapshot)
+        ScheduledTasks = @(Get-TaskSnapshot)
+        Autoruns = @(Get-RunKeySnapshot)
+        WatchedFiles = @(Get-WatchedFilesSnapshot -Config $config)
+        RecentEvents = Get-KeyEventSnapshot -RecentWindowHours ([int]$config.RecentWindowHours)
+    }
+
+    if ($Mode -eq "Baseline") {
+        Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "host_tripwire" -Key "baseline" -Object $snapshot
+        Write-JsonFile -Path $jsonFile -Object $snapshot
+
+        Set-Content -LiteralPath $mdFile -Value "# Host Tripwire Baseline`r`n"
+        Write-MdLine ""
+        Write-MdLine ("CollectionTimeUtc: {0}" -f $collectionTimeUtc)
+        Write-MdLine ("StateDbPath: {0}" -f $resolvedStateDbPath)
+        Write-MdLine ""
+        Write-MdLine ("- Local users: {0}" -f @($snapshot.LocalUsers).Count)
+        Write-MdLine ("- Group snapshots: {0}" -f @($snapshot.LocalGroups).Count)
+        Write-MdLine ("- Services: {0}" -f @($snapshot.Services).Count)
+        Write-MdLine ("- Tasks: {0}" -f @($snapshot.ScheduledTasks).Count)
+        Write-MdLine ("- Autoruns: {0}" -f @($snapshot.Autoruns).Count)
+        Write-MdLine ("- Watched files: {0}" -f @($snapshot.WatchedFiles).Count)
+
+        Write-Host ("State written to SQLite: {0}" -f $resolvedStateDbPath)
+        Write-Host ("JSON written to: {0}" -f $jsonFile)
+        Write-Host ("Markdown written to: {0}" -f $mdFile)
+        exit 0
+    }
+
+    $oldState = Get-SqliteState -DbPath $resolvedStateDbPath -Namespace "host_tripwire" -Key "baseline"
+    if ($null -eq $oldState) {
+        $legacyState = Read-LegacyStateFile -Path $StatePath
+        if ($null -ne $legacyState) {
+            Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "host_tripwire" -Key "baseline" -Object $legacyState
+            $oldState = $legacyState
+        }
+    }
+
+    if ($null -eq $oldState) {
+        throw "Tripwire baseline state not found in SQLite: $resolvedStateDbPath"
+    }
+
+    $changes = @()
+    $changes += Compare-SimpleRecords -Category "LocalUser" -OldItems $oldState.LocalUsers -NewItems $snapshot.LocalUsers -KeySelector { param($item) $item.Name } -PropertyNames @("Enabled", "PasswordRequired", "PasswordExpires", "LastLogon", "PasswordLastSet")
+    $changes += Compare-GroupMembership -OldGroups $oldState.LocalGroups -NewGroups $snapshot.LocalGroups
+    $changes += Compare-SimpleRecords -Category "Service" -OldItems $oldState.Services -NewItems $snapshot.Services -KeySelector { param($item) $item.Name } -PropertyNames @("StartMode", "StartName", "PathName")
+    $changes += Compare-SimpleRecords -Category "ScheduledTask" -OldItems $oldState.ScheduledTasks -NewItems $snapshot.ScheduledTasks -KeySelector { param($item) $item.Name } -PropertyNames @("Author", "Actions", "Triggers")
+    $changes += Compare-SimpleRecords -Category "Autorun" -OldItems $oldState.Autoruns -NewItems $snapshot.Autoruns -KeySelector { param($item) "{0}|{1}" -f $item.RegistryPath, $item.Name } -PropertyNames @("Value")
+    $changes += Compare-FileRecords -OldFiles $oldState.WatchedFiles -NewFiles $snapshot.WatchedFiles
+    $changes = Add-TaskFileProvenanceAnnotations -Changes $changes -TaskSnapshot $snapshot.ScheduledTasks -RecentEvents $snapshot.RecentEvents
+
+    $report = [PSCustomObject]@{
+        Metadata = [PSCustomObject]@{
+            ComputerName = $env:COMPUTERNAME
+            CollectionTimeUtc = $collectionTimeUtc
+            StateDbPath = $resolvedStateDbPath
+            ConfigPath = $ConfigPath
+            ChangeCount = @($changes).Count
+            HighestSeverity = if (@($changes).Count -gt 0) { (@($changes | ForEach-Object { Get-ChangeSeverity $_ }) | ForEach-Object {
+                switch ($_) {
+                    "High" { 3 }
+                    "Medium" { 2 }
+                    default { 1 }
+                }
+            } | Measure-Object -Maximum).Maximum } else { 0 }
+        }
+        Changes = @($changes)
+        RecentEvents = $snapshot.RecentEvents
+    }
+
+    $alertableChanges = @(Get-AlertableChanges -Changes $report.Changes)
+
+    Write-JsonFile -Path $jsonFile -Object $report
+    Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "host_tripwire" -Key "baseline" -Object $snapshot
+
+    Set-Content -LiteralPath $mdFile -Value "# Host Tripwire Report`r`n"
     Write-MdLine ""
     Write-MdLine ("CollectionTimeUtc: {0}" -f $collectionTimeUtc)
-    Write-MdLine ("StatePath: {0}" -f $StatePath)
+    Write-MdLine ("ChangeCount: {0}" -f $report.Metadata.ChangeCount)
     Write-MdLine ""
-    Write-MdLine ("- Local users: {0}" -f @($snapshot.LocalUsers).Count)
-    Write-MdLine ("- Group snapshots: {0}" -f @($snapshot.LocalGroups).Count)
-    Write-MdLine ("- Services: {0}" -f @($snapshot.Services).Count)
-    Write-MdLine ("- Tasks: {0}" -f @($snapshot.ScheduledTasks).Count)
-    Write-MdLine ("- Autoruns: {0}" -f @($snapshot.Autoruns).Count)
-    Write-MdLine ("- Watched files: {0}" -f @($snapshot.WatchedFiles).Count)
+    Write-MdLine "## Changes"
+    Write-MdLine ""
 
-    Write-Host ("State written to: {0}" -f $StatePath)
-    Write-Host ("JSON written to: {0}" -f $jsonFile)
-    Write-Host ("Markdown written to: {0}" -f $mdFile)
-    exit 0
-}
+    if (@($report.Changes).Count -eq 0) {
+        Write-MdLine "_No baseline deviations detected in the monitored categories._"
+    } else {
+        foreach ($change in $report.Changes) {
+            Write-MdLine ("- [{0}] {1} {2}" -f $change.Category, $change.Name, $change.ChangeType)
+            if (-not [string]::IsNullOrWhiteSpace($change.Path)) {
+                Write-MdLine ("  Path/Field: {0}" -f $change.Path)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($change.OldValue)) {
+                Write-MdLine ("  Old: {0}" -f $change.OldValue)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($change.NewValue)) {
+                Write-MdLine ("  New: {0}" -f $change.NewValue)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($change.Notes)) {
+                Write-MdLine ("  Notes: {0}" -f $change.Notes)
+            }
+        }
+    }
 
-if (-not (Test-Path $StatePath)) {
-    throw "Tripwire baseline state file not found: $StatePath"
-}
-
-$oldState = Get-Content $StatePath -Raw | ConvertFrom-Json
-
-$changes = @()
-$changes += Compare-SimpleRecords -Category "LocalUser" -OldItems $oldState.LocalUsers -NewItems $snapshot.LocalUsers -KeySelector { param($item) $item.Name } -PropertyNames @("Enabled", "PasswordRequired", "PasswordExpires", "LastLogon", "PasswordLastSet")
-$changes += Compare-GroupMembership -OldGroups $oldState.LocalGroups -NewGroups $snapshot.LocalGroups
-$changes += Compare-SimpleRecords -Category "Service" -OldItems $oldState.Services -NewItems $snapshot.Services -KeySelector { param($item) $item.Name } -PropertyNames @("StartMode", "StartName", "PathName")
-$changes += Compare-SimpleRecords -Category "ScheduledTask" -OldItems $oldState.ScheduledTasks -NewItems $snapshot.ScheduledTasks -KeySelector { param($item) $item.Name } -PropertyNames @("Author", "Actions", "Triggers")
-$changes += Compare-SimpleRecords -Category "Autorun" -OldItems $oldState.Autoruns -NewItems $snapshot.Autoruns -KeySelector { param($item) "{0}|{1}" -f $item.RegistryPath, $item.Name } -PropertyNames @("Value")
-$changes += Compare-FileRecords -OldFiles $oldState.WatchedFiles -NewFiles $snapshot.WatchedFiles
-
-$report = [PSCustomObject]@{
-    Metadata = [PSCustomObject]@{
-        ComputerName = $env:COMPUTERNAME
-        CollectionTimeUtc = $collectionTimeUtc
-        StatePath = $StatePath
-        ConfigPath = $ConfigPath
-        ChangeCount = @($changes).Count
-        HighestSeverity = if (@($changes).Count -gt 0) { (@($changes | ForEach-Object { Get-ChangeSeverity $_ }) | ForEach-Object {
+    if (@($alertableChanges).Count -gt 0) {
+        $severityMap = @{
+            3 = "High"
+            2 = "Medium"
+            1 = "Low"
+            0 = "Info"
+        }
+        $topChanges = @($alertableChanges | Select-Object -First 3)
+        $headline = Format-ChangeHeadline -Change $topChanges[0]
+        $detailLines = @($topChanges | ForEach-Object { Format-ChangeHeadline -Change $_ })
+        $alertHighestSeverity = (@($alertableChanges | ForEach-Object { Get-ChangeSeverity $_ }) | ForEach-Object {
             switch ($_) {
                 "High" { 3 }
                 "Medium" { 2 }
                 default { 1 }
             }
-        } | Measure-Object -Maximum).Maximum } else { 0 }
+        } | Measure-Object -Maximum).Maximum
+        $alert = [PSCustomObject]@{
+            Metadata = [PSCustomObject]@{
+                AlertType = "HostTripwire"
+                ComputerName = $env:COMPUTERNAME
+                CollectionTimeUtc = $collectionTimeUtc
+                Severity = $severityMap[[int]$alertHighestSeverity]
+                ChangeCount = @($alertableChanges).Count
+                SourceReport = $jsonFile
+            }
+            Summary = [PSCustomObject]@{
+                Title = "Codex tripwire: {0}" -f $headline
+                Message = "{0} alertable change(s) detected. Highest severity: {1}." -f @($alertableChanges).Count, $severityMap[[int]$alertHighestSeverity]
+                DetailLines = @($detailLines)
+            }
+            Changes = @($alertableChanges)
+        }
+
+        $alertJson = "$alertBase.json"
+        $alertMd = "$alertBase.md"
+        Write-JsonFile -Path $alertJson -Object $alert
+        Set-Content -LiteralPath $alertMd -Value "# Codex Tripwire Alert`r`n"
+        Add-Content -LiteralPath $alertMd -Value ""
+        Add-Content -LiteralPath $alertMd -Value ("Severity: {0}" -f $alert.Metadata.Severity)
+        Add-Content -LiteralPath $alertMd -Value ("ChangeCount: {0}" -f $alert.Metadata.ChangeCount)
+        Add-Content -LiteralPath $alertMd -Value ("SourceReport: {0}" -f $alert.Metadata.SourceReport)
+        Add-Content -LiteralPath $alertMd -Value ""
+        foreach ($change in $alert.Changes) {
+            Add-Content -LiteralPath $alertMd -Value ("- [{0}] {1} {2}" -f $change.Category, $change.Name, $change.ChangeType)
+        }
+        Write-Host ("Alert JSON written to: {0}" -f $alertJson)
+        Write-Host ("Alert Markdown written to: {0}" -f $alertMd)
     }
-    Changes = @($changes)
-    RecentEvents = $snapshot.RecentEvents
+
+    Write-Host ("JSON written to: {0}" -f $jsonFile)
+    Write-Host ("Markdown written to: {0}" -f $mdFile)
 }
-
-Write-JsonFile -Path $jsonFile -Object $report
-Write-JsonFile -Path $StatePath -Object $snapshot
-
-Set-Content -LiteralPath $mdFile -Value "# Host Tripwire Report`r`n"
-Write-MdLine ""
-Write-MdLine ("CollectionTimeUtc: {0}" -f $collectionTimeUtc)
-Write-MdLine ("ChangeCount: {0}" -f $report.Metadata.ChangeCount)
-Write-MdLine ""
-Write-MdLine "## Changes"
-Write-MdLine ""
-
-if (@($report.Changes).Count -eq 0) {
-    Write-MdLine "_No baseline deviations detected in the monitored categories._"
-} else {
-    foreach ($change in $report.Changes) {
-        Write-MdLine ("- [{0}] {1} {2}" -f $change.Category, $change.Name, $change.ChangeType)
-        if (-not [string]::IsNullOrWhiteSpace($change.Path)) {
-            Write-MdLine ("  Path/Field: {0}" -f $change.Path)
-        }
-        if (-not [string]::IsNullOrWhiteSpace($change.OldValue)) {
-            Write-MdLine ("  Old: {0}" -f $change.OldValue)
-        }
-        if (-not [string]::IsNullOrWhiteSpace($change.NewValue)) {
-            Write-MdLine ("  New: {0}" -f $change.NewValue)
-        }
+finally {
+    if ($tripwireLockAcquired) {
+        Clear-TripwireRunLock -LockPath $tripwireLockPath
     }
 }
-
-if (@($report.Changes).Count -gt 0) {
-    $severityMap = @{
-        3 = "High"
-        2 = "Medium"
-        1 = "Low"
-        0 = "Info"
-    }
-    $alert = [PSCustomObject]@{
-        Metadata = [PSCustomObject]@{
-            AlertType = "HostTripwire"
-            ComputerName = $env:COMPUTERNAME
-            CollectionTimeUtc = $collectionTimeUtc
-            Severity = $severityMap[[int]$report.Metadata.HighestSeverity]
-            ChangeCount = @($report.Changes).Count
-            SourceReport = $jsonFile
-        }
-        Summary = [PSCustomObject]@{
-            Title = "Codex tripwire detected host changes"
-            Message = "{0} change(s) detected. Highest severity: {1}." -f @($report.Changes).Count, $severityMap[[int]$report.Metadata.HighestSeverity]
-        }
-        Changes = @($report.Changes)
-    }
-
-    $alertJson = "$alertBase.json"
-    $alertMd = "$alertBase.md"
-    Write-JsonFile -Path $alertJson -Object $alert
-    Set-Content -LiteralPath $alertMd -Value "# Codex Tripwire Alert`r`n"
-    Add-Content -LiteralPath $alertMd -Value ""
-    Add-Content -LiteralPath $alertMd -Value ("Severity: {0}" -f $alert.Metadata.Severity)
-    Add-Content -LiteralPath $alertMd -Value ("ChangeCount: {0}" -f $alert.Metadata.ChangeCount)
-    Add-Content -LiteralPath $alertMd -Value ("SourceReport: {0}" -f $alert.Metadata.SourceReport)
-    Add-Content -LiteralPath $alertMd -Value ""
-    foreach ($change in $alert.Changes) {
-        Add-Content -LiteralPath $alertMd -Value ("- [{0}] {1} {2}" -f $change.Category, $change.Name, $change.ChangeType)
-    }
-    Write-Host ("Alert JSON written to: {0}" -f $alertJson)
-    Write-Host ("Alert Markdown written to: {0}" -f $alertMd)
-}
-
-Write-Host ("JSON written to: {0}" -f $jsonFile)
-Write-Host ("Markdown written to: {0}" -f $mdFile)

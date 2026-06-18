@@ -71,6 +71,30 @@ function Write-MdBlock {
     Write-MdLine ""
 }
 
+function Get-DefaultIocPath {
+    if (-not [string]::IsNullOrWhiteSpace($IocPath) -and (Test-Path -LiteralPath $IocPath)) {
+        return $IocPath
+    }
+
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.IndicatorExportPath) -and (Test-Path -LiteralPath ([string]$settings.IndicatorExportPath))) {
+                return [string]$settings.IndicatorExportPath
+            }
+        } catch {
+        }
+    }
+
+    $defaultPath = Join-Path $PSScriptRoot "indicators\feed-indicators-latest.json"
+    if (Test-Path -LiteralPath $defaultPath) {
+        return $defaultPath
+    }
+
+    return $IocPath
+}
+
 function Test-ExactTaskIndicatorMatch {
     param(
         [string]$Indicator,
@@ -96,6 +120,7 @@ function New-NormalizedRecord {
     param(
         [string]$Category,
         [string]$Name,
+        [string]$Value = "",
         [string]$Path,
         [string]$Hash,
         [string]$HashAlgorithm,
@@ -116,6 +141,7 @@ function New-NormalizedRecord {
         CollectionTimeUtc = $collectionTimeUtc
         Category          = $Category
         Name              = $Name
+        Value             = $Value
         Path              = $Path
         Hash              = $Hash
         HashAlgorithm     = $HashAlgorithm
@@ -129,6 +155,24 @@ function New-NormalizedRecord {
         Source            = @($Source)
         Severity          = $Severity
         Notes             = $Notes
+    }
+}
+
+function Get-SafeFileHash {
+    param(
+        [string]$Path,
+        [ValidateSet("SHA256","SHA1","MD5")]
+        [string]$Algorithm = "SHA256"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+
+    try {
+        return (Get-FileHash -LiteralPath $Path -Algorithm $Algorithm).Hash
+    } catch {
+        return $null
     }
 }
 
@@ -185,6 +229,32 @@ function Get-TaskMap {
 
 function Get-DriverMap {
     Get-CimInstance Win32_SystemDriver | Select-Object Name, DisplayName, State, StartMode, PathName, ServiceType, ExitCode
+}
+
+function Get-ConnectionMap {
+    Get-NetTCPConnection -ErrorAction SilentlyContinue | ForEach-Object {
+        [PSCustomObject]@{
+            Protocol      = "TCP"
+            LocalAddress  = $_.LocalAddress
+            LocalPort     = $_.LocalPort
+            RemoteAddress = $_.RemoteAddress
+            RemotePort    = $_.RemotePort
+            State         = $_.State
+            OwningProcess = $_.OwningProcess
+        }
+    }
+}
+
+function Get-DnsCacheMap {
+    Get-DnsClientCache -ErrorAction SilentlyContinue | ForEach-Object {
+        [PSCustomObject]@{
+            Entry = $_.Entry
+            Name  = $_.Name
+            Type  = [string]$_.Type
+            Data  = [string]$_.Data
+            TimeToLive = [string]$_.TimeToLive
+        }
+    }
 }
 
 function Get-RunKeyEntries {
@@ -300,6 +370,128 @@ function Get-KeyEvents {
     }
 }
 
+function New-NormalizedIndicator {
+    param(
+        [string]$IndicatorId,
+        [string]$Type,
+        [string]$Value,
+        [string]$Source = "internal",
+        [int]$Confidence = 50,
+        [string]$Severity = "medium",
+        [string]$FirstSeen = "",
+        [string]$LastSeen = "",
+        [string]$ValidFrom = "",
+        [string]$ValidUntil = "",
+        [string]$Tlp = "clear",
+        [string]$MalwareFamily = "",
+        [string]$Campaign = "",
+        [string]$ThreatActor = "",
+        [string]$AttackTechnique = "",
+        [string]$ReferenceUrl = "",
+        $RawSourceRecord = $null
+    )
+
+    [PSCustomObject]@{
+        indicator_id      = $IndicatorId
+        type              = $Type
+        value             = $Value
+        source            = $Source
+        confidence        = $Confidence
+        severity          = $Severity
+        first_seen        = $FirstSeen
+        last_seen         = $LastSeen
+        valid_from        = $ValidFrom
+        valid_until       = $ValidUntil
+        tlp               = $Tlp
+        malware_family    = $MalwareFamily
+        campaign          = $Campaign
+        threat_actor      = $ThreatActor
+        attack_technique  = $AttackTechnique
+        reference_url     = $ReferenceUrl
+        raw_source_record = $RawSourceRecord
+    }
+}
+
+function Convert-StixBundleToIndicators {
+    param($Bundle)
+
+    $indicators = @()
+    foreach ($object in @($Bundle.objects)) {
+        if ([string]$object.type -ne "indicator") {
+            continue
+        }
+
+        $pattern = [string]$object.pattern
+        $type = $null
+        $value = $null
+
+        if ($pattern -match "file:hashes\.'SHA-256'\s*=\s*'([^']+)'") {
+            $type = "sha256"; $value = $matches[1]
+        } elseif ($pattern -match "domain-name:value\s*=\s*'([^']+)'") {
+            $type = "domain"; $value = $matches[1]
+        } elseif ($pattern -match "ipv4-addr:value\s*=\s*'([^']+)'") {
+            $type = "ipv4"; $value = $matches[1]
+        } elseif ($pattern -match "url:value\s*=\s*'([^']+)'") {
+            $type = "url"; $value = $matches[1]
+        } elseif ($pattern -match "file:name\s*=\s*'([^']+)'") {
+            $type = "filename"; $value = $matches[1]
+        } elseif ($pattern -match "file:path\s*=\s*'([^']+)'") {
+            $type = "file_path"; $value = $matches[1]
+        }
+
+        if (-not $type -or -not $value) {
+            continue
+        }
+
+        $indicators += New-NormalizedIndicator `
+            -IndicatorId ([string]$object.id) `
+            -Type $type `
+            -Value $value `
+            -Source "stix" `
+            -Confidence 70 `
+            -Severity "medium" `
+            -ValidFrom ([string]$object.valid_from) `
+            -ReferenceUrl ([string]$object.external_references[0].url) `
+            -RawSourceRecord $object
+    }
+
+    return @($indicators)
+}
+
+function Import-Indicators {
+    param([string]$Path)
+
+    $raw = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+
+    if ($raw -is [System.Collections.IEnumerable] -and -not ($raw -is [string]) -and -not ($raw.PSObject.Properties.Name -contains "type")) {
+        return @($raw)
+    }
+
+    if ($raw.PSObject.Properties.Name -contains "Indicators") {
+        return @($raw.Indicators)
+    }
+
+    if ([string]$raw.type -eq "bundle" -and $raw.objects) {
+        return @(Convert-StixBundleToIndicators -Bundle $raw)
+    }
+
+    throw "Unsupported IOC input format. Provide a normalized indicator JSON array, an object with an Indicators array, or a STIX bundle."
+}
+
+function Test-IndicatorStillValid {
+    param($Indicator)
+
+    if ([string]::IsNullOrWhiteSpace([string]$Indicator.valid_until)) {
+        return $true
+    }
+
+    try {
+        return (([datetimeoffset]::Parse([string]$Indicator.valid_until)).UtcDateTime -gt (Get-Date).ToUniversalTime())
+    } catch {
+        return $true
+    }
+}
+
 function Build-BaselineDataset {
     $processes = Get-ProcessMap
     $services = Get-ServiceMap
@@ -307,25 +499,37 @@ function Build-BaselineDataset {
     $drivers = Get-DriverMap
     $runKeys = Get-RunKeyEntries
     $defender = Get-MpComputerStatus | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, IsTamperProtected, AntivirusSignatureLastUpdated
-    $connections = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess
+    $connections = Get-ConnectionMap
+    $dnsCache = Get-DnsCacheMap
+    $certs = Get-Certificates
     $users = Get-LocalUser | Select-Object Name, Enabled, LastLogon, PasswordLastSet
 
     $records = @()
 
     foreach ($p in $processes) {
-        $records += New-NormalizedRecord -Category "Process" -Name $p.Name -Path $p.ExecutablePath -Timestamp $p.CreationDate -Owner $p.Owner -ProcessId $p.ProcessId -ParentProcessId $p.ParentProcessId -CommandLine $p.CommandLine -Source @("Win32_Process")
+        $processSha256 = Get-SafeFileHash -Path $p.ExecutablePath -Algorithm SHA256
+        $records += New-NormalizedRecord -Category "Process" -Name $p.Name -Value $p.Name -Path $p.ExecutablePath -Hash $processSha256 -HashAlgorithm "SHA256" -Timestamp $p.CreationDate -Owner $p.Owner -ProcessId $p.ProcessId -ParentProcessId $p.ParentProcessId -CommandLine $p.CommandLine -Source @("Win32_Process")
     }
     foreach ($s in $services) {
-        $records += New-NormalizedRecord -Category "Service" -Name $s.Name -Path $s.PathName -Owner $s.StartName -ProcessId $s.ProcessId -CommandLine $s.PathName -RegistryPath $s.RegistryPath -Source @("Win32_Service")
+        $records += New-NormalizedRecord -Category "Service" -Name $s.Name -Value $s.DisplayName -Path $s.PathName -Owner $s.StartName -ProcessId $s.ProcessId -CommandLine $s.PathName -RegistryPath $s.RegistryPath -Source @("Win32_Service")
     }
     foreach ($d in $drivers) {
-        $records += New-NormalizedRecord -Category "Driver" -Name $d.Name -Path $d.PathName -CommandLine $d.PathName -Source @("Win32_SystemDriver") -Notes ("State={0}; StartMode={1}" -f $d.State, $d.StartMode)
+        $records += New-NormalizedRecord -Category "Driver" -Name $d.Name -Value $d.DisplayName -Path $d.PathName -CommandLine $d.PathName -Source @("Win32_SystemDriver") -Notes ("State={0}; StartMode={1}" -f $d.State, $d.StartMode)
     }
     foreach ($t in $tasks) {
-        $records += New-NormalizedRecord -Category "ScheduledTask" -Name ("{0}{1}" -f $t.TaskPath, $t.TaskName) -Path ("{0}{1}" -f $t.TaskPath, $t.TaskName) -Timestamp $t.LastRunTime -Owner $t.Author -CommandLine $t.Actions -EventIDs @(4698) -Source @("ScheduledTasks") -Notes ("NextRun={0}; Result={1}" -f $t.NextRunTime, $t.LastTaskResult)
+        $records += New-NormalizedRecord -Category "ScheduledTask" -Name ("{0}{1}" -f $t.TaskPath, $t.TaskName) -Value $t.TaskName -Path ("{0}{1}" -f $t.TaskPath, $t.TaskName) -Timestamp $t.LastRunTime -Owner $t.Author -CommandLine $t.Actions -EventIDs @(4698) -Source @("ScheduledTasks") -Notes ("NextRun={0}; Result={1}" -f $t.NextRunTime, $t.LastTaskResult)
     }
     foreach ($r in $runKeys) {
-        $records += New-NormalizedRecord -Category "Autorun" -Name $r.Name -CommandLine $r.CommandLine -RegistryPath $r.RegistryPath -Source @("Registry")
+        $records += New-NormalizedRecord -Category "Autorun" -Name $r.Name -Value $r.Name -CommandLine $r.CommandLine -RegistryPath $r.RegistryPath -Source @("Registry")
+    }
+    foreach ($c in $connections) {
+        $records += New-NormalizedRecord -Category "NetworkConnection" -Name $c.RemoteAddress -Value $c.RemoteAddress -Path "" -Timestamp "" -ProcessId $c.OwningProcess -CommandLine ("{0}:{1}->{2}:{3} [{4}]" -f $c.LocalAddress, $c.LocalPort, $c.RemoteAddress, $c.RemotePort, $c.State) -Source @("Get-NetTCPConnection")
+    }
+    foreach ($d in $dnsCache) {
+        $records += New-NormalizedRecord -Category "DnsCache" -Name $d.Entry -Value $d.Entry -Path "" -Timestamp "" -CommandLine ("Type={0}; Data={1}; TTL={2}" -f $d.Type, $d.Data, $d.TimeToLive) -Source @("Get-DnsClientCache")
+    }
+    foreach ($cert in $certs) {
+        $records += New-NormalizedRecord -Category "Certificate" -Name $cert.Subject -Value $cert.Thumbprint -Path $cert.StorePath -Timestamp ([string]$cert.NotAfter) -Source @("CertProvider") -Notes ("FriendlyName={0}" -f $cert.FriendlyName)
     }
 
     [PSCustomObject]@{
@@ -342,6 +546,8 @@ function Build-BaselineDataset {
             TaskCount = @($tasks).Count
             AutorunCount = @($runKeys).Count
             ConnectionCount = @($connections).Count
+            DnsCacheCount = @($dnsCache).Count
+            CertificateCount = @($certs).Count
             LocalUserCount = @($users).Count
         }
         Processes = @($processes)
@@ -350,6 +556,8 @@ function Build-BaselineDataset {
         ScheduledTasks = @($tasks)
         Autoruns = @($runKeys)
         Connections = @($connections)
+        DnsCache = @($dnsCache)
+        Certificates = @($certs)
         LocalUsers = @($users)
         NormalizedIOCRecords = @($records)
     }
@@ -414,6 +622,147 @@ function Build-DeepDataset {
     }
 }
 
+function Add-RecordToLookup {
+    param(
+        [hashtable]$Lookup,
+        [string]$Key,
+        $Record
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Key)) {
+        return
+    }
+
+    $normalizedKey = $Key.ToLowerInvariant()
+    if (-not $Lookup.ContainsKey($normalizedKey)) {
+        $Lookup[$normalizedKey] = [System.Collections.ArrayList]::new()
+    }
+
+    [void]$Lookup[$normalizedKey].Add($Record)
+}
+
+function Get-UrlTokensFromText {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return @()
+    }
+
+    $matches = [regex]::Matches($Text, 'https?://[^\s''"<>]+')
+    return @($matches | ForEach-Object { $_.Value.TrimEnd('.', ',', ';', ')', ']') } | Sort-Object -Unique)
+}
+
+function New-FindingFromMatch {
+    param(
+        $Indicator,
+        $Record,
+        [string]$Evidence
+    )
+
+    [PSCustomObject]@{
+        finding_id = ([guid]::NewGuid().ToString())
+        host = $computerName
+        scan_time = $collectionTimeUtc
+        indicator_type = [string]$Indicator.type
+        indicator_value = [string]$Indicator.value
+        indicator_source = [string]$Indicator.source
+        confidence = [int]$Indicator.confidence
+        severity = [string]$Indicator.severity
+        matched_observation_type = [string]$Record.Category
+        matched_observation = [PSCustomObject]@{
+            name = $Record.Name
+            value = $Record.Value
+            path = $Record.Path
+            hash = $Record.Hash
+            hash_algorithm = $Record.HashAlgorithm
+            timestamp = $Record.Timestamp
+            command_line = $Record.CommandLine
+            registry_path = $Record.RegistryPath
+            source = @($Record.Source)
+        }
+        evidence = $Evidence
+        collection_command = ($Record.Source -join ", ")
+        recommended_action = if (@('sha256','sha1','md5','service_name','scheduled_task') -contains ([string]$Indicator.type).ToLowerInvariant()) { 'investigate' } else { 'review_context' }
+        references = @([string]$Indicator.reference_url)
+    }
+}
+
+function Build-RecordIndexes {
+    param($Records)
+
+    $indexes = @{
+        HashByAlgorithm = @{
+            sha256 = @{}
+            sha1   = @{}
+            md5    = @{}
+        }
+        NetworkIp = @{}
+        DnsDomain = @{}
+        Url = @{}
+        CertificateThumbprint = @{}
+        ServiceName = @{}
+        TaskFullName = @{}
+        TaskLeafName = @{}
+        FileName = @{}
+        RecordName = @{}
+        PathRecords = [System.Collections.ArrayList]::new()
+        RegistryPathRecords = [System.Collections.ArrayList]::new()
+        RegistryValueRecords = [System.Collections.ArrayList]::new()
+        CommandLineRecords = [System.Collections.ArrayList]::new()
+    }
+
+    foreach ($record in @($Records)) {
+        if ($record.Hash -and $record.HashAlgorithm) {
+            $algorithm = ([string]$record.HashAlgorithm).ToLowerInvariant()
+            if ($indexes.HashByAlgorithm.ContainsKey($algorithm)) {
+                Add-RecordToLookup -Lookup $indexes.HashByAlgorithm[$algorithm] -Key ([string]$record.Hash) -Record $record
+            }
+        }
+
+        if ($record.Category -eq 'NetworkConnection' -and $record.Value) {
+            Add-RecordToLookup -Lookup $indexes.NetworkIp -Key ([string]$record.Value) -Record $record
+        }
+        if ($record.Category -eq 'DnsCache' -and $record.Value) {
+            Add-RecordToLookup -Lookup $indexes.DnsDomain -Key ([string]$record.Value) -Record $record
+        }
+        if ($record.Category -eq 'Certificate' -and $record.Value) {
+            Add-RecordToLookup -Lookup $indexes.CertificateThumbprint -Key ([string]$record.Value) -Record $record
+        }
+        if ($record.Category -eq 'Service' -and $record.Name) {
+            Add-RecordToLookup -Lookup $indexes.ServiceName -Key ([string]$record.Name) -Record $record
+        }
+        if ($record.Category -eq 'ScheduledTask' -and $record.Name) {
+            Add-RecordToLookup -Lookup $indexes.TaskFullName -Key ([string]$record.Name) -Record $record
+            $leaf = Split-Path -Path ([string]$record.Name) -Leaf
+            Add-RecordToLookup -Lookup $indexes.TaskLeafName -Key $leaf -Record $record
+        }
+        if ($record.Name) {
+            Add-RecordToLookup -Lookup $indexes.RecordName -Key ([string]$record.Name) -Record $record
+        }
+        if ($record.Path) {
+            $fileName = [IO.Path]::GetFileName([string]$record.Path)
+            if (-not [string]::IsNullOrWhiteSpace($fileName)) {
+                Add-RecordToLookup -Lookup $indexes.FileName -Key $fileName -Record $record
+            }
+            [void]$indexes.PathRecords.Add($record)
+        }
+        if ($record.RegistryPath) {
+            [void]$indexes.RegistryPathRecords.Add($record)
+        }
+        if ($record.RegistryPath -or $record.CommandLine) {
+            [void]$indexes.RegistryValueRecords.Add($record)
+        }
+        if ($record.CommandLine) {
+            [void]$indexes.CommandLineRecords.Add($record)
+            foreach ($url in @(Get-UrlTokensFromText -Text ([string]$record.CommandLine))) {
+                Add-RecordToLookup -Lookup $indexes.Url -Key $url -Record $record
+            }
+        }
+    }
+
+    return $indexes
+}
+
 function Test-IocMatch {
     param(
         $Dataset,
@@ -421,49 +770,81 @@ function Test-IocMatch {
     )
 
     $records = @($Dataset.NormalizedIOCRecords)
-    $iocMatches = @()
+    $indexes = Build-RecordIndexes -Records $records
+    $findings = @()
 
-    foreach ($record in $records) {
-        if ($Indicators.Hashes -and $record.Hash -and $Indicators.Hashes -contains $record.Hash) {
-            $iocMatches += [PSCustomObject]@{ IndicatorType = "Hash"; Indicator = $record.Hash; Category = $record.Category; Name = $record.Name; Path = $record.Path; Timestamp = $record.Timestamp; CommandLine = $record.CommandLine; RegistryPath = $record.RegistryPath; Source = @($record.Source); EventIDs = @($record.EventIDs) }
-        }
-        if ($Indicators.Paths -and $record.Path) {
-            foreach ($path in $Indicators.Paths) {
-                if ($record.Path -like "*$path*") {
-                    $iocMatches += [PSCustomObject]@{ IndicatorType = "Path"; Indicator = $path; Category = $record.Category; Name = $record.Name; Path = $record.Path; Timestamp = $record.Timestamp; CommandLine = $record.CommandLine; RegistryPath = $record.RegistryPath; Source = @($record.Source); EventIDs = @($record.EventIDs) }
+    foreach ($indicator in @($Indicators | Where-Object { Test-IndicatorStillValid -Indicator $_ })) {
+        $indicatorType = ([string]$indicator.type).ToLowerInvariant()
+        $indicatorValue = [string]$indicator.value
+        $matchedRecords = @()
+        $evidence = ""
+
+        switch -Regex ($indicatorType) {
+            '^(sha256|sha1|md5)$' {
+                $lookup = $indexes.HashByAlgorithm[$indicatorType]
+                $matchedRecords = @($lookup[$indicatorValue.ToLowerInvariant()])
+                $evidence = "File or process hash matched exactly."
+            }
+            '^(ipv4|ipv6)$' {
+                $matchedRecords = @($indexes.NetworkIp[$indicatorValue.ToLowerInvariant()])
+                $evidence = "Remote IP matched active network connection."
+            }
+            '^domain$' {
+                $matchedRecords = @($indexes.DnsDomain[$indicatorValue.ToLowerInvariant()])
+                $evidence = "Domain matched DNS client cache."
+            }
+            '^url$' {
+                $matchedRecords = @($indexes.Url[$indicatorValue.ToLowerInvariant()])
+                $evidence = "URL matched text extracted from collected command or log data."
+            }
+            '^registry_key$' {
+                $matchedRecords = @($indexes.RegistryPathRecords | Where-Object { $_.RegistryPath -and $_.RegistryPath.ToLowerInvariant().Contains($indicatorValue.ToLowerInvariant()) })
+                $evidence = "Registry key path matched collected registry observation."
+            }
+            '^registry_value$' {
+                $matchedRecords = @($indexes.RegistryValueRecords | Where-Object {
+                    ($_.RegistryPath -and $_.RegistryPath.ToLowerInvariant().Contains($indicatorValue.ToLowerInvariant())) -or
+                    ($_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($indicatorValue.ToLowerInvariant()))
+                })
+                $evidence = "Registry value text matched collected registry-related observation."
+            }
+            '^file_path$' {
+                $matchedRecords = @($indexes.PathRecords | Where-Object { $_.Path -and $_.Path.ToLowerInvariant().Contains($indicatorValue.ToLowerInvariant()) })
+                $evidence = "File path matched collected file or process path."
+            }
+            '^filename$' {
+                $matchedRecords = @($indexes.FileName[$indicatorValue.ToLowerInvariant()])
+                if (@($matchedRecords).Count -eq 0) {
+                    $matchedRecords = @($indexes.RecordName[$indicatorValue.ToLowerInvariant()])
                 }
+                $evidence = "Filename matched collected file, process, or task observation."
+            }
+            '^certificate_thumbprint$' {
+                $matchedRecords = @($indexes.CertificateThumbprint[$indicatorValue.ToLowerInvariant()])
+                $evidence = "Certificate thumbprint matched local certificate store."
+            }
+            '^service_name$' {
+                $matchedRecords = @($indexes.ServiceName[$indicatorValue.ToLowerInvariant()])
+                $evidence = "Service name matched installed service."
+            }
+            '^scheduled_task$' {
+                $matchedRecords = @($indexes.TaskFullName[$indicatorValue.ToLowerInvariant()])
+                if (@($matchedRecords).Count -eq 0) {
+                    $matchedRecords = @($indexes.TaskLeafName[$indicatorValue.ToLowerInvariant()])
+                }
+                $evidence = "Scheduled task name matched installed task."
+            }
+            '^command_line_pattern$' {
+                $matchedRecords = @($indexes.CommandLineRecords | Where-Object { $_.CommandLine -and $_.CommandLine -match $indicatorValue })
+                $evidence = "Command line pattern matched collected process or event text."
+            }
+            '^cve$' {
+                $matchedRecords = @()
             }
         }
-        if ($Indicators.ServiceNames -and $record.Category -eq "Service" -and $Indicators.ServiceNames -contains $record.Name) {
-            $iocMatches += [PSCustomObject]@{ IndicatorType = "ServiceName"; Indicator = $record.Name; Category = $record.Category; Name = $record.Name; Path = $record.Path; Timestamp = $record.Timestamp; CommandLine = $record.CommandLine; RegistryPath = $record.RegistryPath; Source = @($record.Source); EventIDs = @($record.EventIDs) }
-        }
-        if ($Indicators.TaskNames -and $record.Category -eq "ScheduledTask") {
-            foreach ($taskName in $Indicators.TaskNames) {
-                if (Test-ExactTaskIndicatorMatch -Indicator $taskName -TaskRecordName $record.Name) {
-                    $iocMatches += [PSCustomObject]@{ IndicatorType = "TaskName"; Indicator = $taskName; Category = $record.Category; Name = $record.Name; Path = $record.Path; Timestamp = $record.Timestamp; CommandLine = $record.CommandLine; RegistryPath = $record.RegistryPath; Source = @($record.Source); EventIDs = @($record.EventIDs) }
-                }
-            }
-        }
-        if ($Indicators.RegistryPaths -and $record.RegistryPath) {
-            foreach ($regPath in $Indicators.RegistryPaths) {
-                if ($record.RegistryPath -like "*$regPath*") {
-                    $iocMatches += [PSCustomObject]@{ IndicatorType = "RegistryPath"; Indicator = $regPath; Category = $record.Category; Name = $record.Name; Path = $record.Path; Timestamp = $record.Timestamp; CommandLine = $record.CommandLine; RegistryPath = $record.RegistryPath; Source = @($record.Source); EventIDs = @($record.EventIDs) }
-                }
-            }
-        }
-        if ($Indicators.CommandLinePatterns -and $record.CommandLine) {
-            foreach ($pattern in $Indicators.CommandLinePatterns) {
-                if ($record.CommandLine -match $pattern) {
-                    $iocMatches += [PSCustomObject]@{ IndicatorType = "CommandLine"; Indicator = $pattern; Category = $record.Category; Name = $record.Name; Path = $record.Path; Timestamp = $record.Timestamp; CommandLine = $record.CommandLine; RegistryPath = $record.RegistryPath; Source = @($record.Source); EventIDs = @($record.EventIDs) }
-                }
-            }
-        }
-        if ($Indicators.FileNames -and $record.Path) {
-            foreach ($name in $Indicators.FileNames) {
-                if ([IO.Path]::GetFileName($record.Path) -ieq $name) {
-                    $iocMatches += [PSCustomObject]@{ IndicatorType = "FileName"; Indicator = $name; Category = $record.Category; Name = $record.Name; Path = $record.Path; Timestamp = $record.Timestamp; CommandLine = $record.CommandLine; RegistryPath = $record.RegistryPath; Source = @($record.Source); EventIDs = @($record.EventIDs) }
-                }
-            }
+
+        foreach ($record in @($matchedRecords | Where-Object { $null -ne $_ })) {
+            $findings += New-FindingFromMatch -Indicator $indicator -Record $record -Evidence $evidence
         }
     }
 
@@ -475,8 +856,39 @@ function Test-IocMatch {
             IocPath = $IocPath
         }
         Indicators = $Indicators
-        MatchCount = @($iocMatches).Count
-        Matches = @($iocMatches)
+        MatchCount = @($findings).Count
+        Findings = @($findings)
+    }
+}
+
+function Get-IndicatorSummary {
+    param($Indicators)
+
+    [PSCustomObject]@{
+        Total = @($Indicators).Count
+        ByType = @(
+            $Indicators |
+                Group-Object type |
+                Sort-Object Count -Descending |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Type = $_.Name
+                        Count = $_.Count
+                    }
+                }
+        )
+        BySource = @(
+            $Indicators |
+                Group-Object source |
+                Sort-Object Count -Descending |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Source = $_.Name
+                        Count = $_.Count
+                    }
+                }
+        )
+        Sample = @($Indicators | Select-Object -First 25)
     }
 }
 
@@ -513,8 +925,9 @@ function Write-ModeMarkdown {
         "IOC" {
             Write-MdSection "Summary"
             Write-MdLine ("Match count: [{0}]" -f $Data.MatchCount)
-            Write-MdBlock -Title "Indicators" -Object $Data.Indicators
-            Write-MdBlock -Title "Matches" -Object ($Data.Matches | Select-Object -First 50)
+            Write-MdLine ("Indicator count: [{0}]" -f $Data.IndicatorCount)
+            Write-MdBlock -Title "Indicator Summary" -Object $Data.IndicatorSummary
+            Write-MdBlock -Title "Findings" -Object ($Data.Findings | Select-Object -First 50)
         }
     }
 }
@@ -527,10 +940,12 @@ switch ($Mode) {
         $data = Build-DeepDataset
     }
     "IOC" {
-        if (-not $IocPath -or -not (Test-Path $IocPath)) {
-            throw "IOC mode requires -IocPath pointing to a JSON file."
+        $resolvedIocPath = Get-DefaultIocPath
+        if (-not $resolvedIocPath -or -not (Test-Path -LiteralPath $resolvedIocPath)) {
+            throw "IOC mode requires -IocPath pointing to a JSON file, or codex-monitor.settings.json must define a valid IndicatorExportPath."
         }
-        $indicators = Get-Content -LiteralPath $IocPath -Raw | ConvertFrom-Json
+        $IocPath = $resolvedIocPath
+        $indicators = Import-Indicators -Path $IocPath
         $dataset = Build-DeepDataset
         $rawIoc = Test-IocMatch -Dataset $dataset -Indicators $indicators
         $data = [PSCustomObject]@{
@@ -540,9 +955,10 @@ switch ($Mode) {
                 Mode = $rawIoc.Metadata.Mode
                 IocPath = $rawIoc.Metadata.IocPath
             }
-            Indicators = $indicators | Select-Object Hashes, Paths, ServiceNames, TaskNames, RegistryPaths, CommandLinePatterns, FileNames
+            IndicatorCount = @($indicators).Count
+            IndicatorSummary = Get-IndicatorSummary -Indicators $indicators
             MatchCount = [int]$rawIoc.MatchCount
-            Matches = @($rawIoc.Matches | Select-Object IndicatorType, Indicator, Category, Name, Path, Timestamp, CommandLine, RegistryPath, Source, EventIDs)
+            Findings = @($rawIoc.Findings)
         }
     }
 }

@@ -1,3 +1,10 @@
 {
-  "AlertWatchPath": "C:\\Program Files\\CodexMonitor"
+  "RuntimeRoot": "C:\\Program Files\\CodexMonitor",
+  "DataRoot": "C:\\ProgramData\\CodexMonitor",
+  "StateDbPath": "C:\\ProgramData\\CodexMonitor\\state\\ioc-store.db",
+  "PythonCommand": "C:\\Users\\me\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+  "IndicatorExportPath": "C:\\ProgramData\\CodexMonitor\\indicators\\feed-indicators-latest.json",
+  "AlertWatchPath": "C:\\ProgramData\\CodexMonitor\\alerts\\pending",
+  "AlertInboxPath": "C:\\ProgramData\\CodexMonitor\\alerts\\pending",
+  "AlertArchivePath": "C:\\ProgramData\\CodexMonitor\\alerts\\archive"
 }

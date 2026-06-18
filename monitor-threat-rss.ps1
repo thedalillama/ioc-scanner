@@ -1,5 +1,6 @@
 param(
-    [string]$StatePath = (Join-Path $PSScriptRoot "threat-rss-state.json"),
+    [string]$StatePath = "",
+    [string]$StateDbPath = "",
     [int]$LookbackHours = 72,
     [switch]$RunDeepOnMatch,
     [switch]$RunBaselineOnMatch,
@@ -13,7 +14,34 @@ $collectionTimeUtc = (Get-Date).ToUniversalTime().ToString("o")
 $outBase = Join-Path $PSScriptRoot ("THREAT_RSS_{0}" -f $timestamp)
 $jsonFile = "$outBase.json"
 $mdFile = "$outBase.md"
-$alertBase = Join-Path $PSScriptRoot ("ALERT_THREAT_RSS_{0}" -f $timestamp)
+
+function Ensure-Directory {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function Get-AlertInboxPath {
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.AlertInboxPath)) {
+                Ensure-Directory -Path ([string]$settings.AlertInboxPath)
+                return [string]$settings.AlertInboxPath
+            }
+        } catch {
+        }
+    }
+
+    $defaultInbox = Join-Path (Join-Path $PSScriptRoot "alerts") "pending"
+    Ensure-Directory -Path $defaultInbox
+    return $defaultInbox
+}
+
+$alertBase = Join-Path (Get-AlertInboxPath) ("ALERT_THREAT_RSS_{0}" -f $timestamp)
 $iocScriptPath = Join-Path $PSScriptRoot "invoke-host-ioc.ps1"
 $tripwireScriptPath = Join-Path $PSScriptRoot "invoke-host-tripwire.ps1"
 
@@ -69,6 +97,147 @@ function Write-JsonFile {
     $json = ConvertTo-Json -InputObject $Object -Depth $Depth
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
+}
+
+function Get-PythonCommand {
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.PythonCommand) -and (Test-Path -LiteralPath ([string]$settings.PythonCommand))) {
+                return [string]$settings.PythonCommand
+            }
+        } catch {
+        }
+    }
+
+    $candidates = @(
+        @{ Command = "python"; Arguments = @() },
+        @{ Command = "py"; Arguments = @("-3") }
+    )
+
+    foreach ($candidate in $candidates) {
+        try {
+            $output = & $candidate.Command @($candidate.Arguments + @("-c", "import sys; print(sys.executable)")) 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $resolved = (@($output) | Select-Object -Last 1).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($resolved) -and (Test-Path -LiteralPath $resolved)) {
+                    return $resolved
+                }
+            }
+        } catch {
+        }
+    }
+
+    throw "A usable Python runtime was not found. Update codex-monitor.settings.json or install Python."
+}
+
+function Get-StateStoreScriptPath {
+    $path = Join-Path $PSScriptRoot "ioc_store.py"
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "SQLite state helper not found: $path"
+    }
+    return $path
+}
+
+function Invoke-StateStore {
+    param(
+        [string]$DbPath,
+        [string[]]$Arguments
+    )
+
+    $scriptPath = Get-StateStoreScriptPath
+    $pythonCommand = Get-PythonCommand
+    $output = & $pythonCommand $scriptPath --db $DbPath @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ("State store command failed: {0} {1} --db {2} {3}`n{4}" -f $pythonCommand, $scriptPath, $DbPath, ($Arguments -join ' '), (@($output) -join [Environment]::NewLine))
+    }
+    return (@($output) -join [Environment]::NewLine)
+}
+
+function Get-StateDbPath {
+    param(
+        [string]$ConfiguredStateDbPath,
+        [string]$LegacyStatePath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredStateDbPath)) {
+        return $ConfiguredStateDbPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_MONITOR_STATEDBPATH)) {
+        return $env:CODEX_MONITOR_STATEDBPATH
+    }
+
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
+                return [string]$settings.StateDbPath
+            }
+        } catch {
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($LegacyStatePath)) {
+        $legacyParent = Split-Path -Path $LegacyStatePath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($legacyParent) -and $legacyParent -ne $PSScriptRoot) {
+            return (Join-Path $legacyParent "ioc-store.db")
+        }
+    }
+
+    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+}
+
+function Read-LegacyStateFile {
+    param([string]$Path)
+
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path)) {
+        try {
+            return (Get-Content $Path -Raw | ConvertFrom-Json)
+        } catch {
+        }
+    }
+
+    return $null
+}
+
+function Get-SqliteState {
+    param(
+        [string]$DbPath,
+        [string]$Namespace,
+        [string]$Key
+    )
+
+    $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("state-get", "--namespace", $Namespace, "--key", $Key)
+    $payload = $raw | ConvertFrom-Json
+    if ($payload.found) {
+        return $payload.value
+    }
+    return $null
+}
+
+function Save-SqliteState {
+    param(
+        [string]$DbPath,
+        [string]$Namespace,
+        [string]$Key,
+        $Object,
+        [int]$Depth = 12
+    )
+
+    $json = ConvertTo-Json -InputObject $Object -Depth $Depth
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempPath, $json, $utf8NoBom)
+        [void](Invoke-StateStore -DbPath $DbPath -Arguments @("state-put", "--namespace", $Namespace, "--key", $Key, "--input", $tempPath))
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            [System.IO.File]::Delete($tempPath)
+        }
+    }
 }
 
 function Write-MdLine {
@@ -172,9 +341,16 @@ function Get-ItemIdentity {
     return "{0}|{1}|{2}" -f $FeedName.Trim(), $Title.Trim(), $Link.Trim()
 }
 
-if (Test-Path $StatePath) {
-    $state = Get-Content $StatePath -Raw | ConvertFrom-Json
-} else {
+$resolvedStateDbPath = Get-StateDbPath -ConfiguredStateDbPath $StateDbPath -LegacyStatePath $StatePath
+$state = Get-SqliteState -DbPath $resolvedStateDbPath -Namespace "threat_rss" -Key "feed_state"
+if ($null -eq $state) {
+    $legacyState = Read-LegacyStateFile -Path $StatePath
+    if ($null -ne $legacyState) {
+        Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "threat_rss" -Key "feed_state" -Object $legacyState
+        $state = $legacyState
+    }
+}
+if ($null -eq $state) {
     $state = [PSCustomObject]@{
         SeenIds = @()
         LastRunUtc = $null
@@ -248,7 +424,7 @@ $state = [PSCustomObject]@{
     LastRunUtc = $collectionTimeUtc
 }
 
-Write-JsonFile -Path $StatePath -Object $state
+Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "threat_rss" -Key "feed_state" -Object $state
 
 $iocFollowUp = @()
 if (@($newRelevantItems | Where-Object { $_.Relevance -eq "Relevant" }).Count -gt 0) {
@@ -281,7 +457,7 @@ $report = [PSCustomObject]@{
     Metadata = [PSCustomObject]@{
         ComputerName = $env:COMPUTERNAME
         CollectionTimeUtc = $collectionTimeUtc
-        StatePath = $StatePath
+        StateDbPath = $resolvedStateDbPath
         LookbackHours = $LookbackHours
         FeedCount = @($feeds).Count
         RelevantItemCount = @($newRelevantItems | Where-Object { $_.Relevance -eq "Relevant" }).Count
@@ -323,6 +499,8 @@ if (@($report.NewItems).Count -eq 0) {
 }
 
 if ([int]$report.Metadata.RelevantItemCount -gt 0) {
+    $topItems = @($report.NewItems | Select-Object -First 3)
+    $detailLines = @($topItems | ForEach-Object { "{0} ({1})" -f $_.Title, $_.FeedName })
     $alert = [PSCustomObject]@{
         Metadata = [PSCustomObject]@{
             AlertType = "ThreatRss"
@@ -335,6 +513,7 @@ if ([int]$report.Metadata.RelevantItemCount -gt 0) {
         Summary = [PSCustomObject]@{
             Title = "Codex threat feed monitor found relevant advisories"
             Message = "{0} relevant advisory item(s) found in the monitored feeds." -f [int]$report.Metadata.RelevantItemCount
+            DetailLines = @($detailLines)
         }
         NewItems = @($report.NewItems)
         IocFollowUp = @($report.IocFollowUp)

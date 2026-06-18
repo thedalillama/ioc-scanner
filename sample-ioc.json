@@ -1,7 +1,0 @@
-﻿{
-  "FileNames": ["codex.exe"],
-  "ServiceNames": ["WinDefend"],
-  "TaskNames": ["ScheduledDefrag"],
-  "Paths": ["C:\\Users\\me\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe"],
-  "CommandLinePatterns": ["codex", "powershell"]
-}
