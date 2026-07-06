@@ -1,0 +1,158 @@
+{
+  "personas": [
+    {
+      "persona_id": "user",
+      "display_name": "Home User",
+      "description": "Simple local-PC view for an everyday PC owner who wants clear guidance without deep technical detail.",
+      "default_skin": "light_care",
+      "report_language": "simple",
+      "show_csf_codes": false,
+      "show_raw_evidence": false,
+      "show_diagnostics": false,
+      "show_reports": false,
+      "show_evidence_links": false,
+      "visible_routes": [
+        "/",
+        "/govern",
+        "/identify",
+        "/protect",
+        "/detect",
+        "/respond",
+        "/recover"
+      ],
+      "hidden_routes": [
+        "/reports",
+        "/diagnostics",
+        "/detect/evidence-snapshot"
+      ],
+      "automation_level": "guided",
+      "require_confirmation_for": [
+        "persona_changes",
+        "protection_profile_changes"
+      ]
+    },
+    {
+      "persona_id": "advanced_user",
+      "display_name": "Advanced User",
+      "description": "Richer local-PC view for an experienced user who wants evidence pages and fuller security language.",
+      "default_skin": "light_care",
+      "report_language": "standard",
+      "show_csf_codes": true,
+      "show_raw_evidence": false,
+      "show_diagnostics": false,
+      "show_reports": true,
+      "show_evidence_links": true,
+      "visible_routes": [
+        "/",
+        "/govern",
+        "/identify",
+        "/protect",
+        "/detect",
+        "/respond",
+        "/recover",
+        "/reports",
+        "/detect/evidence-snapshot"
+      ],
+      "hidden_routes": [
+        "/diagnostics"
+      ],
+      "automation_level": "review",
+      "require_confirmation_for": [
+        "persona_changes",
+        "protection_profile_changes"
+      ]
+    },
+    {
+      "persona_id": "analyst",
+      "display_name": "Analyst",
+      "description": "Analysis-oriented local-PC view for security practitioners who want findings, posture review, evidence interpretation, threat context, and reports without full repair diagnostics by default.",
+      "default_skin": "lifestyle",
+      "report_language": "technical",
+      "show_csf_codes": true,
+      "show_raw_evidence": true,
+      "show_diagnostics": false,
+      "show_reports": true,
+      "show_evidence_links": true,
+      "visible_routes": [
+        "/",
+        "/govern",
+        "/identify",
+        "/protect",
+        "/detect",
+        "/respond",
+        "/recover",
+        "/reports",
+        "/detect/evidence-snapshot"
+      ],
+      "hidden_routes": [
+        "/diagnostics"
+      ],
+      "automation_level": "analysis",
+      "require_confirmation_for": [
+        "persona_changes",
+        "protection_profile_changes"
+      ]
+    },
+    {
+      "persona_id": "csf_native",
+      "display_name": "NIST CSF Native",
+      "description": "Framework-oriented local-PC view for people who want to operate the app through formal NIST CSF terminology and evidence-backed status.",
+      "default_skin": "lifestyle",
+      "report_language": "standard",
+      "show_csf_codes": true,
+      "show_raw_evidence": false,
+      "show_diagnostics": false,
+      "show_reports": true,
+      "show_evidence_links": true,
+      "visible_routes": [
+        "/",
+        "/govern",
+        "/identify",
+        "/protect",
+        "/detect",
+        "/respond",
+        "/recover",
+        "/reports",
+        "/detect/evidence-snapshot"
+      ],
+      "hidden_routes": [
+        "/diagnostics"
+      ],
+      "automation_level": "framework",
+      "require_confirmation_for": [
+        "persona_changes",
+        "protection_profile_changes"
+      ]
+    },
+    {
+      "persona_id": "tech",
+      "display_name": "Technician",
+      "description": "Technical local-PC view for hands-on operators who need reports, diagnostics, raw evidence context, and troubleshooting detail.",
+      "default_skin": "lifestyle",
+      "report_language": "technical",
+      "show_csf_codes": true,
+      "show_raw_evidence": true,
+      "show_diagnostics": true,
+      "show_reports": true,
+      "show_evidence_links": true,
+      "visible_routes": [
+        "/",
+        "/govern",
+        "/identify",
+        "/protect",
+        "/detect",
+        "/respond",
+        "/recover",
+        "/reports",
+        "/diagnostics",
+        "/detect/evidence-snapshot"
+      ],
+      "hidden_routes": [],
+      "automation_level": "operator",
+      "require_confirmation_for": [
+        "persona_changes",
+        "protection_profile_changes"
+      ]
+    }
+  ]
+}

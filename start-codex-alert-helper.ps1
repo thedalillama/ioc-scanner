@@ -3,6 +3,7 @@ param(
     [string]$StatePath = "",
     [string]$StateDbPath = "",
     [int]$PollSeconds = 30,
+    [int]$RepeatSuppressHours = 24,
     [switch]$Watch
 )
 
@@ -195,6 +196,7 @@ function Read-LegacyStateFile {
 
     return [PSCustomObject]@{
         SeenAlerts = @()
+        AlertFingerprintLastShownUtc = @{}
         LastRunUtc = $null
     }
 }
@@ -221,19 +223,33 @@ function Get-State {
             [void]$legacySeen.Add([string]$entry)
         }
     }
-    Save-State -DbPath $DbPath -SeenAlerts $legacySeen -LastRunUtc ([string]$legacyState.LastRunUtc)
-    return $legacyState
+    $legacyFingerprints = @{}
+    foreach ($property in @(($legacyState.PSObject.Properties | Where-Object { $_.Name -eq 'AlertFingerprintLastShownUtc' }))) {
+        foreach ($entry in @($property.Value.PSObject.Properties)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$entry.Name) -and -not [string]::IsNullOrWhiteSpace([string]$entry.Value)) {
+                $legacyFingerprints[[string]$entry.Name] = [string]$entry.Value
+            }
+        }
+    }
+    Save-State -DbPath $DbPath -SeenAlerts $legacySeen -AlertFingerprintLastShownUtc $legacyFingerprints -LastRunUtc ([string]$legacyState.LastRunUtc)
+    return [PSCustomObject]@{
+        SeenAlerts = @($legacySeen)
+        AlertFingerprintLastShownUtc = $legacyFingerprints
+        LastRunUtc = [string]$legacyState.LastRunUtc
+    }
 }
 
 function Save-State {
     param(
         [string]$DbPath,
         [System.Collections.Generic.HashSet[string]]$SeenAlerts,
+        [hashtable]$AlertFingerprintLastShownUtc = @{},
         [string]$LastRunUtc = ""
     )
 
     $state = [PSCustomObject]@{
         SeenAlerts = @($SeenAlerts)
+        AlertFingerprintLastShownUtc = $AlertFingerprintLastShownUtc
         LastRunUtc = if ([string]::IsNullOrWhiteSpace($LastRunUtc)) { (Get-Date).ToUniversalTime().ToString("o") } else { $LastRunUtc }
     }
 
@@ -389,6 +405,160 @@ function Get-AlertIdentity {
     return "{0}|{1}|{2}" -f $alertType, $collectionTimeUtc, $sourceReport
 }
 
+function Get-AlertFingerprint {
+    param($Alert)
+
+    $meta = $Alert.Metadata
+    $summary = $Alert.Summary
+    $changes = @($Alert.Changes)
+    $changeTokens = foreach ($change in ($changes | Select-Object -First 6)) {
+        "{0}|{1}|{2}|{3}" -f ([string]$change.Category), ([string]$change.Name), ([string]$change.ChangeType), ([string]$change.Path)
+    }
+    if (@($changeTokens).Count -eq 0) {
+        $changeTokens = @(@($summary.DetailLines | Select-Object -First 6 | ForEach-Object { [string]$_ }))
+    }
+    $basis = @(
+        [string]$meta.AlertType,
+        [string]$summary.Title,
+        [string]$summary.Message,
+        ($changeTokens -join '||')
+    ) -join "`n"
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($basis)
+        $hash = $sha.ComputeHash($bytes)
+        return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Should-NotifyAlert {
+    param(
+        [hashtable]$LastShownByFingerprint,
+        [string]$Fingerprint,
+        [int]$SuppressHours
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Fingerprint)) {
+        return $true
+    }
+    if (-not $LastShownByFingerprint.ContainsKey($Fingerprint)) {
+        return $true
+    }
+
+    $lastShownText = [string]$LastShownByFingerprint[$Fingerprint]
+    $lastShown = [datetime]::MinValue
+    if (-not [datetime]::TryParse($lastShownText, [ref]$lastShown)) {
+        return $true
+    }
+
+    return $lastShown.ToUniversalTime() -le (Get-Date).ToUniversalTime().AddHours(-1 * [math]::Abs($SuppressHours))
+}
+
+function Move-AlertArtifactsToArchive {
+    param(
+        [System.IO.FileInfo]$JsonFile,
+        [string]$MarkdownPath,
+        [string]$ArchivePath
+    )
+
+    $archiveJsonPath = Join-Path $ArchivePath $JsonFile.Name
+    Move-Item -LiteralPath $JsonFile.FullName -Destination $archiveJsonPath -Force
+
+    $archiveMarkdownPath = ""
+    if (-not [string]::IsNullOrWhiteSpace($MarkdownPath) -and (Test-Path -LiteralPath $MarkdownPath)) {
+        $archiveMarkdownPath = Join-Path $ArchivePath ([IO.Path]::GetFileName($MarkdownPath))
+        Move-Item -LiteralPath $MarkdownPath -Destination $archiveMarkdownPath -Force
+    }
+
+    return [PSCustomObject]@{
+        ArchiveJsonPath = $archiveJsonPath
+        ArchiveMarkdownPath = $archiveMarkdownPath
+    }
+}
+
+function New-QueuedAlertRecord {
+    param(
+        [System.IO.FileInfo]$JsonFile,
+        $AlertPayload
+    )
+
+    $title = [string]$AlertPayload.Summary.Title
+    $message = [string]$AlertPayload.Summary.Message
+    $detailLines = @($AlertPayload.Summary.DetailLines)
+    if ([string]::IsNullOrWhiteSpace($title)) {
+        $title = 'Codex monitor alert'
+    }
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        $message = [string]$JsonFile.Name
+    }
+
+    return [PSCustomObject]@{
+        File = $JsonFile
+        Alert = $AlertPayload
+        Identity = Get-AlertIdentity -Alert $AlertPayload
+        Fingerprint = Get-AlertFingerprint -Alert $AlertPayload
+        Title = $title
+        Message = $message
+        DetailLines = $detailLines
+        MarkdownPath = [IO.Path]::ChangeExtension($JsonFile.FullName, '.md')
+        JsonPath = $JsonFile.FullName
+    }
+}
+
+function Convert-ToArchivedAlertRecord {
+    param(
+        $QueuedAlert,
+        $ArchiveMoveResult
+    )
+
+    return [PSCustomObject]@{
+        File = $QueuedAlert.File
+        Alert = $QueuedAlert.Alert
+        Identity = $QueuedAlert.Identity
+        Fingerprint = $QueuedAlert.Fingerprint
+        Title = $QueuedAlert.Title
+        Message = $QueuedAlert.Message
+        DetailLines = $QueuedAlert.DetailLines
+        MarkdownPath = if ($ArchiveMoveResult -and $ArchiveMoveResult.ArchiveMarkdownPath) { [string]$ArchiveMoveResult.ArchiveMarkdownPath } else { [string]$QueuedAlert.MarkdownPath }
+        JsonPath = if ($ArchiveMoveResult -and $ArchiveMoveResult.ArchiveJsonPath) { [string]$ArchiveMoveResult.ArchiveJsonPath } else { [string]$QueuedAlert.JsonPath }
+    }
+}
+
+function Show-QueuedAlerts {
+    param(
+        [object[]]$QueuedAlerts,
+        [string]$AlertFolderPath
+    )
+
+    if (@($QueuedAlerts).Count -le 0) {
+        return $false
+    }
+
+    if (@($QueuedAlerts).Count -eq 1) {
+        $item = $QueuedAlerts[0]
+        return Show-AlertPopup -Title $item.Title -Message $item.Message -DetailLines $item.DetailLines -AlertMarkdownPath $item.MarkdownPath -AlertFolderPath $AlertFolderPath
+    }
+
+    $latest = $QueuedAlerts[-1]
+    $detailLines = @()
+    foreach ($item in @($QueuedAlerts | Select-Object -First 3)) {
+        $detailLines += ('- {0}: {1}' -f $item.Title, $item.Message)
+    }
+    if (@($QueuedAlerts).Count -gt 3) {
+        $detailLines += ('- Plus {0} more queued alerts' -f (@($QueuedAlerts).Count - 3))
+    }
+
+    return Show-AlertPopup `
+        -Title ('Codex monitor alerts ({0})' -f @($QueuedAlerts).Count) `
+        -Message ('{0} new alerts queued while you were away. Dismiss once to archive this batch.' -f @($QueuedAlerts).Count) `
+        -DetailLines $detailLines `
+        -AlertMarkdownPath $latest.MarkdownPath `
+        -AlertFolderPath $AlertFolderPath
+}
+
 $WatchPath = Get-HelperWatchPath -ConfiguredWatchPath $WatchPath
 $StateDbPath = Get-HelperStateDbPath -ConfiguredStateDbPath $StateDbPath -ConfiguredStatePath $StatePath
 $ArchivePath = Get-ArchivePath -CurrentWatchPath $WatchPath
@@ -405,9 +575,20 @@ foreach ($entry in @($state.SeenAlerts)) {
         [void]$seen.Add([string]$entry)
     }
 }
+$lastShownByFingerprint = @{}
+foreach ($property in @(($state.PSObject.Properties | Where-Object { $_.Name -eq 'AlertFingerprintLastShownUtc' }))) {
+    foreach ($entry in @($property.Value.PSObject.Properties)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$entry.Name) -and -not [string]::IsNullOrWhiteSpace([string]$entry.Value)) {
+            $lastShownByFingerprint[[string]$entry.Name] = [string]$entry.Value
+        }
+    }
+}
 
 do {
     $alerts = @(Get-ChildItem -LiteralPath $WatchPath -Filter "ALERT_*.json" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)
+    $queuedAlerts = @()
+    $notifyAlerts = @()
+    $batchFingerprints = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $alerts) {
         try {
             $alert = Get-Content $file.FullName -Raw | ConvertFrom-Json
@@ -415,31 +596,38 @@ do {
             continue
         }
 
-        $identity = Get-AlertIdentity -Alert $alert
-        if ($seen.Contains($identity)) {
+        $queued = New-QueuedAlertRecord -JsonFile $file -AlertPayload $alert
+        if ($seen.Contains($queued.Identity)) {
             continue
         }
-
-        $title = [string]$alert.Summary.Title
-        $message = [string]$alert.Summary.Message
-        $detailLines = @($alert.Summary.DetailLines)
-        if ([string]::IsNullOrWhiteSpace($title)) {
-            $title = "Codex monitor alert"
+        $queuedAlerts += $queued
+        if ((-not $batchFingerprints.Contains($queued.Fingerprint)) -and (Should-NotifyAlert -LastShownByFingerprint $lastShownByFingerprint -Fingerprint $queued.Fingerprint -SuppressHours $RepeatSuppressHours)) {
+            [void]$batchFingerprints.Add($queued.Fingerprint)
+            $notifyAlerts += $queued
         }
-        if ([string]::IsNullOrWhiteSpace($message)) {
-            $message = [string]$file.Name
+    }
+
+    if (@($queuedAlerts).Count -gt 0) {
+        $notifyByIdentity = @{}
+        foreach ($queued in $notifyAlerts) {
+            $notifyByIdentity[[string]$queued.Identity] = $true
         }
 
-        $pairedMarkdownPath = [IO.Path]::ChangeExtension($file.FullName, ".md")
-        [void](Show-AlertPopup -Title $title -Message $message -DetailLines $detailLines -AlertMarkdownPath $pairedMarkdownPath -AlertFolderPath $WatchPath)
-        [void]$seen.Add($identity)
-        Save-State -DbPath $StateDbPath -SeenAlerts $seen
-
-        $archiveJsonPath = Join-Path $ArchivePath $file.Name
-        Move-Item -LiteralPath $file.FullName -Destination $archiveJsonPath -Force
-
-        if (Test-Path -LiteralPath $pairedMarkdownPath) {
-            Move-Item -LiteralPath $pairedMarkdownPath -Destination (Join-Path $ArchivePath ([IO.Path]::GetFileName($pairedMarkdownPath))) -Force
+        $archivedNotifyAlerts = @()
+        $shownAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        foreach ($queued in $queuedAlerts) {
+            [void]$seen.Add($queued.Identity)
+            $archiveMove = Move-AlertArtifactsToArchive -JsonFile $queued.File -MarkdownPath $queued.MarkdownPath -ArchivePath $ArchivePath
+            if ($notifyByIdentity.ContainsKey([string]$queued.Identity)) {
+                $archivedNotifyAlerts += (Convert-ToArchivedAlertRecord -QueuedAlert $queued -ArchiveMoveResult $archiveMove)
+                if (-not [string]::IsNullOrWhiteSpace($queued.Fingerprint)) {
+                    $lastShownByFingerprint[$queued.Fingerprint] = $shownAtUtc
+                }
+            }
+        }
+        Save-State -DbPath $StateDbPath -SeenAlerts $seen -AlertFingerprintLastShownUtc $lastShownByFingerprint
+        if (@($archivedNotifyAlerts).Count -gt 0) {
+            [void](Show-QueuedAlerts -QueuedAlerts $archivedNotifyAlerts -AlertFolderPath $ArchivePath)
         }
     }
 

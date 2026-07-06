@@ -1,0 +1,36 @@
+{
+  "profiles": [
+    {
+      "id": "microsoft_baseline",
+      "name": "Microsoft Baseline",
+      "description": "Windows-focused baseline aligned with Microsoft Security Baselines and common enterprise defaults.",
+      "source": "Microsoft Security Baselines / Security Compliance Toolkit",
+      "controls": [
+        { "id": "firewall_all_profiles", "weight": 20, "desired": "all_enabled" },
+        { "id": "defender_realtime", "weight": 20, "desired": "enabled" },
+        { "id": "bitlocker_system_drive", "weight": 15, "desired": "enabled" },
+        { "id": "secure_boot", "weight": 10, "desired": "enabled" },
+        { "id": "rdp", "weight": 10, "desired": "disabled" },
+        { "id": "winrm", "weight": 5, "desired": "disabled" },
+        { "id": "execution_policy", "weight": 10, "desired": "remotesigned_or_stricter" },
+        { "id": "defender_signatures", "weight": 10, "desired": "fresh_7d" }
+      ]
+    },
+    {
+      "id": "cis_level1_hardened",
+      "name": "CIS Level 1 Hardened",
+      "description": "A stricter Windows posture using a CIS Level 1-inspired control subset that this app can verify locally.",
+      "source": "CIS Benchmarks inspired subset",
+      "controls": [
+        { "id": "firewall_all_profiles", "weight": 20, "desired": "all_enabled" },
+        { "id": "defender_realtime", "weight": 20, "desired": "enabled" },
+        { "id": "bitlocker_system_drive", "weight": 15, "desired": "enabled" },
+        { "id": "secure_boot", "weight": 10, "desired": "enabled" },
+        { "id": "rdp", "weight": 10, "desired": "disabled" },
+        { "id": "winrm", "weight": 10, "desired": "disabled" },
+        { "id": "execution_policy", "weight": 10, "desired": "allsigned_or_restricted" },
+        { "id": "defender_signatures", "weight": 5, "desired": "fresh_3d" }
+      ]
+    }
+  ]
+}

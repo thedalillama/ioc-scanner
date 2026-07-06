@@ -1,0 +1,54 @@
+{
+  "system_profiles": [
+    {
+      "system_profile_id": "windows_home",
+      "display_name": "Windows Home",
+      "supported": true,
+      "enterprise_managed": false,
+      "expected_controls": [
+        "defender",
+        "firewall",
+        "windows_update",
+        "family_safety",
+        "standard_user_accounts",
+        "controlled_folder_access",
+        "smart_app_control"
+      ],
+      "unsupported_or_limited_controls": [
+        "local_group_policy",
+        "applocker",
+        "wdac_advanced_policy",
+        "domain_join"
+      ]
+    },
+    {
+      "system_profile_id": "windows_pro",
+      "display_name": "Windows Pro",
+      "supported": true,
+      "enterprise_managed": false,
+      "expected_controls": [
+        "defender",
+        "firewall",
+        "windows_update",
+        "bitlocker",
+        "remote_desktop",
+        "local_security_policy",
+        "local_group_policy",
+        "controlled_folder_access",
+        "smart_app_control"
+      ],
+      "advanced_controls_available": [
+        "advanced_firewall_rules",
+        "applocker_possible",
+        "wdac_possible"
+      ]
+    },
+    {
+      "system_profile_id": "enterprise_managed",
+      "display_name": "Enterprise managed",
+      "supported": false,
+      "enterprise_managed": true,
+      "message": "This PC appears to be managed by an organization. Some settings may be controlled by IT policy."
+    }
+  ]
+}

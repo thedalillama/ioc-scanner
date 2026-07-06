@@ -5,4 +5,6 @@ End If
 Dim command
 command = WScript.Arguments(0)
 
-CreateObject("WScript.Shell").Run command, 0, False
+Dim exitCode
+exitCode = CreateObject("WScript.Shell").Run(command, 0, True)
+WScript.Quit exitCode

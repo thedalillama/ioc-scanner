@@ -79,3 +79,44 @@ class CodexMonitorUiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class PersonaConsistencyTests(unittest.TestCase):
+    def test_persona_catalog_order_and_labels(self) -> None:
+        personas = [ui.coerce_persona_profile(pid) for pid in ["user", "advanced_user", "csf_native", "analyst", "tech"]]
+        self.assertEqual([p["persona_id"] for p in personas], ["user", "advanced_user", "csf_native", "analyst", "tech"])
+        self.assertEqual([p["display_name"] for p in personas], ["Home User", "Advanced User", "NIST CSF Native", "Analyst", "Technician"])
+
+    def test_primary_nav_hides_diagnostics_for_home_user(self) -> None:
+        home = ui.coerce_persona_profile("user")
+        nav = ui.render_primary_nav("/", persona_profile=home, show_technical=True)
+        self.assertNotIn("Diagnostics", nav)
+        self.assertNotIn("Reports", nav)
+
+    def test_primary_nav_shows_diagnostics_for_technician(self) -> None:
+        tech = ui.coerce_persona_profile("tech")
+        nav = ui.render_primary_nav("/", persona_profile=tech, show_technical=True)
+        self.assertIn("Diagnostics", nav)
+
+    def test_persona_selector_and_csf_language(self) -> None:
+        persona_ids = ["user", "advanced_user", "csf_native", "analyst", "tech"]
+        personas = [ui.coerce_persona_profile(pid) for pid in persona_ids]
+        model = {
+            "app": {
+                "message": "",
+                "ui_persona": "csf_native",
+                "persona_profile": ui.coerce_persona_profile("csf_native"),
+                "available_personas": personas,
+            },
+            "alerts": {"pending": [], "archived": []},
+            "protection_controls": {"score": 90},
+            "task_job_health": {"attention_tasks": 0},
+            "recommended_responses": [{"title": "Review what changed", "summary": "Open the latest summary for this PC."}],
+        }
+        page = ui.render_page_shell(model, "/", "Dashboard", "lede", "<div>body</div>")
+        labels = __import__('re').findall(r'<option value="[^"]*"[^>]*>([^<]+)</option>', page)
+        self.assertEqual(labels[:5], ["Home User", "Advanced User", "NIST CSF Native", "Analyst", "Technician"])
+        self.assertIn("GV / Govern", ui.friendly_function_label("govern", "csf_native"))
+        self.assertIn("DE / Detect", ui.friendly_function_label("detect", "csf_native"))
+

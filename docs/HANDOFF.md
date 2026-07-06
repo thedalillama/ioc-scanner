@@ -139,6 +139,35 @@ Do not assume the code change failed until you rule out stale runtime state.
 
 ## Process Hygiene
 
+### Do Not Force Storage Migrations Early
+
+Do not assume that all JSON-based storage should be moved immediately.
+
+Use this rule:
+
+- keep existing JSON storage when it is still serving a useful operational or interchange purpose
+- only move JSON-backed data into SQLite or another store when there is a verified need
+- do not perform a broad "move all JSON into the database" change without explicit approval
+
+Examples of reasons to keep JSON:
+
+- human-readable alert or report artifacts
+- export/interchange formats
+- compatibility with existing scripts or test workflows
+- easier incident review outside the app
+
+Examples of reasons to migrate selectively:
+
+- repeated state lookups
+- deduplication/state-tracking problems
+- query-heavy UI views
+- normalized many-to-one data relationships
+
+So for this project:
+
+- SQLite is appropriate for application state, indexes, and normalized intelligence data
+- JSON artifacts should not be removed or bulk-migrated without a deliberate product decision
+
 ### Avoid Stale Runtime Instances
 
 Operational tooling often fails because an older process is still serving requests.

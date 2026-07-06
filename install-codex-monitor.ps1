@@ -150,6 +150,26 @@ function Test-IsAdministrator {
     }
 }
 
+function Get-CurrentIdentityName {
+    try {
+        $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        if ($null -ne $currentIdentity -and -not [string]::IsNullOrWhiteSpace($currentIdentity.Name)) {
+            return $currentIdentity.Name
+        }
+    } catch {
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:USERDOMAIN) -and -not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        return "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME) -and -not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        return "{0}\{1}" -f $env:COMPUTERNAME, $env:USERNAME
+    }
+
+    throw "Unable to resolve the current Windows user identity for the notifier task."
+}
+
 function New-CodexScheduledTask {
     param(
         [string[]]$Arguments,
@@ -185,7 +205,8 @@ function Write-LauncherScript {
 
     $content = @(
         '@echo off',
-        $PowerShellCommand
+        $PowerShellCommand,
+        'exit /b %ERRORLEVEL%'
     )
 
     if (Test-Path -LiteralPath $Path) {
@@ -380,6 +401,7 @@ if ($CreateSystemTasks) {
 }
 
 if ($CreateUserNotifierTask) {
+    $notifierUser = Get-CurrentIdentityName
     $notifierRuntimePath = $NotifierScriptPath
     if ($notifierRuntimePath -like "C:\Program Files\*") {
         $notifierRuntimePath = $notifierRuntimePath -replace '^C:\\Program Files', 'C:\Progra~1'
@@ -409,6 +431,7 @@ if ($CreateUserNotifierTask) {
   </Triggers>
   <Principals>
     <Principal id="Author">
+      <UserId>$notifierUser</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>

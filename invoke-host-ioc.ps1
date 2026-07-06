@@ -71,6 +71,17 @@ function Write-MdBlock {
     Write-MdLine ""
 }
 
+function Get-Settings {
+    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            return (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json)
+        } catch {
+        }
+    }
+    return [PSCustomObject]@{}
+}
+
 function Get-DefaultIocPath {
     if (-not [string]::IsNullOrWhiteSpace($IocPath) -and (Test-Path -LiteralPath $IocPath)) {
         return $IocPath
@@ -93,6 +104,235 @@ function Get-DefaultIocPath {
     }
 
     return $IocPath
+}
+
+function Get-ResolvedStateDbPath {
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_MONITOR_STATEDBPATH)) {
+        return $env:CODEX_MONITOR_STATEDBPATH
+    }
+
+    $settings = Get-Settings
+    if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
+        return [string]$settings.StateDbPath
+    }
+    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+}
+
+function Get-StateDbContext {
+    $settings = Get-Settings
+    $defaultPath = if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
+        [string]$settings.StateDbPath
+    } else {
+        Join-Path $PSScriptRoot "state\ioc-store.db"
+    }
+
+    $resolvedPath = Get-ResolvedStateDbPath
+    $overrideDetected = $false
+    $overrideReason = ""
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_MONITOR_STATEDBPATH)) {
+        $overrideDetected = $true
+        $overrideReason = "Environment override"
+    } elseif ([string]$resolvedPath -ne [string]$defaultPath) {
+        $overrideDetected = $true
+        $overrideReason = "Non-default configured path"
+    }
+
+    [PSCustomObject]@{
+        ResolvedPath = [string]$resolvedPath
+        DefaultPath = [string]$defaultPath
+        IsDefault = (-not $overrideDetected)
+        OverrideDetected = $overrideDetected
+        OverrideReason = $overrideReason
+        DatabaseLabel = if ($overrideDetected) { "non-default/test database" } else { "default database" }
+    }
+}
+
+function Get-PythonCommand {
+    $settings = Get-Settings
+    if (-not [string]::IsNullOrWhiteSpace([string]$settings.PythonCommand) -and (Test-Path -LiteralPath ([string]$settings.PythonCommand))) {
+        return [string]$settings.PythonCommand
+    }
+
+    $candidates = @(
+        @{ Command = "python"; Arguments = @() },
+        @{ Command = "py"; Arguments = @("-3") }
+    )
+
+    foreach ($candidate in $candidates) {
+        try {
+            $output = & $candidate.Command @($candidate.Arguments + @("-c", "import sys; print(sys.executable)")) 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $resolved = (@($output) | Select-Object -Last 1).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($resolved) -and (Test-Path -LiteralPath $resolved)) {
+                    return $resolved
+                }
+            }
+        } catch {
+        }
+    }
+
+    throw "A usable Python runtime was not found. Update codex-monitor.settings.json or install Python."
+}
+
+function Get-StateStoreScriptPath {
+    $path = Join-Path $PSScriptRoot "ioc_store.py"
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "SQLite state helper not found: $path"
+    }
+    return $path
+}
+
+function Invoke-StateStore {
+    param(
+        [string]$DbPath,
+        [string[]]$Arguments
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DbPath) -or -not (Test-Path -LiteralPath $DbPath)) {
+        return $null
+    }
+
+    $scriptPath = Get-StateStoreScriptPath
+    $pythonCommand = Get-PythonCommand
+    $output = & $pythonCommand $scriptPath --db $DbPath @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ("State store command failed: {0} {1} --db {2} {3}`n{4}" -f $pythonCommand, $scriptPath, $DbPath, ($Arguments -join ' '), (@($output) -join [Environment]::NewLine))
+    }
+    return (@($output) -join [Environment]::NewLine)
+}
+
+function Get-BaselineHashJoinResults {
+    param([string]$DbPath)
+
+    try {
+        $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("baseline-hash-match")
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Get-BaselineHashStatus {
+    param([string]$DbPath)
+
+    try {
+        $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("baseline-hash-status")
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Save-IocCoverageState {
+    param(
+        [string]$DbPath,
+        $Coverage
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DbPath)) {
+        return
+    }
+
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $json = ConvertTo-Json -InputObject $Coverage -Depth 8
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempPath, $json, $utf8NoBom)
+        [void](Invoke-StateStore -DbPath $DbPath -Arguments @("state-put", "--namespace", "ioc_scan", "--key", "latest_hash_coverage", "--input", $tempPath))
+    } catch {
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            [System.IO.File]::Delete($tempPath)
+        }
+    }
+}
+
+function Save-EvidenceSnapshotToSqlite {
+    param(
+        [string]$DbPath,
+        $Dataset,
+        [string]$SnapshotId,
+        [string]$SnapshotType,
+        [string]$SourceJsonPath,
+        [string]$SourceMarkdownPath,
+        [string]$TrustLabel = "unknown"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DbPath) -or -not $Dataset -or [string]::IsNullOrWhiteSpace($SnapshotId)) {
+        return $null
+    }
+
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $json = ConvertTo-Json -InputObject $Dataset -Depth 12
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempPath, $json, $utf8NoBom)
+        $raw = Invoke-StateStore -DbPath $DbPath -Arguments @(
+            "import-evidence-snapshot",
+            "--input", $tempPath,
+            "--snapshot-id", $SnapshotId,
+            "--snapshot-type", $SnapshotType,
+            "--source-json-path", $SourceJsonPath,
+            "--source-markdown-path", $SourceMarkdownPath,
+            "--collector-version", "invoke-host-ioc.ps1",
+            "--trust-label", $TrustLabel
+        )
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            [System.IO.File]::Delete($tempPath)
+        }
+    }
+}
+
+function Get-SnapshotEvidenceMatches {
+    param(
+        [string]$DbPath,
+        [string]$SnapshotId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SnapshotId)) {
+        return $null
+    }
+
+    try {
+        $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("evidence-snapshot-match", "--snapshot-id", $SnapshotId)
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Get-IocMatchInterpretation {
+    param(
+        [int]$MatchCount,
+        [bool]$AllTestMatches = $false
+    )
+
+    if ($AllTestMatches -and $MatchCount -gt 0) {
+        return "Controlled local test IOC matches were found in indexed local evidence snapshots and/or the latest indexed baseline hash inventory. These findings are labeled LOCAL_TEST_DO_NOT_ALERT and should be treated as verification results, not real malware detections."
+    }
+
+    if ($MatchCount -gt 0) {
+        return "IOC matches were found in indexed local evidence snapshots and/or the latest indexed baseline hash inventory. Review the findings to determine whether the evidence is current-scan activity, baseline/reference evidence, or historical evidence."
+    }
+
+    return "No match was found in indexed local evidence snapshots or the latest indexed baseline hash inventory for the loaded indicators."
 }
 
 function Test-ExactTaskIndicatorMatch {
@@ -656,18 +896,74 @@ function New-FindingFromMatch {
     param(
         $Indicator,
         $Record,
-        [string]$Evidence
+        [string]$Evidence,
+        [string]$SnapshotId = "",
+        [string]$SnapshotType = "current_scan"
     )
+
+    $indicatorType = ([string]$Indicator.type).ToLowerInvariant()
+    $matchedField = "value"
+    $matchedValue = [string]$Record.Value
+
+    switch ($indicatorType) {
+        { $_ -in @("sha256", "sha1", "md5") } {
+            $matchedField = "hash"
+            $matchedValue = [string]$Record.Hash
+        }
+        { $_ -in @("ipv4", "ipv6") } {
+            $matchedField = "remote_address"
+            $matchedValue = [string]$Record.Value
+        }
+        "domain" {
+            $matchedField = "dns_or_text"
+            $matchedValue = [string]$Record.Value
+        }
+        "url" {
+            $matchedField = "command_line_or_event_text"
+            $matchedValue = [string]$Indicator.value
+        }
+        "registry_key" {
+            $matchedField = "key_path"
+            $matchedValue = [string]$Record.RegistryPath
+        }
+        "registry_value" {
+            $matchedField = "value_data"
+            $matchedValue = if ($Record.CommandLine) { [string]$Record.CommandLine } else { [string]$Record.RegistryPath }
+        }
+        "service_name" {
+            $matchedField = "service_name"
+            $matchedValue = [string]$Record.Name
+        }
+        "scheduled_task" {
+            $matchedField = "task_name"
+            $matchedValue = [string]$Record.Name
+        }
+        "command_line_pattern" {
+            $matchedField = "command_line"
+            $matchedValue = [string]$Record.CommandLine
+        }
+    }
 
     [PSCustomObject]@{
         finding_id = ([guid]::NewGuid().ToString())
         host = $computerName
         scan_time = $collectionTimeUtc
+        match_source = "in_memory_fallback"
+        match_method = "in_memory_fallback"
+        snapshot_id = $SnapshotId
+        snapshot_type = $SnapshotType
+        snapshot_time = $collectionTimeUtc
+        evidence_strength = if ($indicatorType -in @("sha256", "sha1", "md5")) { "strong" } else { "medium" }
+        false_positive_risk = if ($indicatorType -in @("sha256", "sha1", "md5")) { "low" } else { "medium" }
         indicator_type = [string]$Indicator.type
         indicator_value = [string]$Indicator.value
         indicator_source = [string]$Indicator.source
         confidence = [int]$Indicator.confidence
         severity = [string]$Indicator.severity
+        matched_field = $matchedField
+        matched_value = $matchedValue
+        interpretation = "Matched against current collected local evidence using the in-memory fallback matcher. SQLite snapshot evidence was not used for this indicator path."
+        scope_note = "Matched against current collected local evidence only. This does not imply that the observation exists outside the collected snapshot."
         matched_observation_type = [string]$Record.Category
         matched_observation = [PSCustomObject]@{
             name = $Record.Name
@@ -684,6 +980,109 @@ function New-FindingFromMatch {
         collection_command = ($Record.Source -join ", ")
         recommended_action = if (@('sha256','sha1','md5','service_name','scheduled_task') -contains ([string]$Indicator.type).ToLowerInvariant()) { 'investigate' } else { 'review_context' }
         references = @([string]$Indicator.reference_url)
+    }
+}
+
+function New-FindingFromBaselineHashJoin {
+    param($Match)
+
+    $isTest = ([string]$Match.source -eq "LOCAL_TEST_DO_NOT_ALERT")
+    $interpretation = "This file hash was present in the tripwire baseline inventory. Verify whether the file still exists and whether the baseline should be trusted."
+    $scopeNote = "Matched against indexed tripwire baseline file hashes."
+    if ($isTest) {
+        $interpretation = "Controlled local test indicator: this file hash was present in the tripwire baseline inventory. Treat this as a verification result, not a real malware finding."
+        $scopeNote = "Matched against indexed tripwire baseline file hashes for a controlled LOCAL_TEST_DO_NOT_ALERT verification."
+    }
+
+    [PSCustomObject]@{
+        finding_id = ([guid]::NewGuid().ToString())
+        host = $computerName
+        scan_time = $collectionTimeUtc
+        match_source = "baseline_file_hashes"
+        match_method = "sqlite_hash_join"
+        snapshot_id = [string]$Match.baseline_id
+        snapshot_type = "baseline_reference"
+        snapshot_time = [string]$Match.baseline_timestamp
+        evidence_strength = "strong"
+        false_positive_risk = "low"
+        indicator_type = "sha256"
+        indicator_value = [string]$Match.indicator_value
+        indicator_source = [string]$Match.source
+        confidence = if ($null -ne $Match.confidence) { [int]$Match.confidence } else { 50 }
+        severity = [string]$Match.severity
+        matched_field = "sha256"
+        matched_value = [string]$Match.sha256
+        baseline_id = [string]$Match.baseline_id
+        baseline_timestamp = [string]$Match.baseline_timestamp
+        matched_path = [string]$Match.path
+        matched_sha256 = [string]$Match.sha256
+        matched_observation_type = "BaselineFileHash"
+        scope_note = $scopeNote
+        interpretation = $interpretation
+        matched_observation = [PSCustomObject]@{
+            name = [IO.Path]::GetFileName([string]$Match.path)
+            value = [string]$Match.path
+            path = [string]$Match.path
+            hash = [string]$Match.sha256
+            hash_algorithm = "SHA256"
+            timestamp = [string]$Match.last_write_time_utc
+            size_bytes = $Match.size_bytes
+            source = @("SQLiteBaselineHashIndex")
+        }
+        evidence = "Tripwire baseline file hash matched an indexed SHA-256 indicator through SQLite."
+        collection_command = "ioc_store.py baseline-hash-match"
+        recommended_action = "investigate"
+        references = @()
+    }
+}
+
+function New-FindingFromSqliteEvidenceMatch {
+    param($Match)
+
+    $isTest = ([string]$Match.indicator_source -eq "LOCAL_TEST_DO_NOT_ALERT")
+    $interpretation = [string]$Match.interpretation
+    $scopeNote = [string]$Match.scope_note
+    if ($isTest) {
+        $interpretation = "Controlled local test indicator: " + $interpretation
+        $scopeNote = $scopeNote + " This is a LOCAL_TEST_DO_NOT_ALERT verification result."
+    }
+
+    [PSCustomObject]@{
+        finding_id = ([guid]::NewGuid().ToString())
+        host = $computerName
+        scan_time = $collectionTimeUtc
+        match_source = [string]$Match.match_source
+        match_method = "sqlite_evidence_snapshot"
+        snapshot_id = [string]$Match.snapshot_id
+        snapshot_type = [string]$Match.snapshot_type
+        snapshot_time = [string]$Match.snapshot_time
+        evidence_strength = [string]$Match.evidence_strength
+        false_positive_risk = [string]$Match.false_positive_risk
+        indicator_type = [string]$Match.indicator_type
+        indicator_value = [string]$Match.indicator_value
+        indicator_source = [string]$Match.indicator_source
+        confidence = if ($null -ne $Match.confidence) { [int]$Match.confidence } else { 50 }
+        severity = [string]$Match.severity
+        matched_field = [string]$Match.matched_field
+        matched_value = [string]$Match.matched_value
+        interpretation = $interpretation
+        scope_note = $scopeNote
+        matched_observation_type = [string]$Match.matched_observation_type
+        matched_observation = [PSCustomObject]@{
+            name = [string]$Match.matched_name
+            value = [string]$Match.matched_value
+            path = [string]$Match.matched_path
+            hash = [string]$Match.matched_sha256
+            hash_algorithm = if ([string]$Match.indicator_type -eq "sha256") { "SHA256" } else { "" }
+            timestamp = [string]$Match.snapshot_time
+            command_line = [string]$Match.matched_command_line
+            registry_path = [string]$Match.matched_registry_key
+            source = @([string]$Match.match_source)
+        }
+        evidence = $interpretation
+        collection_command = "ioc_store.py evidence-snapshot-match"
+        recommended_action = if ($isTest) { "document_test_result" } elseif (@("sha256", "service_name", "scheduled_task") -contains ([string]$Match.indicator_type).ToLowerInvariant()) { "investigate" } else { "review_context" }
+        references = @()
     }
 }
 
@@ -766,15 +1165,64 @@ function Build-RecordIndexes {
 function Test-IocMatch {
     param(
         $Dataset,
-        $Indicators
+        $Indicators,
+        [string]$StateDbPath = "",
+        [string]$CurrentSnapshotId = ""
     )
 
     $records = @($Dataset.NormalizedIOCRecords)
     $indexes = Build-RecordIndexes -Records $records
     $findings = @()
+    $sqliteSnapshotMatches = Get-SnapshotEvidenceMatches -DbPath $StateDbPath -SnapshotId $CurrentSnapshotId
+    $baselineHashJoin = Get-BaselineHashJoinResults -DbPath $StateDbPath
+    $baselineHashStatus = Get-BaselineHashStatus -DbPath $StateDbPath
+    $processHashesChecked = @($records | Where-Object { $_.Category -eq "Process" -and $_.Hash -and ([string]$_.HashAlgorithm).ToLowerInvariant() -eq "sha256" }).Count
+    $recentFileHashesChecked = @($Dataset.RecentFileHashes | Where-Object { $_.SHA256 }).Count
+    $baselineHashesChecked = 0
+    $baselineHashIndexStatus = "unavailable"
+    $baselineIdUsed = $null
+    $baselineTimestampUsed = $null
+
+    if ($null -ne $baselineHashJoin) {
+        $baselineHashIndexStatus = [string]$baselineHashJoin.baseline_hash_index_status
+        $baselineHashesChecked = if ($null -ne $baselineHashJoin.baseline_hashes_checked) { [int]$baselineHashJoin.baseline_hashes_checked } else { 0 }
+        $baselineIdUsed = [string]$baselineHashJoin.baseline_id
+        $baselineTimestampUsed = [string]$baselineHashJoin.baseline_timestamp
+    } elseif ($null -ne $baselineHashStatus) {
+        $baselineHashIndexStatus = [string]$baselineHashStatus.status
+        $baselineHashesChecked = if ($null -ne $baselineHashStatus.baseline_hash_count) { [int]$baselineHashStatus.baseline_hash_count } else { 0 }
+        $baselineIdUsed = [string]$baselineHashStatus.latest_baseline_id
+        $baselineTimestampUsed = [string]$baselineHashStatus.baseline_timestamp
+    }
+
+    $sqliteSnapshotAvailable = ($null -ne $sqliteSnapshotMatches -and $sqliteSnapshotMatches.snapshot_available)
+    if ($sqliteSnapshotAvailable) {
+        foreach ($match in @($sqliteSnapshotMatches.current_matches)) {
+            $findings += New-FindingFromSqliteEvidenceMatch -Match $match
+        }
+        foreach ($match in @($sqliteSnapshotMatches.historical_matches)) {
+            $findings += New-FindingFromSqliteEvidenceMatch -Match $match
+        }
+    }
+
+    $sqlitePreferredTypes = @(
+        "sha256",
+        "ipv4",
+        "ipv6",
+        "domain",
+        "url",
+        "registry_key",
+        "registry_value",
+        "service_name",
+        "scheduled_task",
+        "command_line_pattern"
+    )
 
     foreach ($indicator in @($Indicators | Where-Object { Test-IndicatorStillValid -Indicator $_ })) {
         $indicatorType = ([string]$indicator.type).ToLowerInvariant()
+        if ($sqliteSnapshotAvailable -and ($sqlitePreferredTypes -contains $indicatorType)) {
+            continue
+        }
         $indicatorValue = [string]$indicator.value
         $matchedRecords = @()
         $evidence = ""
@@ -844,7 +1292,13 @@ function Test-IocMatch {
         }
 
         foreach ($record in @($matchedRecords | Where-Object { $null -ne $_ })) {
-            $findings += New-FindingFromMatch -Indicator $indicator -Record $record -Evidence $evidence
+            $findings += New-FindingFromMatch -Indicator $indicator -Record $record -Evidence $evidence -SnapshotId $CurrentSnapshotId -SnapshotType "current_scan"
+        }
+    }
+
+    if ($null -ne $baselineHashJoin -and @($baselineHashJoin.matches).Count -gt 0) {
+        foreach ($match in @($baselineHashJoin.matches)) {
+            $findings += New-FindingFromBaselineHashJoin -Match $match
         }
     }
 
@@ -854,10 +1308,52 @@ function Test-IocMatch {
             CollectionTimeUtc = $collectionTimeUtc
             Mode = "IOC"
             IocPath = $IocPath
+            CurrentSnapshotId = $CurrentSnapshotId
+            EvidenceSnapshotAvailable = [bool]$sqliteSnapshotAvailable
+            BaselineHashIndexStatus = $baselineHashIndexStatus
+            BaselineId = $baselineIdUsed
+            BaselineTimestamp = $baselineTimestampUsed
         }
         Indicators = $Indicators
         MatchCount = @($findings).Count
         Findings = @($findings)
+        HashCoverage = [PSCustomObject]@{
+            process_hashes_checked = $processHashesChecked
+            recent_file_hashes_checked = $recentFileHashesChecked
+            baseline_hashes_checked = $baselineHashesChecked
+            total_sha256_corpus = ($processHashesChecked + $recentFileHashesChecked + $baselineHashesChecked)
+            baseline_hash_index_status = $baselineHashIndexStatus
+            baseline_id = $baselineIdUsed
+            baseline_timestamp = $baselineTimestampUsed
+            baseline_hash_scope = if ($baselineIdUsed) { "latest_indexed_baseline" } elseif ($baselineHashIndexStatus -eq "available") { "indexed_baseline_hashes" } else { "none" }
+            coverage_summary = if ($baselineHashIndexStatus -in @("empty", "unavailable")) {
+                "Baseline hash IOC coverage is not available yet."
+            } else {
+                "Current process hashes: $processHashesChecked; current recent-file hashes: $recentFileHashesChecked; latest indexed baseline hashes: $baselineHashesChecked; total SHA-256 corpus: $($processHashesChecked + $recentFileHashesChecked + $baselineHashesChecked)."
+            }
+            current_snapshot_id = $CurrentSnapshotId
+            evidence_snapshot_available = [bool]$sqliteSnapshotAvailable
+            coverage_breakdown = [PSCustomObject]@{
+                current_process_hashes = [PSCustomObject]@{
+                    scope = "Current process hash coverage"
+                    count = $processHashesChecked
+                    description = "SHA-256 hashes collected from currently observed processes during this IOC run."
+                }
+                current_recent_file_hashes = [PSCustomObject]@{
+                    scope = "Current recent-file hash coverage"
+                    count = $recentFileHashesChecked
+                    description = "SHA-256 hashes collected from the current recent-file sample during this IOC run."
+                }
+                latest_indexed_baseline_hashes = [PSCustomObject]@{
+                    scope = "Latest indexed baseline hash coverage"
+                    count = $baselineHashesChecked
+                    description = "SHA-256 hashes read from the latest indexed tripwire baseline inventory."
+                    baseline_id = $baselineIdUsed
+                    baseline_timestamp = $baselineTimestampUsed
+                    index_status = $baselineHashIndexStatus
+                }
+            }
+        }
     }
 }
 
@@ -926,7 +1422,21 @@ function Write-ModeMarkdown {
             Write-MdSection "Summary"
             Write-MdLine ("Match count: [{0}]" -f $Data.MatchCount)
             Write-MdLine ("Indicator count: [{0}]" -f $Data.IndicatorCount)
+            Write-MdLine ("Interpretation: [{0}]" -f $Data.MatchInterpretation)
+            Write-MdLine ("Current process hash coverage: [{0}]" -f $Data.HashCoverage.process_hashes_checked)
+            Write-MdLine ("Current recent-file hash coverage: [{0}]" -f $Data.HashCoverage.recent_file_hashes_checked)
+            Write-MdLine ("Latest indexed baseline hash coverage: [{0}]" -f $Data.HashCoverage.baseline_hashes_checked)
+            Write-MdLine ("Total SHA-256 corpus: [{0}]" -f $Data.HashCoverage.total_sha256_corpus)
+            Write-MdLine ("Baseline hash index status: [{0}]" -f $Data.HashCoverage.baseline_hash_index_status)
+            if (-not [string]::IsNullOrWhiteSpace([string]$Data.HashCoverage.baseline_id)) {
+                Write-MdLine ("Baseline ID: [{0}]" -f $Data.HashCoverage.baseline_id)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$Data.HashCoverage.baseline_timestamp)) {
+                Write-MdLine ("Baseline timestamp: [{0}]" -f $Data.HashCoverage.baseline_timestamp)
+            }
             Write-MdBlock -Title "Indicator Summary" -Object $Data.IndicatorSummary
+            Write-MdBlock -Title "Hash Coverage" -Object $Data.HashCoverage
+            Write-MdBlock -Title "Hash Coverage Breakdown" -Object $Data.HashCoverage.coverage_breakdown
             Write-MdBlock -Title "Findings" -Object ($Data.Findings | Select-Object -First 50)
         }
     }
@@ -935,9 +1445,15 @@ function Write-ModeMarkdown {
 switch ($Mode) {
     "Baseline" {
         $data = Build-BaselineDataset
+        $stateDbContext = Get-StateDbContext
+        $snapshotId = [IO.Path]::GetFileNameWithoutExtension($jsonFile)
+        [void](Save-EvidenceSnapshotToSqlite -DbPath $stateDbContext.ResolvedPath -Dataset $data -SnapshotId $snapshotId -SnapshotType "baseline" -SourceJsonPath $jsonFile -SourceMarkdownPath $mdFile -TrustLabel "known_good")
     }
     "Deep" {
         $data = Build-DeepDataset
+        $stateDbContext = Get-StateDbContext
+        $snapshotId = [IO.Path]::GetFileNameWithoutExtension($jsonFile)
+        [void](Save-EvidenceSnapshotToSqlite -DbPath $stateDbContext.ResolvedPath -Dataset $data -SnapshotId $snapshotId -SnapshotType "current_scan" -SourceJsonPath $jsonFile -SourceMarkdownPath $mdFile -TrustLabel "unknown")
     }
     "IOC" {
         $resolvedIocPath = Get-DefaultIocPath
@@ -947,19 +1463,35 @@ switch ($Mode) {
         $IocPath = $resolvedIocPath
         $indicators = Import-Indicators -Path $IocPath
         $dataset = Build-DeepDataset
-        $rawIoc = Test-IocMatch -Dataset $dataset -Indicators $indicators
+        $stateDbContext = Get-StateDbContext
+        $resolvedStateDbPath = $stateDbContext.ResolvedPath
+        $snapshotId = [IO.Path]::GetFileNameWithoutExtension($jsonFile)
+        [void](Save-EvidenceSnapshotToSqlite -DbPath $resolvedStateDbPath -Dataset $dataset -SnapshotId $snapshotId -SnapshotType "current_scan" -SourceJsonPath $jsonFile -SourceMarkdownPath $mdFile -TrustLabel "unknown")
+        $rawIoc = Test-IocMatch -Dataset $dataset -Indicators $indicators -StateDbPath $resolvedStateDbPath -CurrentSnapshotId $snapshotId
         $data = [PSCustomObject]@{
             Metadata = [PSCustomObject]@{
                 ComputerName = $rawIoc.Metadata.ComputerName
                 CollectionTimeUtc = $rawIoc.Metadata.CollectionTimeUtc
                 Mode = $rawIoc.Metadata.Mode
                 IocPath = $rawIoc.Metadata.IocPath
+                CurrentSnapshotId = $rawIoc.Metadata.CurrentSnapshotId
+                EvidenceSnapshotAvailable = [bool]$rawIoc.Metadata.EvidenceSnapshotAvailable
+                BaselineHashIndexStatus = $rawIoc.Metadata.BaselineHashIndexStatus
+                BaselineId = $rawIoc.Metadata.BaselineId
+                BaselineTimestamp = $rawIoc.Metadata.BaselineTimestamp
+                StateDbPath = $resolvedStateDbPath
+                StateDbMode = $stateDbContext.DatabaseLabel
+                StateDbOverrideDetected = [bool]$stateDbContext.OverrideDetected
+                StateDbOverrideReason = [string]$stateDbContext.OverrideReason
             }
             IndicatorCount = @($indicators).Count
             IndicatorSummary = Get-IndicatorSummary -Indicators $indicators
             MatchCount = [int]$rawIoc.MatchCount
             Findings = @($rawIoc.Findings)
+            HashCoverage = $rawIoc.HashCoverage
+            MatchInterpretation = Get-IocMatchInterpretation -MatchCount ([int]$rawIoc.MatchCount) -AllTestMatches ([int]$rawIoc.MatchCount -gt 0 -and @($rawIoc.Findings | Where-Object { [string]$_.indicator_source -ne "LOCAL_TEST_DO_NOT_ALERT" }).Count -eq 0)
         }
+        Save-IocCoverageState -DbPath $resolvedStateDbPath -Coverage $rawIoc.HashCoverage
     }
 }
 

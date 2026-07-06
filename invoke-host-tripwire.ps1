@@ -1,14 +1,18 @@
-param(
+﻿param(
     [ValidateSet("Baseline", "Check")]
     [string]$Mode = "Baseline",
 
     [string]$StatePath = "",
     [string]$StateDbPath = "",
     [string]$ConfigPath = (Join-Path $PSScriptRoot "host-tripwire-config.json"),
-    [string]$IocLocationConfigPath = (Join-Path $PSScriptRoot "ioc-monitor-locations.json")
+    [string]$IocLocationConfigPath = (Join-Path $PSScriptRoot "ioc-monitor-locations.json"),
+    [string]$BaselineReason = "",
+    [string]$CreatedBy = "",
+    [bool]$CreatedAfterReview = $true
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "tripwire-posture-baseline.ps1")
 
 $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 $collectionTimeUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -106,6 +110,74 @@ function Clear-TripwireRunLock {
 
     if (Test-Path -LiteralPath $LockPath) {
         [System.IO.File]::Delete($LockPath)
+    }
+}
+
+function Get-ExecutionContextInfo {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $userName = [string]$identity.Name
+    $userSid = ""
+    try {
+        $userSid = [string]$identity.User.Value
+    } catch {
+    }
+
+    $pathDirectories = @(
+        ($env:Path -split ';') |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { $_.Trim() } |
+            Sort-Object -Unique
+    )
+
+    $isSystem = $userSid -eq 'S-1-5-18' -or $userName -ieq 'NT AUTHORITY\SYSTEM' -or $userName -ieq 'SYSTEM'
+    $scope = if ($isSystem) { 'System' } else { "User:$userName" }
+
+    return [PSCustomObject]@{
+        UserName = $userName
+        UserSid = $userSid
+        IsSystem = $isSystem
+        Scope = $scope
+        PathDirectoryCount = @($pathDirectories).Count
+    }
+}
+
+function Test-ExecutionContextCompatible {
+    param(
+        $BaselineContext,
+        $CurrentContext
+    )
+
+    if ($null -eq $BaselineContext) {
+        return [PSCustomObject]@{
+            IsCompatible = $false
+            Message = "Tripwire baseline does not include execution-context metadata. Recreate the baseline in the same context used for checks, ideally SYSTEM."
+        }
+    }
+
+    $baselineScope = [string]$BaselineContext.Scope
+    $currentScope = [string]$CurrentContext.Scope
+    $baselineSid = [string]$BaselineContext.UserSid
+    $currentSid = [string]$CurrentContext.UserSid
+
+    if (-not [string]::IsNullOrWhiteSpace($baselineSid) -and -not [string]::IsNullOrWhiteSpace($currentSid)) {
+        if ($baselineSid -ceq $currentSid) {
+            return [PSCustomObject]@{
+                IsCompatible = $true
+                Message = ""
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($baselineScope) -and $baselineScope -ceq $currentScope) {
+        return [PSCustomObject]@{
+            IsCompatible = $true
+            Message = ""
+        }
+    }
+
+    return [PSCustomObject]@{
+        IsCompatible = $false
+        Message = ("Tripwire baseline context mismatch. Baseline was captured as {0}; current run is {1}. Recreate the baseline in the same context used for checks, ideally SYSTEM." -f $baselineScope, $currentScope)
     }
 }
 
@@ -282,6 +354,29 @@ function Save-SqliteState {
     }
 }
 
+function Index-TripwireBaselineInSqlite {
+    param(
+        [string]$DbPath,
+        [string]$BaselineJsonPath,
+        [string]$BaselineMarkdownPath = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DbPath) -or [string]::IsNullOrWhiteSpace($BaselineJsonPath)) {
+        return $null
+    }
+
+    $arguments = @("index-tripwire-baseline", "--input", $BaselineJsonPath)
+    if (-not [string]::IsNullOrWhiteSpace($BaselineMarkdownPath)) {
+        $arguments += @("--markdown", $BaselineMarkdownPath)
+    }
+
+    $raw = Invoke-StateStore -DbPath $DbPath -Arguments $arguments
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $null
+    }
+    return ($raw | ConvertFrom-Json)
+}
+
 function Write-MdLine {
     param([string]$Text = "")
     Add-Content -LiteralPath $mdFile -Value $Text
@@ -295,7 +390,16 @@ function New-ChangeRecord {
         [string]$Path = "",
         [string]$OldValue = "",
         [string]$NewValue = "",
-        [string]$Notes = ""
+        [string]$Notes = "",
+        [string]$Severity = "",
+        [string]$Classification = "",
+        [string]$CsfMapping = "",
+        [string]$Interpretation = "",
+        [bool]$GuardrailMatched = $false,
+        [string]$GuardrailReason = "",
+        [string]$MatchedRuleId = "",
+        [string]$MatchedRuleDescription = "",
+        [string]$RecommendedAction = ""
     )
 
     [PSCustomObject]@{
@@ -306,32 +410,60 @@ function New-ChangeRecord {
         OldValue = $OldValue
         NewValue = $NewValue
         Notes = $Notes
+        Severity = $Severity
+        Classification = $Classification
+        CsfMapping = $CsfMapping
+        Interpretation = $Interpretation
+        GuardrailMatched = $GuardrailMatched
+        GuardrailReason = $GuardrailReason
+        MatchedRuleId = $MatchedRuleId
+        MatchedRuleDescription = $MatchedRuleDescription
+        RecommendedAction = $RecommendedAction
     }
 }
 
 function Get-ChangeSeverity {
     param($Change)
 
+    $explicit = [string]$Change.Severity
+    if (-not [string]::IsNullOrWhiteSpace($explicit)) {
+        return $explicit
+    }
+
     if ($Change.Category -eq "ScheduledTask" -and -not [string]::IsNullOrWhiteSpace([string]$Change.Name) -and ([string]$Change.Name).StartsWith('\Codex ', [System.StringComparison]::OrdinalIgnoreCase)) {
-        return "Low"
+        return "Info"
     }
 
     if ($Change.Category -in @("LocalGroupMember", "ScheduledTask", "Autorun")) {
-        return "High"
+        return "Warning"
     }
 
     if ($Change.Category -eq "WatchedFile" -and -not [string]::IsNullOrWhiteSpace([string]$Change.Path) -and ([string]$Change.Path).ToLowerInvariant().StartsWith('c:\windows\system32\tasks\')) {
         if ([string]$Change.Notes -like "LikelySystemManagedTask:*" -or [string]$Change.Notes -like "LikelySelfManagedTask:*") {
-            return "Low"
+            return "Info"
         }
-        return "High"
+        return "Warning"
     }
 
     if ($Change.Category -eq "Service" -or $Change.Category -eq "WatchedFile") {
-        return "Medium"
+        return "Review"
     }
 
-    return "Low"
+    return "Info"
+}
+
+function Get-ChangeSeverityRank {
+    param($Change)
+
+    switch ((Get-ChangeSeverity $Change)) {
+        'Critical' { return 4 }
+        'High' { return 4 }
+        'Warning' { return 3 }
+        'Medium' { return 3 }
+        'Review' { return 2 }
+        'Low' { return 1 }
+        default { return 1 }
+    }
 }
 
 function Format-ChangeHeadline {
@@ -1017,7 +1149,7 @@ function Get-AlertableChanges {
 
     return @(
         @($Changes) | Where-Object {
-            (Get-ChangeSeverity $_) -ne "Low"
+            (Get-ChangeSeverityRank $_) -ge 3
         }
     )
 }
@@ -1162,6 +1294,7 @@ if ($Mode -eq "Baseline") {
 }
 
 try {
+    $tripwireExecutionContext = Get-ExecutionContextInfo
     $snapshot = [PSCustomObject]@{
         Metadata = [PSCustomObject]@{
             ComputerName = $env:COMPUTERNAME
@@ -1169,6 +1302,7 @@ try {
             ConfigPath = $ConfigPath
             IocLocationConfigPath = $IocLocationConfigPath
             StateDbPath = $resolvedStateDbPath
+            ExecutionContext = $tripwireExecutionContext
         }
         LocalUsers = @(Get-LocalUsersSnapshot)
         LocalGroups = @(Get-LocalGroupMembersSnapshot -Groups @($config.LocalGroups))
@@ -1177,16 +1311,32 @@ try {
         Autoruns = @(Get-RunKeySnapshot)
         WatchedFiles = @(Get-WatchedFilesSnapshot -Config $config)
         RecentEvents = Get-KeyEventSnapshot -RecentWindowHours ([int]$config.RecentWindowHours)
+        SecurityControlBaseline = Get-SecurityControlBaselineSnapshot
+        TrustedWindowsToolBaseline = Get-TrustedWindowsToolBaselineSnapshot
+        LoggingAuditBaseline = Get-LoggingAuditBaselineSnapshot
+        AppIntegrityBaseline = Get-AppOwnedFileBaselineSnapshot
     }
 
     if ($Mode -eq "Baseline") {
         Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "host_tripwire" -Key "baseline" -Object $snapshot
         Write-JsonFile -Path $jsonFile -Object $snapshot
+        $baselineHashIndexResult = $null
+        try {
+            $baselineHashIndexResult = Index-TripwireBaselineInSqlite -DbPath $resolvedStateDbPath -BaselineJsonPath $jsonFile -BaselineMarkdownPath $mdFile
+        } catch {
+            Write-Warning ("Tripwire baseline hash indexing failed: {0}" -f $_.Exception.Message)
+        }
 
         Set-Content -LiteralPath $mdFile -Value "# Host Tripwire Baseline`r`n"
         Write-MdLine ""
+        Write-MdLine "This baseline represents the currently trusted state. Create a new baseline only after reviewing outstanding drift."
+        Write-MdLine ""
         Write-MdLine ("CollectionTimeUtc: {0}" -f $collectionTimeUtc)
         Write-MdLine ("StateDbPath: {0}" -f $resolvedStateDbPath)
+        Write-MdLine ("ExecutionContext: {0}" -f $tripwireExecutionContext.Scope)
+        if (-not [string]::IsNullOrWhiteSpace($CreatedBy)) { Write-MdLine ("CreatedBy: {0}" -f $CreatedBy) }
+        if (-not [string]::IsNullOrWhiteSpace($BaselineReason)) { Write-MdLine ("BaselineReason: {0}" -f $BaselineReason) }
+        Write-MdLine ("CreatedAfterReview: {0}" -f $CreatedAfterReview)
         Write-MdLine ""
         Write-MdLine ("- Local users: {0}" -f @($snapshot.LocalUsers).Count)
         Write-MdLine ("- Group snapshots: {0}" -f @($snapshot.LocalGroups).Count)
@@ -1194,10 +1344,28 @@ try {
         Write-MdLine ("- Tasks: {0}" -f @($snapshot.ScheduledTasks).Count)
         Write-MdLine ("- Autoruns: {0}" -f @($snapshot.Autoruns).Count)
         Write-MdLine ("- Watched files: {0}" -f @($snapshot.WatchedFiles).Count)
+        Write-MdLine ("- Security controls baselined: {0}" -f @($snapshot.SecurityControlBaseline.Items).Count)
+        Write-MdLine ("- Trusted Windows tools baselined: {0}" -f @($snapshot.TrustedWindowsToolBaseline.Tools).Count)
+        Write-MdLine ("- Logging/audit items baselined: {0}" -f @($snapshot.LoggingAuditBaseline.Items).Count)
+        Write-MdLine ("- App integrity files baselined: {0}" -f @($snapshot.AppIntegrityBaseline.Files).Count)
+        if ($null -ne $baselineHashIndexResult) {
+            Write-MdLine ("- Indexed baseline hashes: {0}" -f $baselineHashIndexResult.hashed_file_count)
+            Write-MdLine ("- Baseline ID: {0}" -f $baselineHashIndexResult.baseline_id)
+        }
+        Write-MdLine ""
+        Write-MdLine "## Posture Baseline Sections"
+        Write-MdLine ""
+        foreach ($item in @($snapshot.SecurityControlBaseline.Items)) { Write-MdLine ("- [SecurityControlBaseline] {0}: {1}" -f $item.Title, $item.Value) }
+        foreach ($item in @($snapshot.LoggingAuditBaseline.Items)) { Write-MdLine ("- [LoggingAuditBaseline] {0}: {1}" -f $item.Title, $item.Value) }
+        foreach ($item in @($snapshot.TrustedWindowsToolBaseline.Tools | Select-Object -First 16)) { Write-MdLine ("- [TrustedWindowsToolBaseline] {0}: Exists={1}; Signature={2}" -f $item.Title, $item.Exists, $item.SignatureStatus) }
+        foreach ($item in @($snapshot.AppIntegrityBaseline.Files | Select-Object -First 20)) { Write-MdLine ("- [AppIntegrityBaseline] {0}: Exists={1}; SHA256={2}" -f $item.Title, $item.Exists, $item.SHA256) }
 
         Write-Host ("State written to SQLite: {0}" -f $resolvedStateDbPath)
         Write-Host ("JSON written to: {0}" -f $jsonFile)
         Write-Host ("Markdown written to: {0}" -f $mdFile)
+        if ($null -ne $baselineHashIndexResult) {
+            Write-Host ("Baseline hash index updated: {0} ({1} hashed files)" -f $baselineHashIndexResult.baseline_id, $baselineHashIndexResult.hashed_file_count)
+        }
         exit 0
     }
 
@@ -1214,6 +1382,15 @@ try {
         throw "Tripwire baseline state not found in SQLite: $resolvedStateDbPath"
     }
 
+    $baselineContext = $null
+    if ($oldState.PSObject.Properties.Name -contains 'Metadata' -and $null -ne $oldState.Metadata -and $oldState.Metadata.PSObject.Properties.Name -contains 'ExecutionContext') {
+        $baselineContext = $oldState.Metadata.ExecutionContext
+    }
+    $contextCheck = Test-ExecutionContextCompatible -BaselineContext $baselineContext -CurrentContext $tripwireExecutionContext
+    if (-not [bool]$contextCheck.IsCompatible) {
+        throw [string]$contextCheck.Message
+    }
+
     $changes = @()
     $changes += Compare-SimpleRecords -Category "LocalUser" -OldItems $oldState.LocalUsers -NewItems $snapshot.LocalUsers -KeySelector { param($item) $item.Name } -PropertyNames @("Enabled", "PasswordRequired", "PasswordExpires", "LastLogon", "PasswordLastSet")
     $changes += Compare-GroupMembership -OldGroups $oldState.LocalGroups -NewGroups $snapshot.LocalGroups
@@ -1221,7 +1398,14 @@ try {
     $changes += Compare-SimpleRecords -Category "ScheduledTask" -OldItems $oldState.ScheduledTasks -NewItems $snapshot.ScheduledTasks -KeySelector { param($item) $item.Name } -PropertyNames @("Author", "Actions", "Triggers")
     $changes += Compare-SimpleRecords -Category "Autorun" -OldItems $oldState.Autoruns -NewItems $snapshot.Autoruns -KeySelector { param($item) "{0}|{1}" -f $item.RegistryPath, $item.Name } -PropertyNames @("Value")
     $changes += Compare-FileRecords -OldFiles $oldState.WatchedFiles -NewFiles $snapshot.WatchedFiles
+    $changes += Compare-BaselineValueSection -Category 'SecurityControl' -OldItems $oldState.SecurityControlBaseline.Items -NewItems $snapshot.SecurityControlBaseline.Items -Evaluator ${function:Get-ExpectedSecurityControlSeverity}
+    $changes += Compare-TrustedWindowsToolBaseline -OldTools $oldState.TrustedWindowsToolBaseline.Tools -NewTools $snapshot.TrustedWindowsToolBaseline.Tools
+    $changes += Compare-LoggingAuditBaseline -OldItems $oldState.LoggingAuditBaseline.Items -NewItems $snapshot.LoggingAuditBaseline.Items
+    $changes += Compare-AppIntegrityBaseline -OldFiles $oldState.AppIntegrityBaseline.Files -NewFiles $snapshot.AppIntegrityBaseline.Files
     $changes = Add-TaskFileProvenanceAnnotations -Changes $changes -TaskSnapshot $snapshot.ScheduledTasks -RecentEvents $snapshot.RecentEvents
+    $ruleEngineResult = Invoke-TripwirePostureRuleEngine -Changes $changes -Snapshot $snapshot -AcceptedDriftPath $resolvedStateDbPath -AcceptedDriftJsonFallbackPath (Join-Path $PSScriptRoot 'state\accepted-posture-drift.json')
+    $changes = @($ruleEngineResult.Changes)
+    $tripwirePostureSummary = Get-TripwirePostureSummary -Snapshot $snapshot -Changes $changes -RuleEngineResult $ruleEngineResult
 
     $report = [PSCustomObject]@{
         Metadata = [PSCustomObject]@{
@@ -1229,14 +1413,26 @@ try {
             CollectionTimeUtc = $collectionTimeUtc
             StateDbPath = $resolvedStateDbPath
             ConfigPath = $ConfigPath
+            ExecutionContext = $tripwireExecutionContext
             ChangeCount = @($changes).Count
-            HighestSeverity = if (@($changes).Count -gt 0) { (@($changes | ForEach-Object { Get-ChangeSeverity $_ }) | ForEach-Object {
-                switch ($_) {
-                    "High" { 3 }
-                    "Medium" { 2 }
-                    default { 1 }
-                }
-            } | Measure-Object -Maximum).Maximum } else { 0 }
+            HighestSeverity = if (@($changes).Count -gt 0) { (@($changes | ForEach-Object { Get-ChangeSeverityRank $_ }) | Measure-Object -Maximum).Maximum } else { 0 }
+            HighestSeverityLabel = if (@($changes).Count -gt 0) { ((@($changes) | Sort-Object { Get-ChangeSeverityRank $_ } -Descending | Select-Object -First 1) | ForEach-Object { Get-ChangeSeverity $_ }) } else { 'Info' }
+        }
+        Summary = $tripwirePostureSummary
+        RuleEngine = [PSCustomObject]@{
+            RulesFilePath = $ruleEngineResult.RulesFilePath
+            RulesFileStatus = $ruleEngineResult.RulesFileStatus
+            RulesLoadedCount = $ruleEngineResult.RulesLoadedCount
+            RuleMatchesCount = $ruleEngineResult.RuleMatchesCount
+            Warning = $ruleEngineResult.Warning
+            Source = $ruleEngineResult.Source
+            CatalogVersion = $ruleEngineResult.CatalogVersion
+        }
+        CurrentSnapshotSections = [PSCustomObject]@{
+            SecurityControlBaseline = $snapshot.SecurityControlBaseline
+            TrustedWindowsToolBaseline = $snapshot.TrustedWindowsToolBaseline
+            LoggingAuditBaseline = $snapshot.LoggingAuditBaseline
+            AppIntegrityBaseline = $snapshot.AppIntegrityBaseline
         }
         Changes = @($changes)
         RecentEvents = $snapshot.RecentEvents
@@ -1251,6 +1447,70 @@ try {
     Write-MdLine ""
     Write-MdLine ("CollectionTimeUtc: {0}" -f $collectionTimeUtc)
     Write-MdLine ("ChangeCount: {0}" -f $report.Metadata.ChangeCount)
+    Write-MdLine ("HighestSeverity: {0}" -f $report.Metadata.HighestSeverityLabel)
+    Write-MdLine ""
+    Write-MdLine "## Posture Drift Summary"
+    Write-MdLine ""
+    Write-MdLine ($report.Summary.note)
+    Write-MdLine ("- security_controls_checked: {0}" -f $report.Summary.security_controls_checked)
+    Write-MdLine ("- trusted_windows_tools_checked: {0}" -f $report.Summary.trusted_windows_tools_checked)
+    Write-MdLine ("- logging_audit_items_checked: {0}" -f $report.Summary.logging_audit_items_checked)
+    Write-MdLine ("- app_integrity_items_checked: {0}" -f $report.Summary.app_integrity_items_checked)
+    Write-MdLine ("- security_control_drift_count: {0}" -f $report.Summary.security_control_drift_count)
+    Write-MdLine ("- trusted_tool_drift_count: {0}" -f $report.Summary.trusted_tool_drift_count)
+    Write-MdLine ("- logging_audit_drift_count: {0}" -f $report.Summary.logging_audit_drift_count)
+    Write-MdLine ("- app_integrity_drift_count: {0}" -f $report.Summary.app_integrity_drift_count)
+    Write-MdLine ("- observed_posture_change_count: {0}" -f $report.Summary.observed_posture_change_count)
+    Write-MdLine ("- expected_operational_change_count: {0}" -f $report.Summary.expected_operational_change_count)
+    Write-MdLine ("- accepted_posture_change_count: {0}" -f $report.Summary.accepted_posture_change_count)
+    Write-MdLine ("- posture_review_count: {0}" -f $report.Summary.posture_review_count)
+    Write-MdLine ("- response_required_count: {0}" -f $report.Summary.response_required_count)
+    Write-MdLine ("- guardrail_protected_count: {0}" -f $report.Summary.guardrail_protected_count)
+    Write-MdLine ("- expected_churn_count (legacy): {0}" -f $report.Summary.expected_churn_count)
+    Write-MdLine ("- accepted_drift_count (legacy): {0}" -f $report.Summary.accepted_drift_count)
+    Write-MdLine ("- unexpected_drift_count (legacy technical total): {0}" -f $report.Summary.unexpected_drift_count)
+    Write-MdLine ("- review_drift_count (legacy): {0}" -f $report.Summary.review_drift_count)
+    Write-MdLine ("- warning_drift_count (legacy): {0}" -f $report.Summary.warning_drift_count)
+    Write-MdLine ("- critical_drift_count (legacy): {0}" -f $report.Summary.critical_drift_count)
+    Write-MdLine ("- guardrail_matched_count (legacy): {0}" -f $report.Summary.guardrail_matched_count)
+    Write-MdLine ("- suspicious_drift_count (legacy): {0}" -f $report.Summary.suspicious_drift_count)
+    Write-MdLine ("- rules_loaded_count: {0}" -f $report.Summary.rules_loaded_count)
+    Write-MdLine ("- rule_matches_count: {0}" -f $report.Summary.rule_matches_count)
+    Write-MdLine ("- rules_file_status: {0}" -f $report.Summary.rules_file_status)
+    Write-MdLine ("- rules_file_path: {0}" -f $report.Summary.rules_file_path)
+    Write-MdLine ("- accepted_drift_registry_status: {0}" -f $report.Summary.accepted_drift_registry_status)
+    Write-MdLine ("- accepted_drift_registry_path: {0}" -f $report.Summary.accepted_drift_registry_path)
+    Write-MdLine ("- accepted_drift_registry_loaded_count: {0}" -f $report.Summary.accepted_drift_registry_loaded_count)
+    Write-MdLine ""
+    Write-MdLine "## NIST CSF View"
+    Write-MdLine ""
+    Write-MdLine "Detect records observed posture changes from the trusted baseline. Respond focuses attention on findings that require action. Govern records reviewed and accepted posture changes. Recover may establish a new trusted baseline after review."
+    Write-MdLine "Not every observed posture change is an alert. Expected operational changes and accepted posture changes remain in the audit trail, while response-required findings are the subset that should be surfaced for action."
+    Write-MdLine ""
+    Write-MdLine "## Accepted Drift"
+    Write-MdLine ""
+    Write-MdLine "Accepted posture changes are specific observed changes that were reviewed and recorded as expected. Accepted drift is stored locally in the SQLite state database and remains part of the audit trail. Acceptance does not disable IOC matching or future drift detection."
+    if ([string]$report.Summary.accepted_drift_registry_status -eq "json_fallback") {
+        Write-MdLine "JSON fallback was used for accepted drift compatibility."
+    }
+    Write-MdLine ("- accepted_posture_change_count: {0}" -f $report.Summary.accepted_posture_change_count)
+    Write-MdLine ("- response_required_count: {0}" -f $report.Summary.response_required_count)
+    Write-MdLine ("- expected_operational_change_count: {0}" -f $report.Summary.expected_operational_change_count)
+    Write-MdLine ("- posture_review_count: {0}" -f $report.Summary.posture_review_count)
+    Write-MdLine ("- observed_posture_change_count: {0}" -f $report.Summary.observed_posture_change_count)
+    Write-MdLine ("- guardrail_protected_count: {0}" -f $report.Summary.guardrail_protected_count)
+    Write-MdLine ("- accepted_drift_count: {0}" -f $report.Summary.accepted_drift_count)
+    Write-MdLine ("- unexpected_drift_count: {0}" -f $report.Summary.unexpected_drift_count)
+    $acceptedChanges = @($report.Changes | Where-Object { [bool]$_.IsAcceptedDrift })
+    if (@($acceptedChanges).Count -gt 0) {
+        Write-MdLine ""
+        foreach ($change in $acceptedChanges) {
+            Write-MdLine ("- [{0}] {1}" -f $change.Category, $change.Name)
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.AcceptanceId)) { Write-MdLine ("  AcceptanceId: {0}" -f $change.AcceptanceId) }
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.MatchedRuleId)) { Write-MdLine ("  MatchedRuleId: {0}" -f $change.MatchedRuleId) }
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.AcceptedDriftReason)) { Write-MdLine ("  AcceptedDriftReason: {0}" -f $change.AcceptedDriftReason) }
+        }
+    }
     Write-MdLine ""
     Write-MdLine "## Changes"
     Write-MdLine ""
@@ -1259,7 +1519,7 @@ try {
         Write-MdLine "_No baseline deviations detected in the monitored categories._"
     } else {
         foreach ($change in $report.Changes) {
-            Write-MdLine ("- [{0}] {1} {2}" -f $change.Category, $change.Name, $change.ChangeType)
+            Write-MdLine ("- [{0}] {1} {2} ({3}/{4})" -f $change.Category, $change.Name, $change.ChangeType, (Get-ChangeSeverity $change), $(if ([string]::IsNullOrWhiteSpace([string]$change.Classification)) { 'uncategorized' } else { [string]$change.Classification }))
             if (-not [string]::IsNullOrWhiteSpace($change.Path)) {
                 Write-MdLine ("  Path/Field: {0}" -f $change.Path)
             }
@@ -1269,41 +1529,56 @@ try {
             if (-not [string]::IsNullOrWhiteSpace($change.NewValue)) {
                 Write-MdLine ("  New: {0}" -f $change.NewValue)
             }
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.CsfMapping)) {
+                Write-MdLine ("  CSF: {0}" -f $change.CsfMapping)
+            }
             if (-not [string]::IsNullOrWhiteSpace($change.Notes)) {
                 Write-MdLine ("  Notes: {0}" -f $change.Notes)
+            }
+            if ([bool]$change.GuardrailMatched -and -not [string]::IsNullOrWhiteSpace([string]$change.GuardrailReason)) {
+                Write-MdLine ("  Guardrail: {0}" -f $change.GuardrailReason)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.MatchedRuleId)) {
+                Write-MdLine ("  MatchedRuleId: {0}" -f $change.MatchedRuleId)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.MatchedRuleDescription)) {
+                Write-MdLine ("  Rule: {0}" -f $change.MatchedRuleDescription)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.Interpretation)) {
+                Write-MdLine ("  Interpretation: {0}" -f $change.Interpretation)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$change.RecommendedAction)) {
+                Write-MdLine ("  RecommendedAction: {0}" -f $change.RecommendedAction)
+            }
+            if ([bool]$change.IsAcceptedDrift) {
+                Write-MdLine ("  AcceptedDrift: {0}" -f $(if (-not [string]::IsNullOrWhiteSpace([string]$change.AcceptanceId)) { $change.AcceptanceId } else { 'true' }))
+                if (-not [string]::IsNullOrWhiteSpace([string]$change.AcceptedDriftReason)) {
+                    Write-MdLine ("  AcceptedDriftReason: {0}" -f $change.AcceptedDriftReason)
+                }
+            } elseif (-not [string]::IsNullOrWhiteSpace([string]$change.AcceptedDriftBlockedReason)) {
+                Write-MdLine ("  AcceptedDriftBlockedReason: {0}" -f $change.AcceptedDriftBlockedReason)
             }
         }
     }
 
     if (@($alertableChanges).Count -gt 0) {
-        $severityMap = @{
-            3 = "High"
-            2 = "Medium"
-            1 = "Low"
-            0 = "Info"
-        }
         $topChanges = @($alertableChanges | Select-Object -First 3)
         $headline = Format-ChangeHeadline -Change $topChanges[0]
         $detailLines = @($topChanges | ForEach-Object { Format-ChangeHeadline -Change $_ })
-        $alertHighestSeverity = (@($alertableChanges | ForEach-Object { Get-ChangeSeverity $_ }) | ForEach-Object {
-            switch ($_) {
-                "High" { 3 }
-                "Medium" { 2 }
-                default { 1 }
-            }
-        } | Measure-Object -Maximum).Maximum
+        $alertHighestSeverity = (@($alertableChanges | ForEach-Object { Get-ChangeSeverityRank $_ } | Measure-Object -Maximum).Maximum)
+        $alertSeverityLabel = if ($alertHighestSeverity -ge 4) { "High" } elseif ($alertHighestSeverity -ge 3) { "Medium" } else { "Low" }
         $alert = [PSCustomObject]@{
             Metadata = [PSCustomObject]@{
                 AlertType = "HostTripwire"
                 ComputerName = $env:COMPUTERNAME
                 CollectionTimeUtc = $collectionTimeUtc
-                Severity = $severityMap[[int]$alertHighestSeverity]
+                Severity = $alertSeverityLabel
                 ChangeCount = @($alertableChanges).Count
                 SourceReport = $jsonFile
             }
             Summary = [PSCustomObject]@{
                 Title = "Codex tripwire: {0}" -f $headline
-                Message = "{0} alertable change(s) detected. Highest severity: {1}." -f @($alertableChanges).Count, $severityMap[[int]$alertHighestSeverity]
+                Message = "{0} alertable posture-drift change(s) detected. Highest severity: {1}." -f @($alertableChanges).Count, $alertSeverityLabel
                 DetailLines = @($detailLines)
             }
             Changes = @($alertableChanges)
@@ -1319,7 +1594,7 @@ try {
         Add-Content -LiteralPath $alertMd -Value ("SourceReport: {0}" -f $alert.Metadata.SourceReport)
         Add-Content -LiteralPath $alertMd -Value ""
         foreach ($change in $alert.Changes) {
-            Add-Content -LiteralPath $alertMd -Value ("- [{0}] {1} {2}" -f $change.Category, $change.Name, $change.ChangeType)
+            Add-Content -LiteralPath $alertMd -Value ("- [{0}] {1} {2} ({3}/{4})" -f $change.Category, $change.Name, $change.ChangeType, (Get-ChangeSeverity $change), $(if ([string]::IsNullOrWhiteSpace([string]$change.Classification)) { 'uncategorized' } else { [string]$change.Classification }))
         }
         Write-Host ("Alert JSON written to: {0}" -f $alertJson)
         Write-Host ("Alert Markdown written to: {0}" -f $alertMd)
