@@ -13,6 +13,28 @@ function Get-SettingsPath {
     return (Join-Path $PSScriptRoot "codex-monitor.settings.json")
 }
 
+function Resolve-SettingsPathValue {
+    param(
+        [string]$Value,
+        [string]$SettingsPath = (Get-SettingsPath)
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $Value
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Value)) {
+        return $Value
+    }
+
+    $settingsDirectory = Split-Path -Path $SettingsPath -Parent
+    if ([string]::IsNullOrWhiteSpace($settingsDirectory)) {
+        $settingsDirectory = $PSScriptRoot
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $settingsDirectory $Value))
+}
+
 function Get-HelperWatchPath {
     param([string]$ConfiguredWatchPath)
 
@@ -33,10 +55,10 @@ function Get-HelperWatchPath {
         try {
             $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
             if (-not [string]::IsNullOrWhiteSpace([string]$settings.AlertInboxPath)) {
-                return [string]$settings.AlertInboxPath
+                return (Resolve-SettingsPathValue -Value ([string]$settings.AlertInboxPath) -SettingsPath $settingsPath)
             }
             if (-not [string]::IsNullOrWhiteSpace([string]$settings.AlertWatchPath)) {
-                return [string]$settings.AlertWatchPath
+                return (Resolve-SettingsPathValue -Value ([string]$settings.AlertWatchPath) -SettingsPath $settingsPath)
             }
         } catch {
         }
@@ -124,7 +146,7 @@ function Get-HelperStateDbPath {
         try {
             $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
             if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
-                return [string]$settings.StateDbPath
+                return (Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath) -SettingsPath $settingsPath)
             }
         } catch {
         }
@@ -148,7 +170,7 @@ function Get-ArchivePath {
         try {
             $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
             if (-not [string]::IsNullOrWhiteSpace([string]$settings.AlertArchivePath)) {
-                return [string]$settings.AlertArchivePath
+                return (Resolve-SettingsPathValue -Value ([string]$settings.AlertArchivePath) -SettingsPath $settingsPath)
             }
         } catch {
         }

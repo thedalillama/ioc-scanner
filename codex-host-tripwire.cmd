@@ -1,3 +1,6 @@
 @echo off
-powershell.exe -ExecutionPolicy Bypass -File "C:\CodexTest\invoke-host-tripwire.ps1" -Mode Check -StateDbPath "C:\CodexTest\state\ioc-store.db"
-exit /b %ERRORLEVEL%
+setlocal
+for %%I in ("%~dp0.") do set "APP_ROOT=%%~fI"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%APP_ROOT%\invoke-host-tripwire.ps1" -Mode Check -StateDbPath "%APP_ROOT%\state\ioc-store.db"
+set "EXITCODE=%ERRORLEVEL%"
+endlocal & exit /b %EXITCODE%

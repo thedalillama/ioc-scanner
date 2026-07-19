@@ -139,7 +139,7 @@ Success criteria:
 
 ## Working Method
 
-All work should follow the process in [HANDOFF.md](C:/CodexTest/docs/HANDOFF.md), especially:
+All work should follow the process in [HANDOFF.md](./HANDOFF.md), especially:
 
 1. reproduce
 2. fix

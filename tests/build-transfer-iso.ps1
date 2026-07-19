@@ -1,6 +1,6 @@
 param(
-    [string]$SourceRoot = 'C:\CodexTest',
-    [string]$IsoPath = 'C:\CodexTest\vm-transfer\codex-install.iso'
+    [string]$SourceRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$IsoPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'vm-transfer\codex-install.iso')
 )
 $ErrorActionPreference = 'Stop'
 $stageRoot = Join-Path (Split-Path $IsoPath -Parent) 'iso-stage'

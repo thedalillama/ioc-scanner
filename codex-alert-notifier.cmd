@@ -1,3 +1,6 @@
 @echo off
-powershell.exe -ExecutionPolicy Bypass -File "C:\CodexTest\start-codex-alert-helper.ps1" -WatchPath "C:\CodexTest\alerts\pending" -StateDbPath "C:\CodexTest\state\ioc-store.db"
-exit /b %ERRORLEVEL%
+setlocal
+for %%I in ("%~dp0.") do set "APP_ROOT=%%~fI"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%APP_ROOT%\start-codex-alert-helper.ps1" -WatchPath "%APP_ROOT%\alerts\pending" -StateDbPath "%APP_ROOT%\state\ioc-store.db"
+set "EXITCODE=%ERRORLEVEL%"
+endlocal & exit /b %EXITCODE%

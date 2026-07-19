@@ -29,6 +29,31 @@ class CodexMonitorUiTests(unittest.TestCase):
             self.assertEqual(config.alert_inbox_path, Path(payload["AlertInboxPath"]).resolve())
             self.assertEqual(config.alert_archive_path, Path(payload["AlertArchivePath"]).resolve())
 
+    def test_load_settings_resolves_relative_paths_from_settings_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings_dir = root / "runtime"
+            settings_dir.mkdir()
+            settings_path = settings_dir / "codex-monitor.settings.json"
+            payload = {
+                "RuntimeRoot": ".",
+                "DataRoot": ".",
+                "StateDbPath": "./state/ioc-store.db",
+                "AlertInboxPath": "./alerts/pending",
+                "AlertArchivePath": "./alerts/archive",
+                "IndicatorExportPath": "./indicators/feed-indicators-latest.json",
+            }
+            settings_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            config = ui.load_settings(settings_path)
+
+            self.assertEqual(config.runtime_root, settings_dir.resolve())
+            self.assertEqual(config.data_root, settings_dir.resolve())
+            self.assertEqual(config.state_db_path, (settings_dir / "state" / "ioc-store.db").resolve())
+            self.assertEqual(config.alert_inbox_path, (settings_dir / "alerts" / "pending").resolve())
+            self.assertEqual(config.alert_archive_path, (settings_dir / "alerts" / "archive").resolve())
+            self.assertEqual(config.indicator_export_path, (settings_dir / "indicators" / "feed-indicators-latest.json").resolve())
+
     def test_safe_path_accepts_only_whitelisted_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -76,10 +101,21 @@ class CodexMonitorUiTests(unittest.TestCase):
             self.assertEqual(records[0]["change_count"], 3)
             self.assertEqual(records[0]["markdown_path"], str(alert_md))
 
-
-if __name__ == "__main__":
-    unittest.main()
-
+    def test_checked_in_wrappers_use_dynamic_app_root_resolution(self) -> None:
+        wrapper_names = [
+            "codex-alert-notifier.cmd",
+            "codex-feed-import.cmd",
+            "codex-host-tripwire-baseline-ui.cmd",
+            "codex-host-tripwire-baseline.cmd",
+            "codex-host-tripwire.cmd",
+            "codex-ioc-scan.cmd",
+            "codex-threat-rss.cmd",
+        ]
+        repo_root = Path(__file__).resolve().parent.parent
+        for wrapper_name in wrapper_names:
+            wrapper_text = (repo_root / wrapper_name).read_text(encoding="utf-8")
+            self.assertIn("%~dp0", wrapper_text, wrapper_name)
+            self.assertNotIn("C:\\CodexTest", wrapper_text, wrapper_name)
 
 
 class PersonaConsistencyTests(unittest.TestCase):
@@ -115,8 +151,11 @@ class PersonaConsistencyTests(unittest.TestCase):
             "recommended_responses": [{"title": "Review what changed", "summary": "Open the latest summary for this PC."}],
         }
         page = ui.render_page_shell(model, "/", "Dashboard", "lede", "<div>body</div>")
-        labels = __import__('re').findall(r'<option value="[^"]*"[^>]*>([^<]+)</option>', page)
+        labels = __import__("re").findall(r'<option value="[^"]*"[^>]*>([^<]+)</option>', page)
         self.assertEqual(labels[:5], ["Home User", "Advanced User", "NIST CSF Native", "Analyst", "Technician"])
         self.assertIn("GV / Govern", ui.friendly_function_label("govern", "csf_native"))
         self.assertIn("DE / Detect", ui.friendly_function_label("detect", "csf_native"))
 
+
+if __name__ == "__main__":
+    unittest.main()

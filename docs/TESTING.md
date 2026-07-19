@@ -238,7 +238,7 @@ Expected:
 Use a fresh runtime and data root:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot C:\CodexTest\deploy-runtime -DataRoot C:\CodexTest\deploy-data
+powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot .\deploy-runtime -DataRoot .\deploy-data
 ```
 
 Validate:

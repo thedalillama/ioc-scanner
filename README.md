@@ -87,7 +87,7 @@ matching and findings
 ## Directory structure
 
 ```text
-C:\CodexTest
+<repo-root> (development workspace example)
 |-- .git/
 |-- alerts/
 |   |-- pending/
@@ -238,7 +238,7 @@ powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoo
 The installer now resolves a real Python interpreter, rejects the Windows Store alias stub, and writes the resolved path into `codex-monitor.settings.json` as `PythonCommand`.
 
 By default, the installer writes `codex-monitor.settings.json` into the runtime root so deployed scripts can resolve their operational paths without depending on the repo location.
-The repository itself should remain a development workspace only; do not use `C:\CodexTest` as the live runtime or alert queue.
+The repository itself should remain a development workspace only; `C:\CodexTest` may be used as a development example, but it is not required and should not be treated as the live runtime or alert queue.
 
 ## Automated protection model
 

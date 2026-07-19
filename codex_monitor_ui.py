@@ -533,18 +533,28 @@ def simplify_for_persona(persona_profile: Dict[str, Any], technical_text: str, p
     return plain_text if str((persona_profile or {}).get("report_language") or "simple") == "simple" else technical_text
 
 
+def resolve_settings_path(settings_dir: Path, raw_value: object, default_value: Path) -> Path:
+    if raw_value is None or str(raw_value).strip() == "":
+        return default_value.resolve()
+    configured = Path(str(raw_value))
+    if not configured.is_absolute():
+        configured = settings_dir / configured
+    return configured.resolve()
+
+
 def load_settings(settings_path: Path) -> AppConfig:
     repo_root = Path(__file__).resolve().parent
     settings = {}
     if settings_path.exists():
         settings = parse_json(settings_path)
 
-    runtime_root = Path(settings.get("RuntimeRoot") or settings_path.parent).resolve()
-    data_root = Path(settings.get("DataRoot") or runtime_root).resolve()
-    state_db_path = Path(settings.get("StateDbPath") or data_root / "state" / "ioc-store.db").resolve()
-    alert_inbox_path = Path(settings.get("AlertInboxPath") or settings.get("AlertWatchPath") or data_root / "alerts" / "pending").resolve()
-    alert_archive_path = Path(settings.get("AlertArchivePath") or data_root / "alerts" / "archive").resolve()
-    indicator_export_path = Path(settings.get("IndicatorExportPath") or data_root / "indicators" / "feed-indicators-latest.json").resolve()
+    settings_dir = settings_path.resolve().parent
+    runtime_root = resolve_settings_path(settings_dir, settings.get("RuntimeRoot"), settings_dir)
+    data_root = resolve_settings_path(settings_dir, settings.get("DataRoot"), runtime_root)
+    state_db_path = resolve_settings_path(settings_dir, settings.get("StateDbPath"), data_root / "state" / "ioc-store.db")
+    alert_inbox_path = resolve_settings_path(settings_dir, settings.get("AlertInboxPath") or settings.get("AlertWatchPath"), data_root / "alerts" / "pending")
+    alert_archive_path = resolve_settings_path(settings_dir, settings.get("AlertArchivePath"), data_root / "alerts" / "archive")
+    indicator_export_path = resolve_settings_path(settings_dir, settings.get("IndicatorExportPath"), data_root / "indicators" / "feed-indicators-latest.json")
     protection_profile = str(settings.get("ProtectionProfile") or "microsoft_baseline")
     persona_profiles = load_persona_profiles(repo_root)
     ui_persona = str(settings.get("UiPersona") or "user").strip().lower() or "user"

@@ -71,8 +71,34 @@ function Write-MdBlock {
     Write-MdLine ""
 }
 
+function Get-SettingsPath {
+    return (Join-Path $PSScriptRoot "codex-monitor.settings.json")
+}
+
+function Resolve-SettingsPathValue {
+    param(
+        [string]$Value,
+        [string]$SettingsPath = (Get-SettingsPath)
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $Value
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Value)) {
+        return $Value
+    }
+
+    $settingsDirectory = Split-Path -Path $SettingsPath -Parent
+    if ([string]::IsNullOrWhiteSpace($settingsDirectory)) {
+        $settingsDirectory = $PSScriptRoot
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $settingsDirectory $Value))
+}
+
 function Get-Settings {
-    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    $settingsPath = Get-SettingsPath
     if (Test-Path -LiteralPath $settingsPath) {
         try {
             return (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json)
@@ -87,12 +113,13 @@ function Get-DefaultIocPath {
         return $IocPath
     }
 
-    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    $settingsPath = Get-SettingsPath
     if (Test-Path -LiteralPath $settingsPath) {
         try {
             $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
-            if (-not [string]::IsNullOrWhiteSpace([string]$settings.IndicatorExportPath) -and (Test-Path -LiteralPath ([string]$settings.IndicatorExportPath))) {
-                return [string]$settings.IndicatorExportPath
+            $configuredIndicatorPath = Resolve-SettingsPathValue -Value ([string]$settings.IndicatorExportPath) -SettingsPath $settingsPath
+            if (-not [string]::IsNullOrWhiteSpace($configuredIndicatorPath) -and (Test-Path -LiteralPath $configuredIndicatorPath)) {
+                return $configuredIndicatorPath
             }
         } catch {
         }
@@ -113,7 +140,7 @@ function Get-ResolvedStateDbPath {
 
     $settings = Get-Settings
     if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
-        return [string]$settings.StateDbPath
+        return (Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath))
     }
     return (Join-Path $PSScriptRoot "state\ioc-store.db")
 }
@@ -121,7 +148,7 @@ function Get-ResolvedStateDbPath {
 function Get-StateDbContext {
     $settings = Get-Settings
     $defaultPath = if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
-        [string]$settings.StateDbPath
+        Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath)
     } else {
         Join-Path $PSScriptRoot "state\ioc-store.db"
     }

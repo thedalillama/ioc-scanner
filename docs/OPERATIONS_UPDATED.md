@@ -169,7 +169,7 @@ Preferred inputs:
 - a JSON array of normalized indicators
 - a STIX bundle with `indicator` objects the parser understands
 
-Use [normalized-indicators.example.json](C:/CodexTest/examples/normalized-indicators.example.json) as the starting shape.
+Use [normalized-indicators.example.json](../examples/normalized-indicators.example.json) as the starting shape.
 
 ## Automation defaults
 

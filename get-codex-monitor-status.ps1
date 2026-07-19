@@ -22,14 +22,22 @@ function Get-Settings {
 function Resolve-ValueOrDefault {
     param(
         [string]$ConfiguredValue,
-        [string]$DefaultValue
+        [string]$DefaultValue,
+        [string]$SettingsFilePath = $SettingsPath
     )
 
     if (-not [string]::IsNullOrWhiteSpace($ConfiguredValue)) {
-        return $ConfiguredValue
+        if ([System.IO.Path]::IsPathRooted($ConfiguredValue)) {
+            return $ConfiguredValue
+        }
+        $settingsDirectory = Split-Path -Path $SettingsFilePath -Parent
+        if ([string]::IsNullOrWhiteSpace($settingsDirectory)) {
+            $settingsDirectory = $PSScriptRoot
+        }
+        return [System.IO.Path]::GetFullPath((Join-Path $settingsDirectory $ConfiguredValue))
     }
 
-    return $DefaultValue
+    return [System.IO.Path]::GetFullPath($DefaultValue)
 }
 
 function Get-PythonCommand {
@@ -93,7 +101,7 @@ function Get-ResolvedStateDbPath {
     }
 
     if (-not [string]::IsNullOrWhiteSpace([string]$Settings.StateDbPath)) {
-        return [string]$Settings.StateDbPath
+        return (Resolve-ValueOrDefault -ConfiguredValue ([string]$Settings.StateDbPath) -DefaultValue (Join-Path $PSScriptRoot "state\ioc-store.db"))
     }
 
     return (Join-Path $PSScriptRoot "state\ioc-store.db")

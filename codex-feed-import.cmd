@@ -1,3 +1,6 @@
 @echo off
-powershell.exe -ExecutionPolicy Bypass -File "C:\CodexTest\import-threat-feeds.ps1"
-exit /b %ERRORLEVEL%
+setlocal
+for %%I in ("%~dp0.") do set "APP_ROOT=%%~fI"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%APP_ROOT%\import-threat-feeds.ps1"
+set "EXITCODE=%ERRORLEVEL%"
+endlocal & exit /b %EXITCODE%

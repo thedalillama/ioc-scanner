@@ -23,14 +23,41 @@ function Ensure-Directory {
     }
 }
 
+function Get-SettingsPath {
+    return (Join-Path $PSScriptRoot "codex-monitor.settings.json")
+}
+
+function Resolve-SettingsPathValue {
+    param(
+        [string]$Value,
+        [string]$SettingsPath = (Get-SettingsPath)
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $Value
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Value)) {
+        return $Value
+    }
+
+    $settingsDirectory = Split-Path -Path $SettingsPath -Parent
+    if ([string]::IsNullOrWhiteSpace($settingsDirectory)) {
+        $settingsDirectory = $PSScriptRoot
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $settingsDirectory $Value))
+}
+
 function Get-AlertInboxPath {
     $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
     if (Test-Path -LiteralPath $settingsPath) {
         try {
             $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
             if (-not [string]::IsNullOrWhiteSpace([string]$settings.AlertInboxPath)) {
-                Ensure-Directory -Path ([string]$settings.AlertInboxPath)
-                return [string]$settings.AlertInboxPath
+                $configuredInboxPath = Resolve-SettingsPathValue -Value ([string]$settings.AlertInboxPath) -SettingsPath $settingsPath
+                Ensure-Directory -Path $configuredInboxPath
+                return $configuredInboxPath
             }
         } catch {
         }
@@ -174,7 +201,7 @@ function Get-StateDbPath {
         try {
             $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
             if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
-                return [string]$settings.StateDbPath
+                return (Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath) -SettingsPath $settingsPath)
             }
         } catch {
         }

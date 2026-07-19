@@ -31,8 +31,34 @@ function Write-JsonFile {
     [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
 }
 
+function Get-SettingsPath {
+    return (Join-Path $PSScriptRoot "codex-monitor.settings.json")
+}
+
+function Resolve-SettingsPathValue {
+    param(
+        [string]$Value,
+        [string]$SettingsPath = (Get-SettingsPath)
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $Value
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Value)) {
+        return $Value
+    }
+
+    $settingsDirectory = Split-Path -Path $SettingsPath -Parent
+    if ([string]::IsNullOrWhiteSpace($settingsDirectory)) {
+        $settingsDirectory = $PSScriptRoot
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $settingsDirectory $Value))
+}
+
 function Get-Settings {
-    $settingsPath = Join-Path $PSScriptRoot "codex-monitor.settings.json"
+    $settingsPath = Get-SettingsPath
     if (Test-Path -LiteralPath $settingsPath) {
         try {
             return (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json)
@@ -452,14 +478,14 @@ function Import-CisaKevIndicators {
 $settings = Get-Settings
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     if (-not [string]::IsNullOrWhiteSpace([string]$settings.IndicatorExportPath)) {
-        $OutputPath = [string]$settings.IndicatorExportPath
+        $OutputPath = Resolve-SettingsPathValue -Value ([string]$settings.IndicatorExportPath)
     } else {
         $OutputPath = (Join-Path $PSScriptRoot "indicators\feed-indicators-latest.json")
     }
 }
 if ([string]::IsNullOrWhiteSpace($IocStorePath)) {
     if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
-        $IocStorePath = [string]$settings.StateDbPath
+        $IocStorePath = Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath)
     } else {
         $IocStorePath = (Join-Path $PSScriptRoot "state\ioc-store.db")
     }
