@@ -178,12 +178,14 @@ class TripwireGuardrailTests(unittest.TestCase):
     def read_accepted_rows(self, db_path: Path) -> list[sqlite3.Row]:
         if not db_path.exists():
             return []
-        with sqlite3.connect(db_path) as connection:
+        connection = sqlite3.connect(db_path)
+        try:
             connection.row_factory = sqlite3.Row
-            try:
-                return list(connection.execute("SELECT * FROM accepted_posture_drift ORDER BY acceptance_id"))
-            except sqlite3.OperationalError:
-                return []
+            return list(connection.execute("SELECT * FROM accepted_posture_drift ORDER BY acceptance_id"))
+        except sqlite3.OperationalError:
+            return []
+        finally:
+            connection.close()
 
     def test_rule_engine_with_default_catalog(self) -> None:
         payload = self.run_engine()
