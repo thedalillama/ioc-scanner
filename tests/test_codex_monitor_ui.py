@@ -7,6 +7,200 @@ import codex_monitor_ui as ui
 
 
 class CodexMonitorUiTests(unittest.TestCase):
+    def make_config(self, root: Path, ui_persona: str = "user") -> ui.AppConfig:
+        return ui.AppConfig(
+            settings_path=root / "codex-monitor.settings.json",
+            runtime_root=root,
+            data_root=root,
+            state_db_path=root / "state" / "ioc-store.db",
+            alert_inbox_path=root / "alerts" / "pending",
+            alert_archive_path=root / "alerts" / "archive",
+            indicator_export_path=root / "indicators" / "feed-indicators-latest.json",
+            protection_profile="microsoft_baseline",
+            ui_persona=ui_persona,
+            repo_root=Path(__file__).resolve().parent.parent,
+        )
+
+    def make_tripwire_report(self, root: Path) -> Path:
+        report_path = root / "HOST_TRIPWIRE_CHECK_2026-07-19_12-00-00.json"
+        payload = {
+            "Metadata": {
+                "CollectionTimeUtc": "2026-07-19T12:00:00Z",
+                "OverallStatus": "Review",
+            },
+            "Summary": {
+                "observed_posture_change_count": 4,
+                "expected_operational_change_count": 1,
+                "accepted_posture_change_count": 1,
+                "posture_review_count": 1,
+                "response_required_count": 1,
+                "guardrail_protected_count": 1,
+                "accepted_drift_registry_status": "sqlite",
+                "note": "Observed changes are posture drift, not proof of compromise.",
+            },
+            "Changes": [
+                {
+                    "Category": "SecurityControlBaseline",
+                    "Section": "SecurityControlBaseline",
+                    "ItemType": "SecurityControl",
+                    "Name": "Windows Firewall",
+                    "Field": "Enabled",
+                    "OldValue": "Enabled",
+                    "NewValue": "Disabled",
+                    "Severity": "Critical",
+                    "Classification": "critical",
+                    "GuardrailMatched": True,
+                    "GuardrailReason": "Firewall disabled is protected by a security guardrail.",
+                    "MatchedRuleId": "guardrail-firewall-disabled",
+                    "MatchedRuleDescription": "Firewall disabled should remain response-required.",
+                    "RecommendedAction": "Restore Firewall after verifying the evidence.",
+                    "CsfMapping": "PR.PS / DE.CM",
+                    "Interpretation": "Firewall protection appears weaker than the trusted baseline.",
+                },
+                {
+                    "Category": "AppIntegrity",
+                    "Section": "AppIntegrity",
+                    "ItemType": "AppFile",
+                    "Name": "profiles\\posture-drift-rules.json",
+                    "Path": "C:\\CodexTest\\profiles\\posture-drift-rules.json",
+                    "Field": "Sha256",
+                    "OldValue": "OLDHASH",
+                    "NewValue": "NEWHASH",
+                    "Severity": "Review",
+                    "Classification": "review",
+                    "MatchedRuleId": "app-profile-reviewed",
+                    "MatchedRuleDescription": "App-owned profile drift should be reviewed before acceptance.",
+                    "RecommendedAction": "Review the profile update and record an exact acceptance if it was intentional.",
+                    "CsfMapping": "GV.OV / DE.CM",
+                    "Interpretation": "An app-owned posture rules file changed from the trusted baseline.",
+                },
+                {
+                    "Category": "ScheduledTask",
+                    "Section": "ScheduledTasks",
+                    "ItemType": "ScheduledTask",
+                    "Name": "ZoomUpdateTaskUser-12345",
+                    "ChangeType": "Modified",
+                    "Severity": "Info",
+                    "Classification": "expected",
+                    "CsfMapping": "DE.CM",
+                    "Interpretation": "This matched a known updater churn pattern.",
+                },
+                {
+                    "Category": "AppIntegrity",
+                    "Section": "AppIntegrity",
+                    "ItemType": "AppFile",
+                    "Name": "codex-monitor.settings.json",
+                    "Field": "Sha256",
+                    "OldValue": "OLDER",
+                    "NewValue": "NEWER",
+                    "Severity": "Info",
+                    "Classification": "accepted",
+                    "IsAcceptedDrift": True,
+                    "AcceptanceId": "ACC-TEST-001",
+                    "AcceptedDriftReason": "Reviewed local settings update.",
+                    "CsfMapping": "GV.OV / DE.CM",
+                },
+            ],
+        }
+        report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return report_path
+
+    def make_snapshot(self, root: Path, report_path: Path | None = None) -> dict:
+        summary = {
+            "observed_posture_change_count": 4,
+            "expected_operational_change_count": 1,
+            "accepted_posture_change_count": 1,
+            "posture_review_count": 1,
+            "response_required_count": 1,
+            "guardrail_protected_count": 1,
+            "accepted_drift_registry_status": "sqlite",
+            "note": "Observed changes are posture drift, not proof of compromise.",
+        }
+        latest_tripwire = {
+            "Path": str(report_path) if report_path else "",
+            "LastWriteTimeUtc": "2026-07-19T12:00:00Z" if report_path else "",
+        }
+        recent_reports = []
+        if report_path:
+            recent_reports.append(
+                {
+                    "name": report_path.name,
+                    "path": str(report_path),
+                    "report_type": "Check",
+                    "collection_time": "2026-07-19T12:00:00Z",
+                    "summary": {"ChangeCount": 4},
+                }
+            )
+        return {
+            "status": {
+                "Metadata": {"OverallStatus": "Review", "ComputerName": "TEST-PC"},
+                "Identify": {
+                    "Hostname": "TEST-PC",
+                    "Manufacturer": "Contoso",
+                    "Model": "Test Model",
+                    "WindowsEdition": "Windows 11 Pro",
+                    "WindowsVersion": "11",
+                    "WindowsBuild": "26100",
+                    "CurrentUser": "tester",
+                    "BaselineScope": "Local PC",
+                    "LocalUserCount": 9,
+                    "LocalAdministratorCount": 3,
+                    "InstalledSoftwareCount": 42,
+                    "RunningServiceCount": 100,
+                    "ScheduledTaskCount": 261,
+                    "AutorunCount": 15,
+                    "NetworkAdapterCount": 4,
+                    "ListeningTcpPortCount": 12,
+                    "SharedFolderCount": 1,
+                },
+                "Protection": {
+                    "Score": 88,
+                    "SelectedProfile": {"Id": "microsoft_baseline", "Name": "Microsoft baseline", "Description": "Test profile."},
+                    "AvailableProfiles": [{"Id": "microsoft_baseline", "Name": "Microsoft baseline"}],
+                    "Controls": [],
+                },
+                "HealthFindings": [],
+                "State": {
+                    "PendingAlertCount": 0,
+                    "ThreatRssLastRunUtc": "2026-07-19T11:30:00Z",
+                    "TripwireBaselineCollectionTimeUtc": "2026-07-18T00:00:00Z",
+                    "LatestTripwireDriftSummary": summary,
+                },
+                "LatestArtifacts": {
+                    "LatestIocReport": {"Path": "", "LastWriteTimeUtc": "2026-07-19T11:00:00Z"},
+                    "LatestTripwireReport": latest_tripwire,
+                    "LatestThreatRssReport": {"Path": "", "LastWriteTimeUtc": "2026-07-19T11:10:00Z"},
+                },
+                "Coverage": {
+                    "LatestIocHashCoverage": {},
+                    "LatestTripwirePostureSummary": summary,
+                    "BaselineHashIndexStatus": "unavailable",
+                },
+                "ScheduledTasks": [],
+            },
+            "task_details": [
+                {
+                    "Name": "Codex Alert Notifier",
+                    "Installed": True,
+                    "State": "Ready",
+                    "Enabled": True,
+                    "Author": "Codex",
+                    "Description": "Notifier",
+                    "Principal": "tester",
+                    "RunLevel": "Limited",
+                    "LastRunTime": "2026-07-19T11:59:00Z",
+                    "NextRunTime": "2026-07-19T12:00:00Z",
+                    "LastTaskResult": "0",
+                    "Actions": [],
+                    "Triggers": [],
+                }
+            ],
+            "indicators": {"indicator_count": 0, "ingest_runs": [], "by_type": [], "by_source": [], "app_state": []},
+            "pending_alerts": [],
+            "archive_alerts": [],
+            "recent_reports": recent_reports,
+        }
+
     def test_load_settings_uses_configured_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -116,6 +310,93 @@ class CodexMonitorUiTests(unittest.TestCase):
             wrapper_text = (repo_root / wrapper_name).read_text(encoding="utf-8")
             self.assertIn("%~dp0", wrapper_text, wrapper_name)
             self.assertNotIn("C:\\CodexTest", wrapper_text, wrapper_name)
+
+    def test_build_respond_queue_uses_latest_tripwire_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = self.make_tripwire_report(root)
+            config = self.make_config(root, "advanced_user")
+            snapshot = self.make_snapshot(root, report_path)
+
+            queue = ui.build_respond_queue_data(config, snapshot)
+
+            self.assertEqual(queue["queue_state"], "active")
+            self.assertEqual(queue["latest_report_name"], report_path.name)
+            self.assertEqual(len(queue["active_findings"]), 2)
+            self.assertEqual(len(queue["recorded_findings"]), 2)
+            self.assertEqual(queue["active_findings"][0]["title"], "Windows Firewall")
+            self.assertEqual(queue["summary_cards"][0]["label"], "Response required")
+
+    def test_build_respond_queue_handles_missing_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = self.make_config(root)
+            snapshot = self.make_snapshot(root, None)
+
+            queue = ui.build_respond_queue_data(config, snapshot)
+
+            self.assertEqual(queue["queue_state"], "missing_report")
+            self.assertIn("No posture check report is available yet", queue["queue_message"])
+
+    def test_guardrail_finding_does_not_offer_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = self.make_tripwire_report(root)
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            guardrail_change = payload["Changes"][0]
+            finding = ui.build_respond_finding(guardrail_change, 1, report_path)
+            card = ui.render_respond_finding_card(finding, ui.coerce_persona_profile("tech"))
+            self.assertIn("Acceptance blocked", card)
+            self.assertNotIn(".\\accept-posture-drift.ps1", card)
+
+    def test_safe_app_finding_shows_acceptance_guidance_for_advanced_user(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = self.make_tripwire_report(root)
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            safe_change = payload["Changes"][1]
+            finding = ui.build_respond_finding(safe_change, 2, report_path)
+            card = ui.render_respond_finding_card(finding, ui.coerce_persona_profile("advanced_user"))
+            self.assertIn("Accept exact reviewed change", card)
+            self.assertIn(".\\accept-posture-drift.ps1", card)
+
+    def test_safe_app_finding_shows_home_user_guidance_without_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = self.make_tripwire_report(root)
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            safe_change = payload["Changes"][1]
+            finding = ui.build_respond_finding(safe_change, 2, report_path)
+            card = ui.render_respond_finding_card(finding, ui.coerce_persona_profile("user"))
+            self.assertIn("Switch to Advanced User or Technician mode", card)
+            self.assertNotIn(".\\accept-posture-drift.ps1", card)
+
+    def test_respond_page_renders_with_csf_aligned_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = self.make_tripwire_report(root)
+            config = self.make_config(root, "csf_native")
+            snapshot = self.make_snapshot(root, report_path)
+
+            page = ui.render_respond_page(config, snapshot)
+
+            self.assertIn("Respond to findings", page)
+            self.assertIn("Observed posture changes", page)
+            self.assertIn("Response required", page)
+            self.assertIn("Detect records observed configuration drift. Respond handles findings. Recover confirms trusted operation after response.", page)
+
+    def test_render_routes_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = self.make_tripwire_report(root)
+            config = self.make_config(root, "advanced_user")
+            snapshot = self.make_snapshot(root, report_path)
+
+            self.assertIn("Today", ui.render_dashboard(config, snapshot))
+            self.assertIn("What the app is watching", ui.render_detect_page(config, snapshot))
+            self.assertIn("Respond to findings", ui.render_respond_page(config, snapshot))
+            self.assertIn("Recover", ui.render_recover_page(config, snapshot))
+            self.assertIn("Records of care", ui.render_reports_page(config, snapshot))
 
 
 class PersonaConsistencyTests(unittest.TestCase):

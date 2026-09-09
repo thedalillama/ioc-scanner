@@ -1,4 +1,4 @@
-# Testing
+﻿# Testing
 
 This repository has two test layers:
 
@@ -110,7 +110,7 @@ Expected:
   - `State`
   - `HealthFindings`
 
-### 3. IOC scanner verification
+### 3. IOC matching verification
 
 Run a baseline:
 

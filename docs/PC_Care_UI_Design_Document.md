@@ -6,10 +6,11 @@ Redesign the current Windows security app so it feels like a beautiful consumer 
 
 The app should make security feel like part of a healthy digital lifestyle: calm, clean, useful, reassuring, and visually refined.
 
-The app is still a local Windows Home / Pro security posture tool using NIST CSF concepts, but those concepts should be presented in a human, intuitive way.
+The app is still a local Windows NIST CSF posture/control audit module, but those concepts should be presented in a human, intuitive way.
+
+This document is a presentation and interaction specification. It should not be read as a claim that every planned Respond or Recover experience is already complete in code.
 
 ---
-
 ## Design Principle
 
 The product should feel like:
@@ -487,6 +488,16 @@ Design for framework-first review.
 - keep raw diagnostics tucked away by default
 - preserve auditability
 
+### Analyst
+
+Design for evidence interpretation and posture review.
+
+- show reports and evidence links
+- show findings, posture summaries, and trends
+- show CSF framing where helpful
+- avoid defaulting to raw diagnostics
+- preserve auditability
+
 ### Technician
 
 Design for full access.
@@ -550,7 +561,7 @@ Advanced User / NIST CSF Native / Analyst / Technician labels:
 - RS - Respond
 - RC - Recover
 
-The product should still be able to generate NIST CSF-style reports, but the UI does not need to look like a compliance tool.
+The product should still be able to generate NIST CSF-style reports, but the UI does not need to look like a compliance tool. README and product docs should describe Respond as partially implemented and Recover CIA panels as planned until those workflows are fully built.
 
 ---
 

@@ -879,6 +879,332 @@ def list_recent_reports(runtime_root: Path) -> List[Dict[str, Any]]:
     return items
 
 
+def find_latest_tripwire_check_report(config: AppConfig, snapshot: Dict[str, Any]) -> Optional[Path]:
+    latest_artifact = ((snapshot.get("status") or {}).get("LatestArtifacts") or {}).get("LatestTripwireReport") or {}
+    candidate = safe_path(str(latest_artifact.get("Path") or ""), [config.runtime_root])
+    if candidate and candidate.name.upper().startswith("HOST_TRIPWIRE_CHECK_") and candidate.suffix.lower() == ".json":
+        return candidate
+    reports = sorted(
+        config.runtime_root.glob("HOST_TRIPWIRE_CHECK_*.json"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    return reports[0] if reports else None
+
+
+def summarize_tripwire_counter(summary: Dict[str, Any], primary: str, *fallbacks: str) -> int:
+    for key in (primary,) + fallbacks:
+        try:
+            return int(summary.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def lower_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def is_expected_operational_change(change: Dict[str, Any]) -> bool:
+    classification = lower_text(change.get("Classification"))
+    severity = lower_text(change.get("Severity"))
+    return classification in ("expected", "expected_operational_change") or (classification == "info" and severity == "info")
+
+
+def is_accepted_posture_change(change: Dict[str, Any]) -> bool:
+    if bool(change.get("IsAcceptedDrift")):
+        return True
+    return lower_text(change.get("Classification")) == "accepted"
+
+
+def is_guardrail_protected_change(change: Dict[str, Any]) -> bool:
+    return bool(change.get("GuardrailMatched") or change.get("GuardrailProtected") or change.get("AcceptedDriftBlocked"))
+
+
+def is_response_required_change(change: Dict[str, Any]) -> bool:
+    classification = lower_text(change.get("Classification"))
+    severity = lower_text(change.get("Severity"))
+    if classification in ("critical", "warning", "response_required"):
+        return True
+    if severity in ("critical", "warning"):
+        return True
+    return is_guardrail_protected_change(change)
+
+
+def is_needs_review_change(change: Dict[str, Any]) -> bool:
+    if is_response_required_change(change):
+        return False
+    if is_accepted_posture_change(change) or is_expected_operational_change(change):
+        return False
+    classification = lower_text(change.get("Classification"))
+    severity = lower_text(change.get("Severity"))
+    return classification in ("review", "needs_review") or severity == "review"
+
+
+def is_safe_acceptance_candidate(change: Dict[str, Any]) -> bool:
+    if is_guardrail_protected_change(change) or is_accepted_posture_change(change) or is_expected_operational_change(change):
+        return False
+    section = lower_text(change.get("Section") or change.get("Category"))
+    name = lower_text(change.get("ItemName") or change.get("Name"))
+    path = lower_text(change.get("Path"))
+    safe_markers = (
+        "codex_monitor_ui.py",
+        "ioc_store.py",
+        "invoke-host-tripwire.ps1",
+        "tripwire-posture-baseline.ps1",
+        "posture-drift-rules.json",
+        "persona-profiles.json",
+        "system-profiles.json",
+        "protection-profiles.json",
+        "codex-monitor.settings.json",
+    )
+    return section in ("appintegritybaseline", "appintegrity", "appfile", "configuration") and any(marker in name or marker in path for marker in safe_markers)
+
+
+def compose_finding_title(change: Dict[str, Any]) -> str:
+    return str(change.get("ItemName") or change.get("Name") or change.get("Title") or "Observed posture change")
+
+
+def describe_finding_change(change: Dict[str, Any]) -> str:
+    old_value = change.get("CurrentValue") if change.get("CurrentValue") not in (None, "") else change.get("OldValue")
+    new_value = change.get("NewValue") if change.get("NewValue") not in (None, "") else change.get("BaselineValue")
+    if old_value not in (None, "") and new_value not in (None, ""):
+        return f"{old_value} -> {new_value}"
+    if new_value not in (None, ""):
+        return str(new_value)
+    if old_value not in (None, ""):
+        return str(old_value)
+    change_type = str(change.get("ChangeType") or "").strip()
+    if change_type:
+        return change_type
+    return "Details were not included in the latest report."
+
+
+def explain_finding_importance(change: Dict[str, Any]) -> str:
+    if change.get("AcceptedDriftBlockedReason"):
+        return str(change.get("AcceptedDriftBlockedReason"))
+    if is_guardrail_protected_change(change):
+        return str(change.get("GuardrailReason") or "This finding cannot be accepted as routine because it affects a protected security condition.")
+    if change.get("Interpretation"):
+        return str(change.get("Interpretation"))
+    if change.get("MatchedRuleDescription"):
+        return str(change.get("MatchedRuleDescription"))
+    if change.get("RecommendedAction"):
+        return str(change.get("RecommendedAction"))
+    if is_expected_operational_change(change):
+        return "This matched a known normal OS or trusted application maintenance pattern and remains recorded for auditability."
+    if is_accepted_posture_change(change):
+        return "This exact change was previously reviewed and recorded locally. It remains in the audit trail."
+    if is_needs_review_change(change):
+        return "This change should be reviewed before deciding whether it needs mitigation or can be accepted later."
+    return "Review the evidence to decide whether this change is expected, needs mitigation, or should remain open."
+
+
+def finding_status_label(change: Dict[str, Any]) -> str:
+    if is_accepted_posture_change(change):
+        return "Accepted posture change"
+    if is_expected_operational_change(change):
+        return "Expected operational change"
+    if is_guardrail_protected_change(change):
+        return "Guardrail protected"
+    if is_response_required_change(change):
+        return "Response required"
+    if is_needs_review_change(change):
+        return "Needs review"
+    return "Observed posture change"
+
+
+def finding_tone(change: Dict[str, Any]) -> str:
+    if is_guardrail_protected_change(change) or lower_text(change.get("Severity")) == "critical":
+        return "high"
+    if is_response_required_change(change) or is_needs_review_change(change):
+        return "medium"
+    if is_expected_operational_change(change) or is_accepted_posture_change(change):
+        return "ok"
+    return "info"
+
+
+def finding_priority(change: Dict[str, Any]) -> tuple:
+    title = compose_finding_title(change).lower()
+    if is_guardrail_protected_change(change):
+        return (0, title)
+    if is_response_required_change(change):
+        return (1, title)
+    if is_needs_review_change(change):
+        return (2, title)
+    if is_accepted_posture_change(change):
+        return (4, title)
+    if is_expected_operational_change(change):
+        return (5, title)
+    return (3, title)
+
+
+def mitigation_guidance(change: Dict[str, Any], persona_id: str) -> str:
+    title = compose_finding_title(change).lower()
+    reason = lower_text(change.get("GuardrailReason"))
+    if "firewall" in title or "firewall" in reason:
+        if persona_id == "tech":
+            return "Review the evidence, then if the finding is confirmed use Windows Security or Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True. After changes, validate in Recover."
+        return "Open Windows Security, go to Firewall & network protection, and turn Firewall on if the finding is confirmed. After that, use Recover to validate trusted operation."
+    if "defender" in title or "defender" in reason:
+        if persona_id == "tech":
+            return "Review the evidence first. If the finding is confirmed, restore the affected Defender setting from Windows Security or Microsoft Defender management tools, then validate in Recover."
+        return "Open Windows Security and restore the affected Microsoft Defender protection if the finding is confirmed. Then use Recover to validate trusted operation."
+    return "Review the evidence before making changes. If you take action outside this app, use Recover afterward to confirm trusted operation."
+
+
+def build_acceptance_helper_command(report_path: Path, finding_index: int) -> str:
+    return (
+        f'.\\accept-posture-drift.ps1 -ReportPath "{report_path}" '
+        f'-FindingIndex {finding_index} -Reason "Reviewed expected change" '
+        f'-StateDbPath ".\\state\\ioc-store.db"'
+    )
+
+
+def build_respond_finding(change: Dict[str, Any], index: int, report_path: Path) -> Dict[str, Any]:
+    evidence = []
+    for label, key in (
+        ("Section", "Section"),
+        ("Item type", "ItemType"),
+        ("Field", "Field"),
+        ("Path", "Path"),
+        ("Command line", "CommandLine"),
+        ("Baseline value", "BaselineValue"),
+        ("Old value", "OldValue"),
+        ("Current value", "CurrentValue"),
+        ("New value", "NewValue"),
+        ("Finding ID", "FindingId"),
+        ("Report ID", "ReportId"),
+    ):
+        value = change.get(key)
+        if value not in (None, ""):
+            evidence.append({"label": label, "value": value})
+    report_href = f"/report?path={urllib.parse.quote(str(report_path), safe='')}"
+    classification = str(change.get("Classification") or "").strip() or "Unknown"
+    severity = str(change.get("Severity") or "").strip() or "Unknown"
+    return {
+        "index": index,
+        "title": compose_finding_title(change),
+        "section": str(change.get("Section") or change.get("Category") or "Unknown"),
+        "item_type": str(change.get("ItemType") or change.get("Category") or "Unknown"),
+        "field": str(change.get("Field") or ""),
+        "severity": severity,
+        "classification": classification,
+        "status_label": finding_status_label(change),
+        "tone": finding_tone(change),
+        "what_changed": describe_finding_change(change),
+        "why_it_matters": explain_finding_importance(change),
+        "recommended_response": str(change.get("RecommendedAction") or "Review the evidence and decide whether to investigate, mitigate, or leave the finding open."),
+        "csf_mapping": str(change.get("CsfMapping") or "Not available"),
+        "matched_rule_id": str(change.get("MatchedRuleId") or ""),
+        "matched_rule_description": str(change.get("MatchedRuleDescription") or ""),
+        "guardrail_matched": bool(change.get("GuardrailMatched") or change.get("GuardrailProtected")),
+        "guardrail_reason": str(change.get("GuardrailReason") or ""),
+        "is_accepted": is_accepted_posture_change(change),
+        "accepted_reason": str(change.get("AcceptedDriftReason") or ""),
+        "acceptance_id": str(change.get("AcceptanceId") or ""),
+        "accepted_blocked": bool(change.get("AcceptedDriftBlocked")) or is_guardrail_protected_change(change),
+        "accepted_blocked_reason": str(change.get("AcceptedDriftBlockedReason") or ""),
+        "is_expected": is_expected_operational_change(change),
+        "acceptance_allowed": is_safe_acceptance_candidate(change),
+        "accept_helper_command": build_acceptance_helper_command(report_path, index),
+        "report_path": str(report_path),
+        "report_name": report_path.name,
+        "report_href": report_href,
+        "evidence": evidence,
+        "source_change": change,
+    }
+
+
+def build_respond_queue_data(config: AppConfig, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    report_path = find_latest_tripwire_check_report(config, snapshot)
+    base = {
+        "queue_state": "missing_report",
+        "queue_message": "No posture check report is available yet. Run a posture check from Detect.",
+        "latest_report_path": "",
+        "latest_report_href": "/detect",
+        "latest_report_name": "",
+        "latest_report_time": "",
+        "active_findings": [],
+        "recorded_findings": [],
+        "summary_cards": [],
+        "observed_count": 0,
+    }
+    if not report_path:
+        return base
+    try:
+        payload = parse_json(report_path)
+    except Exception as exc:
+        base.update({
+            "queue_state": "report_error",
+            "queue_message": f"Latest posture report could not be parsed: {exc}",
+            "latest_report_path": str(report_path),
+            "latest_report_href": f"/report?path={urllib.parse.quote(str(report_path), safe='')}",
+            "latest_report_name": report_path.name,
+        })
+        return base
+
+    summary = payload.get("Summary") or {}
+    metadata = payload.get("Metadata") or {}
+    changes = payload.get("Changes") or []
+    if not isinstance(changes, list):
+        changes = []
+
+    active_findings = []
+    recorded_findings = []
+    for index, change in enumerate(changes, start=1):
+        if not isinstance(change, dict):
+            continue
+        finding = build_respond_finding(change, index, report_path)
+        if finding["is_accepted"] or finding["is_expected"]:
+            recorded_findings.append(finding)
+        elif is_guardrail_protected_change(change) or is_response_required_change(change) or is_needs_review_change(change):
+            active_findings.append(finding)
+
+    active_findings.sort(key=lambda item: finding_priority(item["source_change"]))
+    recorded_findings.sort(key=lambda item: finding_priority(item["source_change"]))
+
+    response_required = summarize_tripwire_counter(summary, "response_required_count", "warning_drift_count", "critical_drift_count")
+    needs_review = summarize_tripwire_counter(summary, "posture_review_count", "review_drift_count")
+    guardrail_protected = summarize_tripwire_counter(summary, "guardrail_protected_count", "guardrail_matched_count")
+    accepted = summarize_tripwire_counter(summary, "accepted_posture_change_count", "accepted_drift_count")
+    expected = summarize_tripwire_counter(summary, "expected_operational_change_count", "expected_churn_count")
+    observed = summarize_tripwire_counter(summary, "observed_posture_change_count", "unexpected_drift_count")
+    if observed == 0:
+        observed = len(active_findings) + len(recorded_findings)
+
+    summary_cards = [
+        {"label": "Response required", "value": response_required, "tone": "high" if response_required else "ok"},
+        {"label": "Needs review", "value": needs_review, "tone": "medium" if needs_review else "ok"},
+        {"label": "Guardrail protected", "value": guardrail_protected, "tone": "high" if guardrail_protected else "ok"},
+        {"label": "Accepted posture changes", "value": accepted, "tone": "ok"},
+        {"label": "Expected operational changes", "value": expected, "tone": "ok"},
+        {"label": "Observed posture changes", "value": observed, "tone": "info"},
+    ]
+
+    queue_message = "No findings currently require response. Observed changes may be expected operational changes or accepted posture changes."
+    queue_state = "recorded_only"
+    if observed == 0:
+        queue_state = "no_drift"
+        queue_message = "No configuration drift was detected in the latest posture check."
+    elif active_findings:
+        queue_state = "active"
+        queue_message = f"{len(active_findings)} finding(s) need a decision or response."
+
+    return {
+        "queue_state": queue_state,
+        "queue_message": queue_message,
+        "latest_report_path": str(report_path),
+        "latest_report_href": f"/report?path={urllib.parse.quote(str(report_path), safe='')}",
+        "latest_report_name": report_path.name,
+        "latest_report_time": metadata.get("CollectionTimeUtc") or report_path.stat().st_mtime,
+        "active_findings": active_findings,
+        "recorded_findings": recorded_findings,
+        "summary_cards": summary_cards,
+        "observed_count": observed,
+    }
+
+
 def safe_path(candidate: str, roots: Iterable[Path]) -> Optional[Path]:
     if not candidate:
         return None
@@ -1743,6 +2069,7 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
     passing_controls = [control for control in sorted_controls if str(control.get("Status")) == "Pass"]
     recommended_responses = build_recommended_responses(status, tasks, protection, pending_alerts, recent_reports, archive_alerts)
     recovery = build_recovery_readiness(status, recent_reports, archive_alerts)
+    respond_queue = build_respond_queue_data(config, snapshot)
     detect_task_names = [
         "Codex Threat Feed Import",
         "Codex Threat RSS Monitor",
@@ -1823,7 +2150,7 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
             total_sha256_corpus if total_sha256_corpus not in (None, "") else "Unknown",
             latest_ioc_match_count if latest_ioc_match_count not in (None, "") else "Unknown",
         )
-    respond_summary = (
+    respond_summary = respond_queue["queue_message"] if respond_queue.get("queue_message") else (
         "This PC has pending alerts that should be reviewed."
         if pending_alerts
         else ("Alert delivery is configured, but no active incidents are open." if any(task.get("Name") == "Codex Alert Notifier" and task.get("Installed") for task in tasks) else "No pending alerts are waiting for triage.")
@@ -2026,6 +2353,15 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
             },
             "respond": {
                 "summary": respond_summary,
+                "queue_state": respond_queue.get("queue_state"),
+                "queue_message": respond_queue.get("queue_message"),
+                "active_findings": respond_queue.get("active_findings") or [],
+                "recorded_findings": respond_queue.get("recorded_findings") or [],
+                "summary_cards": respond_queue.get("summary_cards") or [],
+                "latest_report_path": respond_queue.get("latest_report_path") or "",
+                "latest_report_href": respond_queue.get("latest_report_href") or "/detect",
+                "latest_report_name": respond_queue.get("latest_report_name") or "",
+                "latest_report_time": respond_queue.get("latest_report_time") or "",
                 "lifecycle": [
                     {"state": "New", "meaning": "Pending alerts waiting for first review."},
                     {"state": "Acknowledged", "meaning": "Seen by an operator. Backend tracking not implemented yet."},
@@ -2520,9 +2856,93 @@ def render_detect_evidence_snapshot_page(config: AppConfig, snapshot: Dict[str, 
     return render_page_shell(model, "/detect/evidence-snapshot", "Detect evidence snapshot", simplify_for_home(persona_id, "This page shows the latest indexed local evidence snapshot and the observation counts behind snapshot-aware IOC matching.", "This page shows the detailed evidence collected for the latest detection check."), body, show_technical_nav=persona_allows_diagnostics(persona_id))
 
 
+def render_respond_summary_cards(cards: List[Dict[str, Any]]) -> str:
+    return "".join(render_metric(card.get("label") or "", card.get("value") or 0, card.get("tone") or "") for card in cards)
+
+
+def render_respond_finding_card(finding: Dict[str, Any], persona_profile: Dict[str, Any]) -> str:
+    persona_id = str(persona_profile.get("persona_id") or "user")
+    evidence_rows = "".join(f"<tr><td>{esc(item['label'])}</td><td>{esc(item['value'])}</td></tr>" for item in finding.get("evidence") or [])
+    if not evidence_rows:
+        evidence_rows = "<tr><td colspan='2' class='mini'>Not available.</td></tr>"
+    rule_detail = ""
+    if finding.get("matched_rule_id") or finding.get("matched_rule_description"):
+        rule_detail = f'<div class="mini"><strong>Matched rule:</strong> {esc(finding.get("matched_rule_id") or "Unknown")} {esc(finding.get("matched_rule_description") or "")}</div>'
+    guardrail_detail = ""
+    if finding.get("guardrail_matched"):
+        reason = finding.get("accepted_blocked_reason") or finding.get("guardrail_reason") or "This finding cannot be accepted as routine because it affects a protected security condition."
+        guardrail_detail = f'<div class="finding high">Acceptance blocked: {esc(reason)}</div>'
+    accepted_detail = ""
+    if finding.get("is_accepted"):
+        accepted_detail = f'<div class="finding">Accepted posture change: {esc(finding.get("accepted_reason") or "This exact change was reviewed and recorded locally. It remains in the audit trail.")}</div>'
+    accept_detail = ""
+    if finding.get("acceptance_allowed"):
+        if persona_id in ("advanced_user", "analyst", "tech"):
+            accept_detail = f'<details class="inline-detail mini"><summary>Accept exact reviewed change</summary><div class="detail-body">Use the existing helper after review. This records an exact accepted posture change locally and does not suppress future unrelated findings.</div><pre>{esc(finding.get("accept_helper_command") or "")}</pre></details>'
+        elif persona_id == "csf_native":
+            accept_detail = '<details class="inline-detail mini"><summary>Accept exact reviewed change</summary><div class="detail-body">This is an auditable governance action. Switch to Advanced User, Analyst, or Technician mode to use the exact acceptance helper command.</div></details>'
+        else:
+            accept_detail = '<div class="mini">This is an advanced review action. Switch to Advanced User or Technician mode to accept an exact reviewed change.</div>'
+    source_line = f'<div class="mini">Source: <a href="{esc(finding.get("report_href") or "/reports")}">{esc(finding.get("report_name") or "latest posture report")}</a></div>'
+    if persona_id == "tech":
+        source_line += f'<div class="path" style="margin-top:8px">{esc(finding.get("report_path") or "")}</div>'
+        source_line += f'<div class="mini" style="margin-top:8px">Finding index: {esc(finding.get("index"))}</div>'
+    actions = [
+        '<span class="btn">Review evidence</span>',
+        '<span class="btn">Investigate</span>',
+    ]
+    if finding.get("guardrail_matched") or lower_text(finding.get("severity")) in ("warning", "critical"):
+        actions.extend(['<span class="btn">Mitigate</span>', '<span class="btn">Escalate</span>'])
+    if finding.get("acceptance_allowed"):
+        actions.append('<span class="btn">Accept exact reviewed change</span>')
+    actions.extend([
+        '<span class="btn">Leave open</span>',
+        f'<a class="btn" href="{esc(finding.get("report_href") or "/reports")}">Export evidence</a>',
+        '<a class="btn" href="/recover">Validate in Recover</a>',
+    ])
+    return f"""
+<div class="task">
+  <div class="task-head">
+    <div>
+      <div class="task-name">{esc(finding.get('title'))}</div>
+      <div class="task-meta">{esc(finding.get('section'))} | {esc(finding.get('item_type'))}</div>
+      <div style="margin-top:10px">{render_status_badge(finding.get('status_label'), finding.get('tone'))} <span class="mini" style="margin-left:8px">Severity: {esc(finding.get('severity'))} | Classification: {esc(finding.get('classification'))}</span></div>
+    </div>
+  </div>
+  {guardrail_detail}
+  {accepted_detail}
+  <div class="stack">
+    <div><strong>What changed</strong><div class="mini">{esc(finding.get('what_changed'))}</div></div>
+    <div><strong>Why it matters</strong><div class="mini">{esc(finding.get('why_it_matters'))}</div></div>
+    <div><strong>Recommended response</strong><div class="mini">{esc(finding.get('recommended_response'))}</div></div>
+    <div><strong>CSF mapping</strong><div class="mini">{esc(finding.get('csf_mapping'))}</div></div>
+    {rule_detail}
+    {source_line}
+    <details class="task-detail"><summary>Evidence</summary><table><tbody>{evidence_rows}</tbody></table></details>
+    <details class="task-detail"><summary>Mitigation guidance</summary><div class="mini">{esc(mitigation_guidance(finding.get('source_change') or {}, persona_id))}</div></details>
+    {accept_detail}
+    <div class="task-actions">{''.join(actions)}</div>
+  </div>
+</div>
+"""
+
+
+def render_recorded_change_card(finding: Dict[str, Any]) -> str:
+    badge = render_status_badge(finding.get("status_label"), "ok")
+    return f"""
+<div class="care-tile good">
+  <h4>{esc(finding.get('title'))}</h4>
+  <div style="margin-bottom:8px">{badge}</div>
+  <p>{esc(finding.get('why_it_matters'))}</p>
+  <div class="mini" style="margin-top:8px"><a href="{esc(finding.get('report_href') or '/reports')}">Open source report</a></div>
+</div>
+"""
+
+
 def render_respond_page(config: AppConfig, snapshot: Dict[str, Any], message: str = "") -> str:
     model = build_dashboard_model(config, snapshot, message)
     persona_id = config.ui_persona
+    persona_profile = model["app"]["persona_profile"]
     respond = model["csf_sections"]["respond"]
     tasks_by_name = model["task_job_health"]["by_name"]
     notifier_task = tasks_by_name.get("Codex Alert Notifier", {})
@@ -2531,31 +2951,49 @@ def render_respond_page(config: AppConfig, snapshot: Dict[str, Any], message: st
     archive_rows = "".join(render_alert_row(item, lifecycle_state="Archived", show_actions=False) for item in model["alerts"]["archived"][:20]) or "<tr><td colspan='5' class='mini'>No archived alerts.</td></tr>"
     triage_steps = "".join(f"<li>{esc(step)}</li>" for step in respond["triage_steps"])
     lifecycle_rows = "".join(f"<tr><td>{render_status_badge(item['state'], 'info' if item['state'] != 'Archived' else 'ok')}</td><td>{esc(item['meaning'])}</td></tr>" for item in respond["lifecycle"])
+    active_cards = "".join(render_respond_finding_card(item, persona_profile) for item in respond.get("active_findings") or [])
+    recorded_cards = "".join(render_recorded_change_card(item) for item in respond.get("recorded_findings") or [])
+    latest_report_line = ""
+    if respond.get("latest_report_name"):
+        latest_report_line = f'<div class="mini">Latest posture report: <a href="{esc(respond.get("latest_report_href") or "/reports")}">{esc(respond.get("latest_report_name"))}</a> | {esc(pretty_time(respond.get("latest_report_time") or ""))}</div>'
+    if persona_id == "user":
+        lede = "Review items that need your attention and choose what to do next."
+    elif persona_id == "csf_native":
+        lede = "Detect records observed configuration drift. Respond handles findings. Recover confirms trusted operation after response."
+    else:
+        lede = "Respond is where you review observed configuration drift, decide what it means, and choose the next action. Recovery validates trusted operation after response."
+    if respond.get("queue_state") == "missing_report":
+        queue_markup = '<div class="finding">No posture check report is available yet. Run a posture check from Detect.</div><div class="task-actions"><a class="btn" href="/detect">Open Detect</a></div>'
+    elif respond.get("queue_state") == "report_error":
+        queue_markup = f'<div class="finding high">{esc(respond.get("queue_message") or "Latest posture report could not be parsed.")}</div>'
+    elif active_cards:
+        queue_markup = active_cards
+    else:
+        queue_markup = f'<div class="finding">{esc(respond.get("queue_message") or "No findings currently require response.")}</div>'
+    recorded_section = ""
+    if recorded_cards:
+        recorded_section = f'<section class="panel stack" style="margin-top:18px"><div class="kicker">Respond</div><h2>Recorded but no response required</h2><div class="mini">These changes remain in the audit trail, but they are not active response items.</div><div class="grid two">{recorded_cards}</div></section>'
     body = f"""
-<section class="grid two" style="margin-top:18px">
-  <div class="panel stack">
-    <div class="kicker">Respond</div>
-    <h2>Guided issue resolution</h2>
-    <div class="mini">{esc(respond['summary'])}</div>
-    <div class="focus-card {'warning' if model['alerts']['pending'] else 'calm'}">
-      <div class="focus-label">Response summary</div>
-      <div class="focus-title">{esc('Pending alerts need review' if model['alerts']['pending'] else 'No active incidents open')}</div>
-      <div class="focus-copy">{esc(respond['summary'])}</div>
-      <div class="focus-meta">Notifier status: {esc(notifier_status['label'])} • {esc(notifier_status['message'])}</div>
-    </div>
-    <div class="focus-card report"><div class="focus-label">Suggested triage</div><div class="focus-copy"><ul style="margin:0; padding-left:18px;">{triage_steps}</ul></div></div>
-  </div>
-  <div class="panel stack">
-    <div class="kicker">Respond</div>
-    <h2>Pending Alerts</h2>
-    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Count</th><th>Collected</th></tr></thead><tbody>{pending_rows}</tbody></table>
-  </div>
+<section class="panel stack" style="margin-top:18px">
+  <div class="kicker">Respond</div>
+  <h2>Respond to findings</h2>
+  <div class="mini">{esc(respond.get('queue_message') or respond.get('summary') or '')}</div>
+  {latest_report_line}
+  <div class="mini">Notifier status: {render_status_badge(notifier_status['label'], notifier_status['tone'])} <span style="margin-left:8px">{esc(notifier_status['message'])}</span></div>
+  <div class="cards">{render_respond_summary_cards(respond.get('summary_cards') or [])}</div>
 </section>
+<section class="panel stack" style="margin-top:18px">
+  <div class="kicker">Respond</div>
+  <h2>Findings to handle</h2>
+  {queue_markup}
+</section>
+{recorded_section}
 <section class="grid two" style="margin-top:18px">
   <div class="panel stack">
     <div class="kicker">Respond</div>
-    <h2>Archived Alerts</h2>
-    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Count</th><th>Collected</th></tr></thead><tbody>{archive_rows}</tbody></table>
+    <h2>Suggested triage</h2>
+    <div class="focus-card report"><div class="focus-copy"><ul style="margin:0; padding-left:18px;">{triage_steps}</ul></div></div>
+    <div class="mini">After response actions are taken, use Recover to confirm confidentiality, integrity, and availability are restored.</div>
   </div>
   <div class="panel stack">
     <div class="kicker">Respond</div>
@@ -2564,8 +3002,20 @@ def render_respond_page(config: AppConfig, snapshot: Dict[str, Any], message: st
     <table><thead><tr><th>State</th><th>Meaning</th></tr></thead><tbody>{lifecycle_rows}</tbody></table>
   </div>
 </section>
+<section class="grid two" style="margin-top:18px">
+  <div class="panel stack">
+    <div class="kicker">Respond</div>
+    <h2>Pending Alerts</h2>
+    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Count</th><th>Collected</th></tr></thead><tbody>{pending_rows}</tbody></table>
+  </div>
+  <div class="panel stack">
+    <div class="kicker">Respond</div>
+    <h2>Archived Alerts</h2>
+    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Count</th><th>Collected</th></tr></thead><tbody>{archive_rows}</tbody></table>
+  </div>
+</section>
 """
-    return render_page_shell(model, "/respond", "Respond", simplify_for_home(persona_id, "Use the guided issue-resolution view when this PC has alerts, then preserve the evidence and review history on demand.", "If something needs attention, this is where the app helps you handle it."), body, show_technical_nav=True)
+    return render_page_shell(model, "/respond", "Respond to findings", lede, body, show_technical_nav=True)
 
 
 def render_recover_page(config: AppConfig, snapshot: Dict[str, Any], message: str = "") -> str:

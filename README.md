@@ -1,205 +1,167 @@
-# Codex Host Monitor
+# Local Windows NIST CSF Posture Audit
 
-Windows-first host monitoring and IOC screening scripts for unmanaged or lightly managed systems.
+This project is a local Windows NIST CSF posture/control audit module. It verifies Windows-native protections, detects configuration drift from a trusted baseline, classifies findings with local explainable rules, records accepted posture changes in SQLite, and reports results in NIST CSF language.
 
-This repository is built around three jobs:
+Windows remains the protection layer. This app verifies, explains, records evidence, and guides review.
 
-- collect host state and screen it against normalized indicators
-- baseline and detect local persistence or account drift
-- monitor reputable threat-intel RSS feeds and trigger follow-up collection
+## What This App Does
 
-The IOC side is greenfield and uses a normalized indicator model instead of a custom ad hoc pack format. The intended pipeline is:
+- Reviews local Windows security posture.
+- Establishes and compares against trusted baselines.
+- Detects observed posture changes and configuration drift.
+- Classifies expected operational changes, accepted posture changes, needs-review findings, and response-required findings.
+- Preserves evidence in local JSON and Markdown reports.
+- Stores accepted posture changes locally in the SQLite state database.
+- Uses NIST CSF language for Govern, Identify, Protect, Detect, Respond, and Recover.
+- Supports personas from Home User to Technician.
 
-```text
-public feeds or STIX bundle
-        ->
-normalized indicator set
-        ->
-Windows host collection
-        ->
-matching and findings
-```
+## What This App Is Not
 
-## Scripts
+This app is not:
+- an antivirus replacement
+- an EDR
+- a SIEM
+- a cloud security service
+- a fleet-management platform
+- an enterprise GPO or Intune replacement
+- a replacement for Windows Defender, Firewall, Windows Update, BitLocker, Secure Boot, or UAC
 
-- `invoke-host-ioc.ps1`
-  - `Baseline`: fast host snapshot
-  - `Deep`: broader IOC-oriented collection
-  - `IOC`: match a normalized indicator set or STIX bundle against collected data
-- `import-threat-feeds.ps1`
-  - ingest ThreatFox, MalwareBazaar, URLhaus, Feodo Tracker, and CISA KEV
-  - normalize them into the internal indicator schema
-  - merge direct path-bearing indicators into `ioc-monitor-locations.json`
-  - load the normalized indicators into the local SQLite IOC store
-- `ioc_store.py`
-  - initialize and manage the local SQLite IOC store
-  - import normalized indicator JSON
-  - export scanner-ready normalized indicator JSON
-  - report IOC store statistics
-- `invoke-host-tripwire.ps1`
-  - `Baseline`: save local baseline state
-  - `Check`: compare current state to baseline and emit `ALERT_*.json/md` on drift
-- `monitor-threat-rss.ps1`
-  - poll CISA and Microsoft threat-intel feeds
-  - emit `ALERT_*.json/md` when relevant items are found
-  - optionally trigger tripwire or IOC follow-up
-- `start-codex-alert-helper.ps1`
-  - one-shot user-session notifier for pending `ALERT_*.json`
-  - shows an interactive desktop popup window
-  - supports `Open Alert`, `Open Folder`, and `Dismiss`
-- `install-codex-monitor.ps1`
-  - copies runtime files to a protected path
-  - writes local settings
-  - optionally creates scheduled tasks
-- `get-codex-monitor-status.ps1`
-  - shows one-screen protection health and task status
-  - reports stale feeds, missing baselines, pending alerts, and task problems
-- `codex_monitor_ui.py`
-  - self-contained Python management UI on `http://127.0.0.1:8765`
-  - surfaces scheduled task actions, SQLite state, alerts, reports, and indicator-store stats
-  - lets you trigger scheduled tasks from the browser
-- `start-codex-monitor-ui.ps1`
-  - resolves `PythonCommand` from settings
-  - launches the Python dashboard with the correct settings path
-- `run-hidden.vbs`
-  - launches a command without flashing a console window
-  - used by the user-context notifier task
+## CSF Workflow
 
-## Repository layout
+The app translates the NIST CSF lifecycle into a local PC workflow:
 
-- `docs/INSTALL.md`
-  - setup, scheduling, audit-policy, and notification prerequisites
-- `docs/OPERATIONS.md`
-  - day-2 usage, alert flow, troubleshooting, and maintenance
-- `docs/TESTING.md`
-  - automated and manual verification procedures
-- `examples/`
-  - example config files
-- `indicators/`
-  - normalized feed exports for scanner input
-- `state/`
-  - SQLite IOC store and local scanner state
-- `tests/`
-  - unit tests, smoke tests, and fixtures
-- `ioc-monitor-locations.json`
-  - IOC-derived watch locations merged into tripwire at runtime
+1. Govern - Set the plan
+2. Identify - Know this PC
+3. Protect - Check safeguards
+4. Detect - Detect configuration drift
+5. Respond - Handle findings
+6. Recover - Confirm trusted operation
 
-## Directory structure
+Detect records observed configuration drift. Respond is where findings are reviewed, classified, accepted, mitigated, escalated, or left open. Recover validates that trusted operation has been restored after response.
+
+## Configuration Drift
+
+Configuration drift means the current system state differs from the trusted baseline. Not every observed change is an alert. Some changes are expected operational changes, some are accepted posture changes, and some require review or response.
+
+The app uses these user-facing labels:
+
+- Observed posture changes
+- Expected operational changes
+- Accepted posture changes
+- Needs review
+- Response required
+- Guardrail protected
+
+## Accepted Posture Changes
+
+Accepted posture changes are exact, reviewed changes recorded locally in SQLite. They are not deleted, hidden, or broadly suppressed. They remain part of the audit trail and do not override dangerous guardrails.
+
+Accepted posture changes are stored in the local SQLite state database.
+
+## Personas
+
+- Home User - plain-language status and safe guidance
+- Advanced User - evidence summaries and reports
+- NIST CSF Native - CSF function and category framing with mappings
+- Analyst - findings, evidence interpretation, and posture review
+- Technician - diagnostics, raw paths, helper scripts, and technical evidence
+
+## Documentation Map
+
+- `README.md` - project overview and product positioning
+- `docs/Product_Description_UPDATED.md` - canonical product intent and policy direction
+- `docs/CSF_WORKFLOW_AND_CONFIGURATION_DRIFT.md` - workflow and state-machine definition for configuration drift handling
+- `docs/PC_Care_UI_Design_Document.md` - UI presentation and interaction direction
+- `docs/OPERATIONS.md` - day-2 operational usage and troubleshooting
+- `docs/TESTING.md` - verification procedures
+
+## Current Implementation Status
+
+The app already includes local posture collection, baseline comparison, IOC matching, alerting, scheduled monitoring, a browser UI, and SQLite-backed accepted posture change records.
+
+The app currently surfaces posture findings through Detect and Reports, with ongoing work to make Respond a fuller interactive finding queue.
+
+Recover confirms trusted operation after response. Planned recovery views include confidentiality, integrity, and availability validation panels.
+
+## Runtime and Deployment
+
+The app can run from any local runtime folder. Wrapper scripts resolve paths relative to their own location or the configured runtime root. `C:\CodexTest` may be used as a development example but is not required.
+
+## Repository Layout
 
 ```text
 <repo-root> (development workspace example)
-|-- .git/
 |-- alerts/
 |   |-- pending/
 |   `-- archive/
 |-- docs/
-|   |-- INSTALL.md
-|   |-- OPERATIONS.md
-|   `-- TESTING.md
 |-- examples/
-|   |-- host-tripwire-config.example.json
-|   `-- normalized-indicators.example.json
 |-- indicators/
-|   `-- feed-indicators-latest.json
 |-- state/
-|   `-- ioc-store.db
 |-- tests/
-|   |-- fixtures/
-|   |   `-- normalized-indicators.min.json
-|   |-- run-smoke-tests.ps1
-|   `-- test_ioc_store.py
-|-- README.md
 |-- codex-monitor.settings.example.json
 |-- codex-monitor.settings.json
 |-- codex_monitor_ui.py
-|-- collect-security-baseline.ps1
-|-- deep-research-report.md
-|-- guidance.txt
-|-- host-tripwire-config.json
+|-- get-codex-monitor-status.ps1
 |-- import-threat-feeds.ps1
 |-- install-codex-monitor.ps1
 |-- invoke-host-ioc.ps1
 |-- invoke-host-tripwire.ps1
-|-- ioc-monitor-locations.json
 |-- ioc_store.py
-|-- get-codex-monitor-status.ps1
 |-- monitor-threat-rss.ps1
 |-- run-hidden.vbs
-|-- start-codex-monitor-ui.ps1
-`-- start-codex-alert-helper.ps1
+|-- start-codex-alert-helper.ps1
+`-- start-codex-monitor-ui.ps1
 ```
 
-## Script inventory
+## Core Components
 
-- `invoke-host-ioc.ps1`
-  - collects live Windows host observations
-  - loads normalized indicators or STIX-derived indicators
-  - produces evidence-rich IOC findings
-- `import-threat-feeds.ps1`
-  - downloads public IOC feeds
-  - normalizes them into the internal schema
-  - updates `ioc-monitor-locations.json`
-  - loads indicators into the SQLite IOC store
-- `ioc_store.py`
-  - initializes the SQLite IOC database
-  - imports normalized indicator JSON
-  - exports scanner-ready normalized indicator JSON
-  - reports IOC store statistics
 - `invoke-host-tripwire.ps1`
-  - baselines local system state
-  - detects drift in accounts, tasks, autoruns, services, watched files, and IOC-derived locations
-  - emits alert files on change
+  - creates trusted baselines and checks for observed posture changes
+- `invoke-host-ioc.ps1`
+  - collects local evidence and checks it against normalized threat indicators
+- `import-threat-feeds.ps1`
+  - imports public threat intelligence and updates the local SQLite store
+- `ioc_store.py`
+  - manages the local SQLite state and indicator store
 - `monitor-threat-rss.ps1`
-  - polls threat-intel RSS feeds
-  - raises advisory alerts
-  - can trigger follow-up collection
+  - monitors relevant threat and advisory feeds
 - `start-codex-alert-helper.ps1`
-  - processes pending alerts from the user session
-  - surfaces them as interactive desktop popup windows
-  - archives handled alerts
-- `install-codex-monitor.ps1`
-  - deploys scripts to a runtime location
-  - writes settings
-  - creates scheduled tasks when requested
+  - turns pending alerts into user-session popup notifications
 - `get-codex-monitor-status.ps1`
-  - summarizes current protection health
-  - checks SQLite state, pending alerts, indicator freshness, and scheduled tasks
+  - summarizes local posture, task health, and evidence state
 - `codex_monitor_ui.py`
-  - serves the browser-based operations dashboard
-  - reads the same settings, SQLite state, tasks, alerts, and reports as the scheduled monitor flow
-- `start-codex-monitor-ui.ps1`
-  - launches the dashboard without requiring manual Python resolution
-- `run-hidden.vbs`
-  - launches a hidden PowerShell command without console flicker
-- `collect-security-baseline.ps1`
-  - earlier broad security snapshot collector retained as a reference tool
-- `tests\run-smoke-tests.ps1`
-  - parses PowerShell entry points and runs Python unit tests
-- `tests\test_ioc_store.py`
-  - unit tests for SQLite IOC and app-state persistence
+  - serves the local persona-aware management UI
+- `install-codex-monitor.ps1`
+  - deploys the runtime and optional scheduled tasks
 
-## Quick start
+## Quick Start
 
-Run a baseline:
+Create or refresh a trusted baseline:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\invoke-host-tripwire.ps1 -Mode Baseline
-powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode Baseline
 ```
 
-Build a normalized indicator set from public feeds:
+Import threat intelligence:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\import-threat-feeds.ps1
 ```
 
-Inspect IOC store stats:
+Run a posture check:
 
 ```powershell
-python .\ioc_store.py stats
+powershell -ExecutionPolicy Bypass -File .\invoke-host-tripwire.ps1 -Mode Check
 ```
 
-Check monitor health:
+Run IOC matching:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode IOC -IocPath .\examples\normalized-indicators.example.json
+```
+
+Check local monitor health:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\get-codex-monitor-status.ps1
@@ -211,122 +173,40 @@ Launch the management UI:
 powershell -ExecutionPolicy Bypass -File .\start-codex-monitor-ui.ps1 -OpenBrowser
 ```
 
-Run IOC matching:
+## Scheduled Monitoring Model
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode IOC -IocPath .\examples\normalized-indicators.example.json
-```
-
-Run the RSS monitor once:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\monitor-threat-rss.ps1 -RunTripwireCheckOnMatch
-```
-
-Install to a protected runtime path:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot "C:\Program Files\CodexMonitor" -DataRoot "C:\ProgramData\CodexMonitor" -CreateSystemTasks -CreateUserNotifierTask
-```
-
-If Python is not already installed, the installer can bootstrap it first:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot "C:\Program Files\CodexMonitor" -DataRoot "C:\ProgramData\CodexMonitor" -InstallPythonIfMissing -CreateSystemTasks -CreateUserNotifierTask
-```
-
-The installer now resolves a real Python interpreter, rejects the Windows Store alias stub, and writes the resolved path into `codex-monitor.settings.json` as `PythonCommand`.
-
-By default, the installer writes `codex-monitor.settings.json` into the runtime root so deployed scripts can resolve their operational paths without depending on the repo location.
-The repository itself should remain a development workspace only; `C:\CodexTest` may be used as a development example, but it is not required and should not be treated as the live runtime or alert queue.
-
-## Automated protection model
-
-With scheduled tasks installed, the intended hands-off flow is:
+With scheduled tasks installed, the intended local monitoring flow is:
 
 1. `Codex Threat Feed Import`
-   - runs daily
    - refreshes the normalized indicator export
-   - updates the SQLite IOC store
+   - updates the SQLite state database
 2. `Codex IOC Daily Scan`
-   - runs daily
-   - screens the host against the latest normalized indicators
+   - checks local evidence against the latest indicators
 3. `Codex Host Tripwire`
-   - runs hourly
-   - checks for persistence and watched-file drift
+   - checks for observed posture changes from the trusted baseline
 4. `Codex Threat RSS Monitor`
-   - runs hourly
    - detects relevant advisories and can trigger follow-up collection
 5. `Codex Alert Notifier`
-   - runs once per minute in the interactive user session
-   - turns pending alerts into popup windows
+   - turns pending alerts into popup windows in the interactive user session
 
-## Outputs
+## Evidence and Outputs
 
-Each script writes timestamped JSON and Markdown artifacts into its working directory.
-In normal deployment, code lives under the protected runtime path while mutable alert files and state live under the data root.
+The app writes timestamped JSON and Markdown artifacts into the runtime folder or configured data root.
 
-Important patterns:
+Important output patterns:
 
 - `HOST_IOC_*.json/md`
 - `HOST_TRIPWIRE_*.json/md`
 - `THREAT_RSS_*.json/md`
 - `<DataRoot>\alerts\pending\ALERT_*.json/md`
 - `<DataRoot>\alerts\archive\ALERT_*.json/md`
-- `indicators\feed-indicators-latest.json`
+- `<DataRoot>\state\ioc-store.db`
+- `<DataRoot>\indicators\feed-indicators-latest.json`
 
-The notifier watches the `alerts\pending` inbox under the mutable data root and moves processed alert files into `alerts\archive`.
+## Product Principle
 
-Tripwire scope now has two layers:
+The guiding principle is:
 
-- `host-tripwire-config.json`
-  - core tripwire behavior, including `PATH`-directory executable coverage
-- `ioc-monitor-locations.json`
-  - IOC-derived files and directories to watch and update as new campaigns or advisories are published
+> Make the Windows PC governable, observable, explainable, and auditable.
 
-## Alert flow
-
-1. `SYSTEM` tasks run tripwire and RSS collection from the configured runtime path.
-2. Detection scripts write `ALERT_*.json`.
-3. A user-context notifier task runs once per minute and reads those files from the configured inbox path.
-4. The notifier shows an interactive desktop popup window and then archives handled alerts.
-
-Popup behavior:
-
-- `Open Alert`
-  - opens the paired alert Markdown report
-- `Open Folder`
-  - opens the alert inbox/archive folder in Explorer
-- `Dismiss`
-  - closes the popup and acknowledges the alert
-
-The notifier is intentionally one-shot:
-
-- it runs once per minute
-- processes all unseen pending alerts
-- writes seen-state to SQLite
-- moves handled alerts to `alerts\archive`
-- exits
-
-## Status notes
-
-- The host/IOC/tripwire scripts are the primary supported pieces.
-- The alert helper depends on running in the interactive user session.
-- Alert delivery is implemented as a desktop popup window, not Notification Center toast delivery.
-- Generated report files and local state files are intentionally excluded from version control by `.gitignore`.
-
-## Threat-intel direction
-
-The first-class path is:
-
-- public feeds normalized into the internal indicator schema
-- optional STIX bundle import
-- Windows observation matching with evidence-rich findings
-
-The feed ingestor currently targets:
-
-- ThreatFox
-- MalwareBazaar
-- URLhaus
-- Feodo Tracker
-- CISA KEV
+The app does not promise perfect threat detection. It creates a local, evidence-backed posture record and helps the user understand what changed, what needs review, and what should happen next.

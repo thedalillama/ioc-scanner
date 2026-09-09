@@ -4,7 +4,7 @@
 
 This document defines how the product should guide a user through configuration drift and recovery using NIST CSF-aligned language.
 
-The product is a local Windows NIST CSF control and audit module. It does not replace Windows security controls. It verifies local posture, detects configuration drift, guides response, validates recovery, and preserves an audit trail.
+The product is a local Windows NIST CSF posture/control audit module. It does not replace Windows security controls. It verifies local posture, detects configuration drift, guides response, validates recovery, and preserves an audit trail.
 
 ## NIST CSF framing
 
