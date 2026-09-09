@@ -18,6 +18,10 @@ $files = @(
     'get-codex-monitor-status.ps1',
     'ioc_store.py',
     'run-hidden.vbs',
+    'accept-posture-drift.ps1',
+    'posture-drift-rules.ps1',
+    'tripwire-posture-baseline.ps1',
+    'protection-profiles.json',
     'host-tripwire-config.json',
     'ioc-monitor-locations.json',
     'codex-monitor.settings.example.json'
@@ -35,7 +39,7 @@ $aliases = @{
     'host-tripwire-config.json' = 'tripwire-config.json'
     'ioc-monitor-locations.json' = 'ioc-locations.json'
 }
-$dirs = @('docs','examples','tests')
+$dirs = @('docs','examples','tests','profiles')
 foreach ($file in $files) {
     $src = Join-Path $SourceRoot $file
     if (Test-Path $src) {

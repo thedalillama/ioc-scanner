@@ -30,6 +30,10 @@ function Copy-IfExists {
     )
 
     if (Test-Path -LiteralPath $Path) {
+        $destinationParent = Split-Path -Parent $Destination
+        if (-not [string]::IsNullOrWhiteSpace($destinationParent)) {
+            Ensure-Directory -Path $destinationParent
+        }
         if (Test-Path -LiteralPath $Destination) {
             $destinationItem = Get-Item -LiteralPath $Destination -Force
             if (-not $destinationItem.PSIsContainer -and $destinationItem.IsReadOnly) {
@@ -170,31 +174,29 @@ function Get-CurrentIdentityName {
     throw "Unable to resolve the current Windows user identity for the notifier task."
 }
 
-function New-CodexScheduledTask {
+function Register-CodexSystemTask {
     param(
-        [string[]]$Arguments,
-        [switch]$PreferSystem
-    )
-
-    if ($PreferSystem -and (Test-IsAdministrator)) {
-        schtasks @Arguments /RU SYSTEM /RL HIGHEST /F | Out-Null
-        return
-    }
-
-    if ($PreferSystem) {
-        Write-Warning "Installer is not elevated. Creating current-user scheduled tasks instead of SYSTEM tasks."
-    }
-
-    schtasks @Arguments /RL LIMITED /F | Out-Null
-}
-
-function New-HiddenTaskCommand {
-    param(
+        [string]$TaskName,
         [string]$VbsPath,
-        [string]$PowerShellCommand
+        [string]$LauncherPath,
+        [ValidateSet('Hourly', 'Daily')]
+        [string]$Schedule,
+        [datetime]$At
     )
 
-    return ('wscript.exe //B //nologo {0} "{1}"' -f $VbsPath, $PowerShellCommand)
+    if (-not (Test-IsAdministrator)) {
+        throw "Creating SYSTEM scheduled tasks requires an elevated installer session."
+    }
+
+    $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('//B //nologo "{0}" "{1}"' -f $VbsPath, $LauncherPath)
+    if ($Schedule -eq 'Hourly') {
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650)
+    } else {
+        $trigger = New-ScheduledTaskTrigger -Daily -At $At
+    }
+
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
 }
 
 function Write-LauncherScript {
@@ -306,6 +308,13 @@ $runtimeFiles = @(
     @{ Target = "ioc_store.py"; Candidates = @("ioc_store.py", "store.py") },
     @{ Target = "host-tripwire-config.json"; Candidates = @("host-tripwire-config.json", "tripwire-config.json") },
     @{ Target = "ioc-monitor-locations.json"; Candidates = @("ioc-monitor-locations.json", "ioc-locations.json") },
+    @{ Target = "accept-posture-drift.ps1"; Candidates = @("accept-posture-drift.ps1") },
+    @{ Target = "posture-drift-rules.ps1"; Candidates = @("posture-drift-rules.ps1") },
+    @{ Target = "tripwire-posture-baseline.ps1"; Candidates = @("tripwire-posture-baseline.ps1") },
+    @{ Target = "protection-profiles.json"; Candidates = @("protection-profiles.json") },
+    @{ Target = "profiles\persona-profiles.json"; Candidates = @("profiles\persona-profiles.json") },
+    @{ Target = "profiles\system-profiles.json"; Candidates = @("profiles\system-profiles.json") },
+    @{ Target = "profiles\posture-drift-rules.json"; Candidates = @("profiles\posture-drift-rules.json") },
     @{ Target = "run-hidden.vbs"; Candidates = @("run-hidden.vbs", "hidden.vbs") }
 )
 
@@ -344,16 +353,7 @@ if (Test-Path -LiteralPath $settingsPath) {
 $settings | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
 
 $runtimeRootTaskPath = $RuntimeRoot
-if ($runtimeRootTaskPath -like "C:\Program Files\*") {
-    $runtimeRootTaskPath = $runtimeRootTaskPath -replace '^C:\\Program Files', 'C:\Progra~1'
-}
-
 $dataRootTaskPath = $DataRoot
-if ($dataRootTaskPath -like "C:\Program Files\*") {
-    $dataRootTaskPath = $dataRootTaskPath -replace '^C:\\Program Files', 'C:\Progra~1'
-} elseif ($dataRootTaskPath -like "C:\ProgramData\*") {
-    $dataRootTaskPath = $dataRootTaskPath -replace '^C:\\ProgramData', 'C:\Progra~3'
-}
 
 $iocStoreRuntimePath = Join-Path $RuntimeRoot "ioc_store.py"
 if (Test-Path -LiteralPath $iocStoreRuntimePath) {
@@ -372,32 +372,10 @@ if ($CreateSystemTasks) {
     Write-LauncherScript -Path $feedImportLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\import-threat-feeds.ps1""" -f $RuntimeRoot)
     Write-LauncherScript -Path $iocScanLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\invoke-host-ioc.ps1"" -Mode IOC" -f $RuntimeRoot)
 
-    $tripwireLauncherTaskPath = $tripwireLauncher -replace '\\', '\'
-    $rssLauncherTaskPath = $rssLauncher -replace '\\', '\'
-    $feedImportLauncherTaskPath = $feedImportLauncher -replace '\\', '\'
-    $iocScanLauncherTaskPath = $iocScanLauncher -replace '\\', '\'
-
-    $tripwireCommand = New-HiddenTaskCommand -VbsPath $vbsRuntimePath -PowerShellCommand $tripwireLauncherTaskPath
-    $rssCommand = New-HiddenTaskCommand -VbsPath $vbsRuntimePath -PowerShellCommand $rssLauncherTaskPath
-    $feedImportCommand = New-HiddenTaskCommand -VbsPath $vbsRuntimePath -PowerShellCommand $feedImportLauncherTaskPath
-    $iocScanCommand = New-HiddenTaskCommand -VbsPath $vbsRuntimePath -PowerShellCommand $iocScanLauncherTaskPath
-
-    New-CodexScheduledTask -PreferSystem -Arguments @(
-        "/Create", "/SC", "HOURLY", "/MO", "1", "/TN", "Codex Host Tripwire",
-        "/TR", $tripwireCommand
-    )
-    New-CodexScheduledTask -PreferSystem -Arguments @(
-        "/Create", "/SC", "HOURLY", "/MO", "1", "/TN", "Codex Threat RSS Monitor",
-        "/TR", $rssCommand
-    )
-    New-CodexScheduledTask -PreferSystem -Arguments @(
-        "/Create", "/SC", "DAILY", "/ST", "02:00", "/TN", "Codex Threat Feed Import",
-        "/TR", $feedImportCommand
-    )
-    New-CodexScheduledTask -PreferSystem -Arguments @(
-        "/Create", "/SC", "DAILY", "/ST", "03:00", "/TN", "Codex IOC Daily Scan",
-        "/TR", $iocScanCommand
-    )
+    Register-CodexSystemTask -TaskName 'Codex Host Tripwire' -VbsPath $vbsRuntimePath -LauncherPath $tripwireLauncher -Schedule Hourly
+    Register-CodexSystemTask -TaskName 'Codex Threat RSS Monitor' -VbsPath $vbsRuntimePath -LauncherPath $rssLauncher -Schedule Hourly
+    Register-CodexSystemTask -TaskName 'Codex Threat Feed Import' -VbsPath $vbsRuntimePath -LauncherPath $feedImportLauncher -Schedule Daily -At (Get-Date -Hour 2 -Minute 0 -Second 0)
+    Register-CodexSystemTask -TaskName 'Codex IOC Daily Scan' -VbsPath $vbsRuntimePath -LauncherPath $iocScanLauncher -Schedule Daily -At (Get-Date -Hour 3 -Minute 0 -Second 0)
 }
 
 if ($CreateUserNotifierTask) {
@@ -460,7 +438,7 @@ if ($CreateUserNotifierTask) {
   <Actions Context="Author">
     <Exec>
       <Command>wscript.exe</Command>
-      <Arguments>//B //nologo $vbsRuntimePath "$notifierLauncherTaskPath"</Arguments>
+      <Arguments>//B //nologo "$vbsRuntimePath" "$notifierLauncherTaskPath"</Arguments>
     </Exec>
   </Actions>
 </Task>

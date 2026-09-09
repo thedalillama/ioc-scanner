@@ -21,6 +21,12 @@
 - `start-codex-monitor-ui.ps1`
 - `ioc_store.py`
 - `ioc-monitor-locations.json`
+- `accept-posture-drift.ps1`
+- `posture-drift-rules.ps1`
+- `protection-profiles.json`
+- `profiles\persona-profiles.json`
+- `profiles\system-profiles.json`
+- `profiles\posture-drift-rules.json`
 - `codex-monitor.settings.example.json`
 - `run-hidden.vbs`
 - `examples\`
@@ -104,6 +110,7 @@ This installer:
 - copies runtime scripts into the protected runtime path
 - copies the Python management UI and launcher
 - copies the IOC location config
+- copies the posture-drift acceptance helper, protection profiles, and persona/system/rule profiles (preserving the `profiles\` directory)
 - writes `codex-monitor.settings.json` into the runtime root by default
 - records the resolved interpreter path as `PythonCommand`
 - creates mutable operational directories under the data root
