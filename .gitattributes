@@ -1,0 +1,2 @@
+# Keep repository text files reproducible across Windows and non-Windows checkouts.
+* text=auto eol=lf

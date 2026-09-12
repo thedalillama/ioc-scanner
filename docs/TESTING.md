@@ -1,4 +1,4 @@
-﻿# Testing
+# Testing
 
 This repository has two test layers:
 
@@ -82,14 +82,26 @@ Validate:
 
 ```powershell
 python .\ioc_store.py stats
-python .\ioc_store.py export-json --output .\indicators\ioc-store-export.json
+python .\ioc_store.py export-indicators --output .\evidence\ioc-store-export.json
 ```
 
 Expected:
 
 - `indicator_count` is greater than `0`
 - `ingest_run_count` increases
-- `indicators\ioc-store-export.json` is created
+- `evidence\ioc-store-export.json` is created only because it was explicitly requested
+
+To validate the record-specific exports after a collection produces immutable IDs:
+
+```powershell
+python .\ioc_store.py export-report --report-id <report-id> --output .\evidence\report.json
+python .\ioc_store.py export-alert --alert-id <alert-id> --output .\evidence\alert.json
+```
+
+Expected:
+
+- each command writes only the named SQLite record to its explicit destination
+- an omitted or unknown immutable ID fails without creating a substitute export
 
 ### 2a. Status script verification
 

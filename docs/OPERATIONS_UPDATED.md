@@ -19,7 +19,7 @@ powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode Deep
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\import-threat-feeds.ps1
-powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode IOC -IocPath .\indicators\feed-indicators-latest.json
+powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode IOC
 ```
 
 ### Inspect the SQLite IOC store
@@ -87,11 +87,13 @@ Persistent monitor state now lives in SQLite:
 - namespace `threat_rss` for RSS dedupe state
 - namespace `alert_helper` for seen alert state
 
-The canonical normalized indicator export should live at:
+The normalized indicator export is optional operator-sharing/offline evidence; the normal IOC scan reads active indicators from SQLite. Its default destination is:
 
 - `indicators\feed-indicators-latest.json`
 
 or at the path named by `IndicatorExportPath` in `codex-monitor.settings.json`.
+
+Use `-IocPath <file>` only to run an explicit offline compatibility scan against a supplied JSON indicator set.
 
 ## Popup behavior
 
@@ -180,7 +182,7 @@ Recommended scheduled protection tasks:
   - refreshes normalized indicators and updates SQLite
 - `Codex IOC Daily Scan`
   - daily
-  - screens the host against the current normalized indicator export
+  - screens the host against active SQLite indicators
 - `Codex Host Tripwire`
   - hourly
   - checks persistence and watched-location drift
