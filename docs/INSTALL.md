@@ -33,17 +33,20 @@
 
 Do not commit generated `HOST_*`, `THREAT_RSS_*`, `ALERT_*`, or local `*-state.json` files.
 
-Treat the repo clone as development source only. The live deployment should use:
+Treat the repo clone as development source only. Choose separate, protected runtime and writable data roots for the live deployment:
 
-- protected scripts under `C:\Program Files\CodexMonitor`
-- mutable alerts and state under `C:\ProgramData\CodexMonitor`
+- `$RuntimeRoot` for protected scripts
+- `$DataRoot` for mutable SQLite state and operator-requested exports
+
+The examples below use environment-derived paths so they are portable; select paths that meet the same separation and least-privilege requirements on the target host.
 
 ## Recommended protected runtime path
 
-For `SYSTEM` scheduled tasks, copy the runtime scripts to an admin-only directory such as:
+For `SYSTEM` scheduled tasks, copy the runtime scripts to an admin-only directory. For example:
 
-```text
-C:\Program Files\CodexMonitor
+```powershell
+$RuntimeRoot = Join-Path $env:ProgramFiles 'CodexMonitor'
+$DataRoot = Join-Path $env:ProgramData 'CodexMonitor'
 ```
 
 Reason:
@@ -87,13 +90,17 @@ auditpol /get /subcategory:"Process Creation" /r
 Preferred deployment:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot "C:\Program Files\CodexMonitor" -DataRoot "C:\ProgramData\CodexMonitor" -CreateSystemTasks -CreateUserNotifierTask
+$RuntimeRoot = Join-Path $env:ProgramFiles 'CodexMonitor'
+$DataRoot = Join-Path $env:ProgramData 'CodexMonitor'
+powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot $RuntimeRoot -DataRoot $DataRoot -CreateSystemTasks -CreateUserNotifierTask
 ```
 
 If Python is missing, the installer can attempt to install it first:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot "C:\Program Files\CodexMonitor" -DataRoot "C:\ProgramData\CodexMonitor" -InstallPythonIfMissing -CreateSystemTasks -CreateUserNotifierTask
+$RuntimeRoot = Join-Path $env:ProgramFiles 'CodexMonitor'
+$DataRoot = Join-Path $env:ProgramData 'CodexMonitor'
+powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot $RuntimeRoot -DataRoot $DataRoot -InstallPythonIfMissing -CreateSystemTasks -CreateUserNotifierTask
 ```
 
 Optional Python bootstrap parameters:
@@ -126,7 +133,10 @@ Python handling notes:
 If you want the settings file elsewhere, use:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot "C:\Program Files\CodexMonitor" -DataRoot "C:\ProgramData\CodexMonitor" -SettingsRoot "C:\Some\Other\Path"
+$RuntimeRoot = Join-Path $env:ProgramFiles 'CodexMonitor'
+$DataRoot = Join-Path $env:ProgramData 'CodexMonitor'
+$SettingsRoot = 'D:\CodexMonitorSettings' # choose a protected local path
+powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot $RuntimeRoot -DataRoot $DataRoot -SettingsRoot $SettingsRoot
 ```
 
 ## Scheduled tasks

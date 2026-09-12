@@ -42,8 +42,8 @@ python .\ioc_store.py export-alert --alert-id <immutable-alert-id> --output <des
 `export-json` remains a compatibility alias for `export-indicators`. These commands
 do not create an automatic retention schedule: the operator owns the selected
 destination and its retention. Existing migration evidence remains under the
-approved `C:\ProgramData\CodexMonitor\migration-backup` retention policy; do not
-use an operational export directory as a substitute for that archive.
+operator-approved migration-backup retention policy beneath the configured data
+root; do not use an operational export directory as a substitute for that archive.
 
 ### Check monitor health
 
@@ -61,7 +61,7 @@ The UI surfaces:
 
 - overall health and paths from `get-codex-monitor-status.ps1`
 - scheduled task state, actions, and triggers
-- pending and archived alert files
+- pending and acknowledged SQLite alerts
 - recent IOC, tripwire, and RSS reports
 - SQLite indicator-store counts, ingest history, and app-state keys
 
@@ -90,11 +90,9 @@ Persistent monitor state now lives in SQLite:
 - namespace `threat_rss` for RSS dedupe state
 - namespace `alert_helper` for seen alert state
 
-The normalized indicator export is optional operator-sharing/offline evidence; the normal IOC scan reads active indicators from SQLite. Its default destination is:
-
-- `indicators\feed-indicators-latest.json`
-
-or at the path named by `IndicatorExportPath` in `codex-monitor.settings.json`.
+The normalized indicator export is optional operator-sharing/offline evidence;
+the normal IOC scan reads active indicators from SQLite and does not create an
+indicator JSON file unless an operator explicitly invokes an export command.
 
 Use `-IocPath <file>` only to run an explicit offline compatibility scan against a supplied JSON indicator set.
 
@@ -105,13 +103,13 @@ The notifier is a one-shot user-session popup helper, not a Notification Center 
 When a pending alert is processed, the helper shows a desktop popup window with:
 
 - `Open Alert`
-  - opens the paired alert Markdown report
+  - opens the immutable SQLite-backed alert detail in the local UI
 - `Open Folder`
-  - opens the current alert folder in Explorer
+  - opens the configured data root for operator-requested exports and retained migration evidence
 - `Dismiss`
   - closes the popup
 
-After the popup is handled, the alert JSON and matching Markdown file are moved from `alerts\pending` to `alerts\archive`.
+After the popup is handled, the notifier records acknowledgement or a retryable delivery failure in SQLite. It does not move alert files because alert files are not part of the operational delivery path.
 
 ## Severity model
 
@@ -226,12 +224,12 @@ auditpol /get /subcategory:"Other Object Access Events" /r
 
 Validate the pipeline in order:
 
-1. direct interactive `BurntToast`
-2. `ALERT_*.json` creation
-3. pending alert moves to `alerts\archive`
-4. `python .\ioc_store.py stats` shows `app_state_count` increasing
+1. a direct run of the interactive notifier against the configured SQLite store
+2. creation of a pending SQLite alert/delivery record
+3. notifier claim and popup display in the interactive session
+4. acknowledgement or retryable failure recorded in SQLite
 
-If the popup path works but alerts are not consumed, the issue is usually with the scheduled user-session launch context or inbox-path configuration.
+If the popup path works but alerts are not consumed, the issue is usually with the scheduled user-session launch context or SQLite-state permissions.
 
 ### Protection may be stale
 
@@ -244,10 +242,9 @@ powershell -ExecutionPolicy Bypass -File .\get-codex-monitor-status.ps1
 The status script checks:
 
 - whether the SQLite state database exists
-- whether the normalized indicator export exists and is fresh
 - whether tripwire baseline state is present
 - whether RSS state is stale
-- whether pending alerts are building up
+- whether pending SQLite alerts are building up
 - whether the scheduled tasks are installed and enabled
 
 ## Suggested repo hygiene
