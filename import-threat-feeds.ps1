@@ -1,5 +1,6 @@
 param(
     [string]$OutputPath = "",
+    [switch]$Export,
     [string]$LocationConfigPath = (Join-Path $PSScriptRoot "ioc-monitor-locations.json"),
     [string]$IocStorePath = ""
 )
@@ -476,7 +477,8 @@ function Import-CisaKevIndicators {
 }
 
 $settings = Get-Settings
-if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+$emitExport = $Export -or -not [string]::IsNullOrWhiteSpace($OutputPath)
+if ($Export -and [string]::IsNullOrWhiteSpace($OutputPath)) {
     if (-not [string]::IsNullOrWhiteSpace([string]$settings.IndicatorExportPath)) {
         $OutputPath = Resolve-SettingsPathValue -Value ([string]$settings.IndicatorExportPath)
     } else {
@@ -541,15 +543,29 @@ $bundle = [PSCustomObject]@{
 
 $locationUpdate = Update-IocMonitorLocations -Path $LocationConfigPath -Indicators $bundle.Indicators
 
-Write-JsonFile -Path $OutputPath -Object $bundle -Depth 12
-
-$iocStoreToolPath = Join-Path $PSScriptRoot "ioc_store.py"
-if (Test-Path -LiteralPath $iocStoreToolPath) {
-    $pythonCommand = Get-PythonCommand
-    & $pythonCommand $iocStoreToolPath --db $IocStorePath import-json --input $OutputPath | Out-Null
+$temporaryBundlePath = ""
+if ($emitExport) {
+    Write-JsonFile -Path $OutputPath -Object $bundle -Depth 12
+} else {
+    $temporaryBundlePath = [IO.Path]::GetTempFileName()
+    [IO.File]::WriteAllText($temporaryBundlePath, (ConvertTo-Json $bundle -Depth 12), (New-Object Text.UTF8Encoding($false)))
 }
 
-Write-Output ("Indicators written to: {0}" -f $OutputPath)
+$iocStoreToolPath = Join-Path $PSScriptRoot "ioc_store.py"
+try {
+    if (Test-Path -LiteralPath $iocStoreToolPath) {
+        $pythonCommand = Get-PythonCommand
+        & $pythonCommand $iocStoreToolPath --db $IocStorePath import-json --input $(if ($emitExport) { $OutputPath } else { $temporaryBundlePath }) | Out-Null
+        $reportId = "THREAT_FEED_IMPORT_" + ([string]$bundle.Metadata.CollectionTimeUtc -replace '[:\.]', '-')
+        $envelope = [PSCustomObject]@{ collector_run = [PSCustomObject]@{ collector_run_id = "$reportId-collector"; collector_name = "threat_feed_import"; started_at = $bundle.Metadata.CollectionTimeUtc; completed_at = $bundle.Metadata.CollectionTimeUtc; outcome = "success"; summary = $bundle.Metadata }; report = [PSCustomObject]@{ report_id = $reportId; collector_run_id = "$reportId-collector"; report_type = "threat_feed_import"; collection_time_utc = $bundle.Metadata.CollectionTimeUtc; overall_status = "success"; severity = "informational"; summary = [PSCustomObject]@{ FeedResults = $feedResults; LocationUpdate = $locationUpdate }; export_json_path = $(if ($emitExport) { $OutputPath } else { "" }); export_markdown_path = "" }; findings = @() }
+        $tempPath = [IO.Path]::GetTempFileName()
+        try { [IO.File]::WriteAllText($tempPath, (ConvertTo-Json $envelope -Depth 12), (New-Object Text.UTF8Encoding($false))); & $pythonCommand $iocStoreToolPath --db $IocStorePath persist-collector-report --input $tempPath | Out-Null } finally { if (Test-Path $tempPath) { [IO.File]::Delete($tempPath) } }
+    }
+} finally {
+    if (-not [string]::IsNullOrWhiteSpace($temporaryBundlePath) -and (Test-Path -LiteralPath $temporaryBundlePath)) { [IO.File]::Delete($temporaryBundlePath) }
+}
+
+if ($emitExport) { Write-Output ("Indicators written to: {0}" -f $OutputPath) }
 Write-Output ("Raw indicator count: {0}" -f $bundle.Metadata.RawIndicatorCount)
 Write-Output ("Normalized indicator count: {0}" -f $bundle.Metadata.IndicatorCount)
 Write-Output ("IOC monitor locations updated: {0}" -f $locationUpdate.Path)

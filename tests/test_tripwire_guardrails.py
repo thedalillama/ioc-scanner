@@ -642,6 +642,14 @@ class TripwireGuardrailTests(unittest.TestCase):
             self.assertIn("Specify -FindingIndex or -FindingId to create an acceptance.", result.stdout + result.stderr)
             self.assertEqual(self.read_accepted_rows(state_db), [])
 
+    def test_helper_accepts_only_exact_finding_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir); db = root / "state" / "ioc-store.db"
+            report_path = self.create_report_file(root, {"ReportId": "TEST-EXACT", "Changes": [{"FindingId": "exact-1", "Section": "AppIntegrityBaseline", "ItemName": "safe.json", "Field": "CurrentValue", "CurrentValue": "new", "BaselineValue": "old", "Severity": "Warning", "CsfMapping": "DE.CM"}]})
+            result = self.run_accept_helper(report_path, db, finding_id="exact-1", reason="Exact review")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(1, len(self.read_accepted_rows(db)))
+
     def test_existing_churn_still_works(self) -> None:
         payload = self.run_engine()
         by_name = {record["Name"]: record for record in payload["changes"]}

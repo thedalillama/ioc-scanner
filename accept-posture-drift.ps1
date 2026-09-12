@@ -1,7 +1,8 @@
 [CmdletBinding(DefaultParameterSetName = 'ByIndex')]
 param(
-    [Parameter(Mandatory = $true)]
     [string]$ReportPath,
+
+    [string]$ReportId,
 
     [Parameter(ParameterSetName = 'ByIndex')]
     [int]$FindingIndex,
@@ -266,11 +267,28 @@ function Show-EligibleFindings {
     }
 }
 
-if (-not (Test-Path -LiteralPath $ReportPath)) {
-    throw "ReportPath not found: $ReportPath"
+function Get-PersistedReportAsLegacyShape {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    $iocStore = Join-Path $PSScriptRoot 'ioc_store.py'
+    $raw = & 'C:\Windows\py.exe' -3 $iocStore --db ([IO.Path]::GetFullPath($StateDbPath)) get-persisted-report --report-id $Id
+    if ($LASTEXITCODE -ne 0) { throw "Unable to read persisted report: $Id" }
+    $detail = $raw | ConvertFrom-Json -ErrorAction Stop
+    if (-not [bool]$detail.found) { throw "Persisted report not found: $Id" }
+    $changes = @($detail.findings | ForEach-Object {
+        $evidence = $_.evidence
+        [pscustomobject]@{ FindingId = [string]$_.finding_id; Category = [string]$_.category; Section = [string]$_.category; Name = [string]$_.title; ItemName = [string]$_.title; ItemType = [string]$_.category; Field = 'CurrentValue'; CurrentValue = [string]$evidence.new_value; OldValue = [string]$evidence.old_value; BaselineValue = [string]$evidence.old_value; Severity = [string]$_.severity; Classification = [string]$_.classification; CsfMapping = [string]$_.csf_mapping; MatchedRuleId = [string]$evidence.rule_id; MatchedRuleDescription = [string]$evidence.rule_description; GuardrailMatched = ([string]$_.guardrail_state -eq 'protected'); GuardrailReason = [string]$evidence.guardrail_reason; IsAcceptedDrift = ([string]$_.response_state -eq 'accepted') }
+    })
+    return [pscustomobject]@{ ReportId = [string]$detail.report.report_id; Changes = $changes; ExportPath = [string]$detail.report.export_json_path }
 }
 
-$report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
+if (-not [string]::IsNullOrWhiteSpace($ReportId)) {
+    if ($PSCmdlet.ParameterSetName -ne 'ById') { throw 'Persisted-report acceptance requires -FindingId.' }
+    $report = Get-PersistedReportAsLegacyShape -Id $ReportId
+    $ReportPath = [string]$report.ExportPath
+} else {
+    if (-not (Test-Path -LiteralPath $ReportPath)) { throw "ReportPath not found: $ReportPath" }
+    $report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
+}
 $findings = @(Get-EligibleFindings -Findings (Get-ReportFindings -Report $report))
 
 if (@($findings).Count -eq 0) {
@@ -284,7 +302,7 @@ $selected = $null
 if ($PSCmdlet.ParameterSetName -eq 'ByIndex') {
     $selected = $findings | Where-Object { $_.Index -eq $FindingIndex } | Select-Object -First 1
 } else {
-    $selected = $findings | Where-Object { $_.FindingId -eq $FindingId -or $_.ItemName -eq $FindingId -or (Get-PropertyText -Object $_.Finding -Name 'Path') -eq $FindingId } | Select-Object -First 1
+    $selected = $findings | Where-Object { $_.FindingId -eq $FindingId } | Select-Object -First 1
 }
 
 if ($null -eq $selected) {
@@ -322,7 +340,7 @@ if ($null -eq $baselineValue) { $baselineValue = '' }
 $sourceReportId = [string]$report.ReportId
 if ([string]::IsNullOrWhiteSpace($sourceReportId)) { $sourceReportId = [string]$report.Id }
 if ([string]::IsNullOrWhiteSpace($sourceReportId)) { $sourceReportId = [IO.Path]::GetFileNameWithoutExtension($ReportPath) }
-$sourceReportPath = (Resolve-Path -LiteralPath $ReportPath).Path
+$sourceReportPath = if (-not [string]::IsNullOrWhiteSpace($ReportPath) -and (Test-Path -LiteralPath $ReportPath)) { (Resolve-Path -LiteralPath $ReportPath).Path } else { '' }
 $acceptedUtc = [DateTimeOffset]::UtcNow.ToString('o')
 $acceptanceId = ('ACC-{0}-{1}' -f ([DateTimeOffset]::UtcNow.ToString('yyyyMMdd-HHmmss')), ([System.Guid]::NewGuid().ToString('N').Substring(0, 8)))
 $itemName = [string]$selected.ItemName

@@ -2,7 +2,8 @@ param(
     [ValidateSet("Baseline", "Deep", "IOC")]
     [string]$Mode = "Baseline",
 
-    [string]$IocPath
+    [string]$IocPath,
+    [switch]$Export
 )
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -106,31 +107,6 @@ function Get-Settings {
         }
     }
     return [PSCustomObject]@{}
-}
-
-function Get-DefaultIocPath {
-    if (-not [string]::IsNullOrWhiteSpace($IocPath) -and (Test-Path -LiteralPath $IocPath)) {
-        return $IocPath
-    }
-
-    $settingsPath = Get-SettingsPath
-    if (Test-Path -LiteralPath $settingsPath) {
-        try {
-            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
-            $configuredIndicatorPath = Resolve-SettingsPathValue -Value ([string]$settings.IndicatorExportPath) -SettingsPath $settingsPath
-            if (-not [string]::IsNullOrWhiteSpace($configuredIndicatorPath) -and (Test-Path -LiteralPath $configuredIndicatorPath)) {
-                return $configuredIndicatorPath
-            }
-        } catch {
-        }
-    }
-
-    $defaultPath = Join-Path $PSScriptRoot "indicators\feed-indicators-latest.json"
-    if (Test-Path -LiteralPath $defaultPath) {
-        return $defaultPath
-    }
-
-    return $IocPath
 }
 
 function Get-ResolvedStateDbPath {
@@ -274,6 +250,107 @@ function Save-IocCoverageState {
         [System.IO.File]::WriteAllText($tempPath, $json, $utf8NoBom)
         [void](Invoke-StateStore -DbPath $DbPath -Arguments @("state-put", "--namespace", "ioc_scan", "--key", "latest_hash_coverage", "--input", $tempPath))
     } catch {
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            [System.IO.File]::Delete($tempPath)
+        }
+    }
+}
+
+function Save-IocReportToSqlite {
+    param(
+        [string]$DbPath,
+        [string]$ReportId,
+        $Data,
+        [string]$JsonPath,
+        [string]$MarkdownPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DbPath) -or [string]::IsNullOrWhiteSpace($ReportId) -or $null -eq $Data) {
+        throw "IOC report persistence requires a SQLite path, report ID, and report data."
+    }
+
+    $findings = @()
+    $highestSeverity = "informational"
+    $severityRank = @{ informational = 0; low = 1; medium = 2; high = 3; critical = 4 }
+    $highestRank = 0
+    $index = 0
+    foreach ($finding in @($Data.Findings)) {
+        $severity = ([string]$finding.severity).ToLowerInvariant()
+        if (-not $severityRank.ContainsKey($severity)) { $severity = "informational" }
+        if ($severityRank[$severity] -gt $highestRank) {
+            $highestSeverity = $severity
+            $highestRank = $severityRank[$severity]
+        }
+        $findings += [PSCustomObject]@{
+            finding_id = [string]$finding.finding_id
+            finding_sequence = $index
+            category = [string]$finding.indicator_type
+            severity = $severity
+            classification = [string]$finding.match_method
+            title = ("{0} match: {1}" -f [string]$finding.indicator_type, [string]$finding.indicator_value)
+            summary = [string]$finding.interpretation
+            evidence = [PSCustomObject]@{
+                matched_field = [string]$finding.matched_field
+                matched_value = [string]$finding.matched_value
+                evidence = [string]$finding.evidence
+                scope_note = [string]$finding.scope_note
+                snapshot_id = [string]$finding.snapshot_id
+                matched_observation = $finding.matched_observation
+                references = @($finding.references)
+            }
+            csf_mapping = "DE.CM"
+            guardrail_state = ""
+            response_state = "open"
+        }
+        $index++
+    }
+
+    $collectionTimeUtc = [string]$Data.Metadata.CollectionTimeUtc
+    $collectorRunId = "{0}-collector" -f $ReportId
+    $envelope = [PSCustomObject]@{
+        collector_run = [PSCustomObject]@{
+            collector_run_id = $collectorRunId
+            collector_name = "ioc"
+            collector_version = "invoke-host-ioc.ps1"
+            started_at = $collectionTimeUtc
+            completed_at = $collectionTimeUtc
+            outcome = "success"
+            summary = [PSCustomObject]@{
+                IndicatorCount = [int]$Data.IndicatorCount
+                MatchCount = [int]$Data.MatchCount
+                IndicatorSource = [string]$Data.Metadata.IndicatorSource
+            }
+        }
+        report = [PSCustomObject]@{
+            report_id = $ReportId
+            collector_run_id = $collectorRunId
+            report_type = "ioc"
+            collection_time_utc = $collectionTimeUtc
+            overall_status = if ([int]$Data.MatchCount -gt 0) { "attention" } else { "clear" }
+            severity = $highestSeverity
+            summary = [PSCustomObject]@{
+                MatchCount = [int]$Data.MatchCount
+                IndicatorCount = [int]$Data.IndicatorCount
+                MatchInterpretation = [string]$Data.MatchInterpretation
+                HashCoverage = $Data.HashCoverage
+            }
+            export_json_path = $JsonPath
+            export_markdown_path = $MarkdownPath
+        }
+        findings = @($findings)
+    }
+
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $json = ConvertTo-Json -InputObject $envelope -Depth 12
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempPath, $json, $utf8NoBom)
+        $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("persist-collector-report", "--input", $tempPath)
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            throw "SQLite returned no IOC report persistence payload: $DbPath"
+        }
+        return ($raw | ConvertFrom-Json -ErrorAction Stop)
     } finally {
         if (Test-Path -LiteralPath $tempPath) {
             [System.IO.File]::Delete($tempPath)
@@ -743,6 +820,27 @@ function Import-Indicators {
     }
 
     throw "Unsupported IOC input format. Provide a normalized indicator JSON array, an object with an Indicators array, or a STIX bundle."
+}
+
+function Get-SqliteActiveIndicators {
+    param([string]$DbPath)
+
+    $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("query-active-indicators")
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        Write-Error "SQLite returned no active-indicator payload: $DbPath" -ErrorAction Continue
+        exit 1
+    }
+    try {
+        $payload = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Error "SQLite returned an invalid active-indicator payload: $DbPath" -ErrorAction Continue
+        exit 1
+    }
+    if ($null -eq $payload -or -not ($payload.PSObject.Properties.Name -contains "Indicators")) {
+        Write-Error "SQLite active-indicator payload is invalid: $DbPath" -ErrorAction Continue
+        exit 1
+    }
+    return @($payload.Indicators)
 }
 
 function Test-IndicatorStillValid {
@@ -1483,15 +1581,19 @@ switch ($Mode) {
         [void](Save-EvidenceSnapshotToSqlite -DbPath $stateDbContext.ResolvedPath -Dataset $data -SnapshotId $snapshotId -SnapshotType "current_scan" -SourceJsonPath $jsonFile -SourceMarkdownPath $mdFile -TrustLabel "unknown")
     }
     "IOC" {
-        $resolvedIocPath = Get-DefaultIocPath
-        if (-not $resolvedIocPath -or -not (Test-Path -LiteralPath $resolvedIocPath)) {
-            throw "IOC mode requires -IocPath pointing to a JSON file, or codex-monitor.settings.json must define a valid IndicatorExportPath."
-        }
-        $IocPath = $resolvedIocPath
-        $indicators = Import-Indicators -Path $IocPath
-        $dataset = Build-DeepDataset
         $stateDbContext = Get-StateDbContext
         $resolvedStateDbPath = $stateDbContext.ResolvedPath
+        $indicatorSource = "sqlite"
+        if (-not [string]::IsNullOrWhiteSpace($IocPath)) {
+            if (-not (Test-Path -LiteralPath $IocPath)) {
+                throw "Explicit IOC JSON path was not found: $IocPath"
+            }
+            $indicators = Import-Indicators -Path $IocPath
+            $indicatorSource = "json_override"
+        } else {
+            $indicators = Get-SqliteActiveIndicators -DbPath $resolvedStateDbPath
+        }
+        $dataset = Build-DeepDataset
         $snapshotId = [IO.Path]::GetFileNameWithoutExtension($jsonFile)
         [void](Save-EvidenceSnapshotToSqlite -DbPath $resolvedStateDbPath -Dataset $dataset -SnapshotId $snapshotId -SnapshotType "current_scan" -SourceJsonPath $jsonFile -SourceMarkdownPath $mdFile -TrustLabel "unknown")
         $rawIoc = Test-IocMatch -Dataset $dataset -Indicators $indicators -StateDbPath $resolvedStateDbPath -CurrentSnapshotId $snapshotId
@@ -1501,6 +1603,7 @@ switch ($Mode) {
                 CollectionTimeUtc = $rawIoc.Metadata.CollectionTimeUtc
                 Mode = $rawIoc.Metadata.Mode
                 IocPath = $rawIoc.Metadata.IocPath
+                IndicatorSource = $indicatorSource
                 CurrentSnapshotId = $rawIoc.Metadata.CurrentSnapshotId
                 EvidenceSnapshotAvailable = [bool]$rawIoc.Metadata.EvidenceSnapshotAvailable
                 BaselineHashIndexStatus = $rawIoc.Metadata.BaselineHashIndexStatus
@@ -1522,9 +1625,16 @@ switch ($Mode) {
     }
 }
 
-Write-JsonFile -Path $jsonFile -Object $data -Depth 12
-Write-ModeMarkdown -Data $data
+if ($Export) {
+    Write-JsonFile -Path $jsonFile -Object $data -Depth 12
+    Write-ModeMarkdown -Data $data
+}
+if ($Mode -eq "IOC") {
+    [void](Save-IocReportToSqlite -DbPath $resolvedStateDbPath -ReportId $snapshotId -Data $data -JsonPath $(if ($Export) { $jsonFile } else { "" }) -MarkdownPath $(if ($Export) { $mdFile } else { "" }))
+}
 
 Write-Output "Mode: $Mode"
-Write-Output "Markdown written to: $mdFile"
-Write-Output "JSON written to: $jsonFile"
+if ($Export) {
+    Write-Output "Markdown written to: $mdFile"
+    Write-Output "JSON written to: $jsonFile"
+}

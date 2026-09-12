@@ -8,7 +8,8 @@ param(
     [string]$IocLocationConfigPath = (Join-Path $PSScriptRoot "ioc-monitor-locations.json"),
     [string]$BaselineReason = "",
     [string]$CreatedBy = "",
-    [bool]$CreatedAfterReview = $true
+    [bool]$CreatedAfterReview = $true,
+    [switch]$Export
 )
 
 $ErrorActionPreference = "Stop"
@@ -378,6 +379,81 @@ function Save-SqliteState {
         if (Test-Path -LiteralPath $tempPath) {
             [System.IO.File]::Delete($tempPath)
         }
+    }
+}
+
+function Save-TripwireReportToSqlite {
+    param(
+        [string]$DbPath,
+        [string]$ReportId,
+        $Report,
+        [string]$JsonPath,
+        [string]$MarkdownPath,
+        [string]$ReportType = "tripwire_check",
+        $Alert = $null
+    )
+
+    $findings = @()
+    $index = 0
+    foreach ($change in @($Report.Changes)) {
+        $severity = (Get-ChangeSeverity $change).ToLowerInvariant()
+        $classification = [string]$change.Classification
+        $guardrailState = if ([bool]$change.GuardrailMatched) { "protected" } else { "" }
+        $responseState = if ([bool]$change.IsAcceptedDrift) { "accepted" } elseif ($classification -eq "response_required") { "open" } else { "recorded" }
+        $findingId = [string]$change.FindingId
+        if ([string]::IsNullOrWhiteSpace($findingId)) { $findingId = "{0}-finding-{1}" -f $ReportId, $index }
+        $findings += [PSCustomObject]@{
+            finding_id = $findingId
+            finding_sequence = $index
+            category = [string]$change.Category
+            severity = $severity
+            classification = $classification
+            title = ("{0}: {1}" -f [string]$change.Category, [string]$change.Name)
+            summary = [string]$(if ($change.Interpretation) { $change.Interpretation } else { $change.Notes })
+            evidence = [PSCustomObject]@{
+                change_type = [string]$change.ChangeType
+                path = [string]$change.Path
+                old_value = [string]$change.OldValue
+                new_value = [string]$change.NewValue
+                rule_id = [string]$change.MatchedRuleId
+                rule_description = [string]$change.MatchedRuleDescription
+                guardrail_reason = [string]$change.GuardrailReason
+                acceptance_id = [string]$change.AcceptanceId
+                accepted_drift_reason = [string]$change.AcceptedDriftReason
+            }
+            csf_mapping = [string]$change.CsfMapping
+            guardrail_state = $guardrailState
+            response_state = $responseState
+        }
+        $index++
+    }
+    $collectionTimeUtc = [string]$Report.Metadata.CollectionTimeUtc
+    $collectorRunId = "{0}-collector" -f $ReportId
+    $envelope = [PSCustomObject]@{
+        collector_run = [PSCustomObject]@{ collector_run_id = $collectorRunId; collector_name = "tripwire"; collector_version = "invoke-host-tripwire.ps1"; started_at = $collectionTimeUtc; completed_at = $collectionTimeUtc; outcome = "success"; summary = $Report.Summary }
+        report = [PSCustomObject]@{ report_id = $ReportId; collector_run_id = $collectorRunId; report_type = $ReportType; collection_time_utc = $collectionTimeUtc; overall_status = if (@($Report.Changes).Count -gt 0) { "attention" } else { "clear" }; severity = ([string]$Report.Metadata.HighestSeverityLabel).ToLowerInvariant(); summary = $Report.Summary; export_json_path = $JsonPath; export_markdown_path = $MarkdownPath }
+        findings = @($findings)
+        alerts = @()
+    }
+    if ($null -ne $Alert) {
+        $sourceFindingId = [string]$Alert.SourceFindingId
+        $envelope.alerts = @([PSCustomObject]@{
+            alert_id = [string]$Alert.AlertId
+            finding_id = $sourceFindingId
+            severity = ([string]$Alert.Metadata.Severity).ToLowerInvariant()
+            summary = [string]$Alert.Summary.Message
+            lifecycle_state = "pending"
+            created_at = [string]$Alert.Metadata.CollectionTimeUtc
+            delivery_channel = "interactive_popup"
+            recipient = "interactive-user"
+        })
+    }
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($tempPath, (ConvertTo-Json -InputObject $envelope -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+        return ((Invoke-StateStore -DbPath $DbPath -Arguments @("persist-collector-report", "--input", $tempPath)) | ConvertFrom-Json -ErrorAction Stop)
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) { [System.IO.File]::Delete($tempPath) }
     }
 }
 
@@ -1346,14 +1422,27 @@ try {
 
     if ($Mode -eq "Baseline") {
         Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "host_tripwire" -Key "baseline" -Object $snapshot
-        Write-JsonFile -Path $jsonFile -Object $snapshot
+        $baselineSerializationPath = $jsonFile
+        $temporaryBaselineSerializationPath = ""
+        if ($Export) {
+            Write-JsonFile -Path $jsonFile -Object $snapshot
+        } else {
+            $temporaryBaselineSerializationPath = [IO.Path]::GetTempFileName()
+            $baselineSerializationPath = $temporaryBaselineSerializationPath
+            Write-JsonFile -Path $baselineSerializationPath -Object $snapshot
+        }
         $baselineHashIndexResult = $null
         try {
-            $baselineHashIndexResult = Index-TripwireBaselineInSqlite -DbPath $resolvedStateDbPath -BaselineJsonPath $jsonFile -BaselineMarkdownPath $mdFile
+            $baselineHashIndexResult = Index-TripwireBaselineInSqlite -DbPath $resolvedStateDbPath -BaselineJsonPath $baselineSerializationPath -BaselineMarkdownPath $(if ($Export) { $mdFile } else { "" })
         } catch {
             Write-Warning ("Tripwire baseline hash indexing failed: {0}" -f $_.Exception.Message)
+        } finally {
+            if (-not [string]::IsNullOrWhiteSpace($temporaryBaselineSerializationPath) -and (Test-Path -LiteralPath $temporaryBaselineSerializationPath)) {
+                [IO.File]::Delete($temporaryBaselineSerializationPath)
+            }
         }
 
+        if ($Export) {
         Set-Content -LiteralPath $mdFile -Value "# Host Tripwire Baseline`r`n"
         Write-MdLine ""
         Write-MdLine "This baseline represents the currently trusted state. Create a new baseline only after reviewing outstanding drift."
@@ -1386,10 +1475,16 @@ try {
         foreach ($item in @($snapshot.LoggingAuditBaseline.Items)) { Write-MdLine ("- [LoggingAuditBaseline] {0}: {1}" -f $item.Title, $item.Value) }
         foreach ($item in @($snapshot.TrustedWindowsToolBaseline.Tools | Select-Object -First 16)) { Write-MdLine ("- [TrustedWindowsToolBaseline] {0}: Exists={1}; Signature={2}" -f $item.Title, $item.Exists, $item.SignatureStatus) }
         foreach ($item in @($snapshot.AppIntegrityBaseline.Files | Select-Object -First 20)) { Write-MdLine ("- [AppIntegrityBaseline] {0}: Exists={1}; SHA256={2}" -f $item.Title, $item.Exists, $item.SHA256) }
+        }
+
+        $baselineReport = [PSCustomObject]@{ Metadata = [PSCustomObject]@{ CollectionTimeUtc = $collectionTimeUtc; HighestSeverityLabel = "informational" }; Summary = [PSCustomObject]@{ BaselineId = if ($null -ne $baselineHashIndexResult) { $baselineHashIndexResult.baseline_id } else { [IO.Path]::GetFileNameWithoutExtension($jsonFile) }; WatchedFileCount = @($snapshot.WatchedFiles).Count }; Changes = @() }
+        [void](Save-TripwireReportToSqlite -DbPath $resolvedStateDbPath -ReportId ([IO.Path]::GetFileNameWithoutExtension($jsonFile)) -Report $baselineReport -JsonPath $(if ($Export) { $jsonFile } else { "" }) -MarkdownPath $(if ($Export) { $mdFile } else { "" }) -ReportType "tripwire_baseline")
 
         Write-Host ("State written to SQLite: {0}" -f $resolvedStateDbPath)
-        Write-Host ("JSON written to: {0}" -f $jsonFile)
-        Write-Host ("Markdown written to: {0}" -f $mdFile)
+        if ($Export) {
+            Write-Host ("JSON written to: {0}" -f $jsonFile)
+            Write-Host ("Markdown written to: {0}" -f $mdFile)
+        }
         if ($null -ne $baselineHashIndexResult) {
             Write-Host ("Baseline hash index updated: {0} ({1} hashed files)" -f $baselineHashIndexResult.baseline_id, $baselineHashIndexResult.hashed_file_count)
         }
@@ -1466,7 +1561,16 @@ try {
     }
 
     $alertableChanges = @(Get-AlertableChanges -Changes $report.Changes)
+    $tripwireReportId = [IO.Path]::GetFileNameWithoutExtension($jsonFile)
+    $findingIndex = 0
+    foreach ($change in @($report.Changes)) {
+        if ([string]::IsNullOrWhiteSpace([string]$change.FindingId)) {
+            $change | Add-Member -NotePropertyName FindingId -NotePropertyValue ("{0}-finding-{1}" -f $tripwireReportId, $findingIndex) -Force
+        }
+        $findingIndex++
+    }
 
+    if ($Export) {
     Write-JsonFile -Path $jsonFile -Object $report
     Save-SqliteState -DbPath $resolvedStateDbPath -Namespace "host_tripwire" -Key "baseline" -Object $snapshot
 
@@ -1588,6 +1692,8 @@ try {
         }
     }
 
+    }
+    $alert = $null
     if (@($alertableChanges).Count -gt 0) {
         $topChanges = @($alertableChanges | Select-Object -First 3)
         $headline = Format-ChangeHeadline -Change $topChanges[0]
@@ -1609,26 +1715,34 @@ try {
                 DetailLines = @($detailLines)
             }
             Changes = @($alertableChanges)
+            AlertId = ("{0}-alert" -f $tripwireReportId)
+            SourceFindingId = [string]$topChanges[0].FindingId
         }
 
         $alertJson = "$alertBase.json"
         $alertMd = "$alertBase.md"
-        Write-JsonFile -Path $alertJson -Object $alert
-        Set-Content -LiteralPath $alertMd -Value "# Codex Tripwire Alert`r`n"
-        Add-Content -LiteralPath $alertMd -Value ""
-        Add-Content -LiteralPath $alertMd -Value ("Severity: {0}" -f $alert.Metadata.Severity)
-        Add-Content -LiteralPath $alertMd -Value ("ChangeCount: {0}" -f $alert.Metadata.ChangeCount)
-        Add-Content -LiteralPath $alertMd -Value ("SourceReport: {0}" -f $alert.Metadata.SourceReport)
-        Add-Content -LiteralPath $alertMd -Value ""
-        foreach ($change in $alert.Changes) {
-            Add-Content -LiteralPath $alertMd -Value ("- [{0}] {1} {2} ({3}/{4})" -f $change.Category, $change.Name, $change.ChangeType, (Get-ChangeSeverity $change), $(if ([string]::IsNullOrWhiteSpace([string]$change.Classification)) { 'uncategorized' } else { [string]$change.Classification }))
+        if ($Export) {
+            Write-JsonFile -Path $alertJson -Object $alert
+            Set-Content -LiteralPath $alertMd -Value "# Codex Tripwire Alert`r`n"
+            Add-Content -LiteralPath $alertMd -Value ""
+            Add-Content -LiteralPath $alertMd -Value ("Severity: {0}" -f $alert.Metadata.Severity)
+            Add-Content -LiteralPath $alertMd -Value ("ChangeCount: {0}" -f $alert.Metadata.ChangeCount)
+            Add-Content -LiteralPath $alertMd -Value ("SourceReport: {0}" -f $alert.Metadata.SourceReport)
+            Add-Content -LiteralPath $alertMd -Value ""
+            foreach ($change in $alert.Changes) {
+                Add-Content -LiteralPath $alertMd -Value ("- [{0}] {1} {2} ({3}/{4})" -f $change.Category, $change.Name, $change.ChangeType, (Get-ChangeSeverity $change), $(if ([string]::IsNullOrWhiteSpace([string]$change.Classification)) { 'uncategorized' } else { [string]$change.Classification }))
+            }
+            Write-Host ("Alert JSON written to: {0}" -f $alertJson)
+            Write-Host ("Alert Markdown written to: {0}" -f $alertMd)
         }
-        Write-Host ("Alert JSON written to: {0}" -f $alertJson)
-        Write-Host ("Alert Markdown written to: {0}" -f $alertMd)
     }
 
-    Write-Host ("JSON written to: {0}" -f $jsonFile)
-    Write-Host ("Markdown written to: {0}" -f $mdFile)
+    [void](Save-TripwireReportToSqlite -DbPath $resolvedStateDbPath -ReportId $tripwireReportId -Report $report -JsonPath $(if ($Export) { $jsonFile } else { "" }) -MarkdownPath $(if ($Export) { $mdFile } else { "" }) -Alert $alert)
+
+    if ($Export) {
+        Write-Host ("JSON written to: {0}" -f $jsonFile)
+        Write-Host ("Markdown written to: {0}" -f $mdFile)
+    }
 }
 finally {
     if ($tripwireLockAcquired) {

@@ -120,8 +120,15 @@ function Invoke-StateStore {
 
     $scriptPath = Get-StateStoreScriptPath
     $pythonCommand = Get-PythonCommand
-    $output = & $pythonCommand $scriptPath --db $DbPath @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $priorErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $pythonCommand $scriptPath --db $DbPath @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $priorErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
         throw ("State store command failed: {0} {1} --db {2} {3}`n{4}" -f $pythonCommand, $scriptPath, $DbPath, ($Arguments -join ' '), (@($output) -join [Environment]::NewLine))
     }
     return (@($output) -join [Environment]::NewLine)
@@ -581,79 +588,46 @@ function Show-QueuedAlerts {
         -AlertFolderPath $AlertFolderPath
 }
 
-$WatchPath = Get-HelperWatchPath -ConfiguredWatchPath $WatchPath
 $StateDbPath = Get-HelperStateDbPath -ConfiguredStateDbPath $StateDbPath -ConfiguredStatePath $StatePath
-$ArchivePath = Get-ArchivePath -CurrentWatchPath $WatchPath
-Ensure-ParentDirectory -Path (Join-Path $ArchivePath "placeholder.txt")
-
-if (-not (Test-Path -LiteralPath $WatchPath)) {
-    throw "Watch path not found: $WatchPath"
-}
-
-$state = Get-State -DbPath $StateDbPath -LegacyPath $StatePath
-$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($entry in @($state.SeenAlerts)) {
-    if (-not [string]::IsNullOrWhiteSpace([string]$entry)) {
-        [void]$seen.Add([string]$entry)
-    }
-}
-$lastShownByFingerprint = @{}
-foreach ($property in @(($state.PSObject.Properties | Where-Object { $_.Name -eq 'AlertFingerprintLastShownUtc' }))) {
-    foreach ($entry in @($property.Value.PSObject.Properties)) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$entry.Name) -and -not [string]::IsNullOrWhiteSpace([string]$entry.Value)) {
-            $lastShownByFingerprint[[string]$entry.Name] = [string]$entry.Value
-        }
-    }
-}
+$deliveryChannel = "interactive_popup"
+$recipient = "interactive-user"
 
 do {
-    $alerts = @(Get-ChildItem -LiteralPath $WatchPath -Filter "ALERT_*.json" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)
-    $queuedAlerts = @()
-    $notifyAlerts = @()
-    $batchFingerprints = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($file in $alerts) {
-        try {
-            $alert = Get-Content $file.FullName -Raw | ConvertFrom-Json
-        } catch {
-            continue
-        }
-
-        $queued = New-QueuedAlertRecord -JsonFile $file -AlertPayload $alert
-        if ($seen.Contains($queued.Identity)) {
-            continue
-        }
-        $queuedAlerts += $queued
-        if ((-not $batchFingerprints.Contains($queued.Fingerprint)) -and (Should-NotifyAlert -LastShownByFingerprint $lastShownByFingerprint -Fingerprint $queued.Fingerprint -SuppressHours $RepeatSuppressHours)) {
-            [void]$batchFingerprints.Add($queued.Fingerprint)
-            $notifyAlerts += $queued
+    $rawClaims = Invoke-StateStore -DbPath $StateDbPath -Arguments @("claim-alert-deliveries", "--channel", $deliveryChannel, "--recipient", $recipient, "--limit", "20")
+    $rawClaimsText = (@($rawClaims) -join [Environment]::NewLine)
+    $claims = @()
+    if (-not [string]::IsNullOrWhiteSpace($rawClaimsText) -and $rawClaimsText.Trim() -ne "[]") {
+        $parsedClaims = ConvertFrom-Json -InputObject $rawClaimsText
+        foreach ($parsedClaim in $parsedClaims) {
+            $claims += ,$parsedClaim
         }
     }
-
-    if (@($queuedAlerts).Count -gt 0) {
-        $notifyByIdentity = @{}
-        foreach ($queued in $notifyAlerts) {
-            $notifyByIdentity[[string]$queued.Identity] = $true
-        }
-
-        $archivedNotifyAlerts = @()
-        $shownAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-        foreach ($queued in $queuedAlerts) {
-            [void]$seen.Add($queued.Identity)
-            $archiveMove = Move-AlertArtifactsToArchive -JsonFile $queued.File -MarkdownPath $queued.MarkdownPath -ArchivePath $ArchivePath
-            if ($notifyByIdentity.ContainsKey([string]$queued.Identity)) {
-                $archivedNotifyAlerts += (Convert-ToArchivedAlertRecord -QueuedAlert $queued -ArchiveMoveResult $archiveMove)
-                if (-not [string]::IsNullOrWhiteSpace($queued.Fingerprint)) {
-                    $lastShownByFingerprint[$queued.Fingerprint] = $shownAtUtc
+    if (@($claims).Count -gt 0) {
+        $popupAlerts = @($claims | ForEach-Object {
+            [PSCustomObject]@{
+                Title = ("Codex monitor alert ({0})" -f [string]$_.severity)
+                Message = [string]$_.summary
+                DetailLines = @("Source report: {0}" -f [string]$_.report_id, "Finding: {0}" -f [string]$_.finding_id)
+                MarkdownPath = [string]$_.export_markdown_path
+            }
+        })
+        try {
+            $shown = Show-QueuedAlerts -QueuedAlerts $popupAlerts -AlertFolderPath ""
+            if (-not $shown) { throw "The interactive alert popup could not be shown." }
+            foreach ($claim in $claims) {
+                [void](Invoke-StateStore -DbPath $StateDbPath -Arguments @("complete-alert-delivery", "--delivery-id", [string]$claim.alert_delivery_id, "--outcome", "delivered"))
+            }
+        } catch {
+            $failure = [string]$_.Exception.Message
+            foreach ($claim in $claims) {
+                try {
+                    [void](Invoke-StateStore -DbPath $StateDbPath -Arguments @("complete-alert-delivery", "--delivery-id", [string]$claim.alert_delivery_id, "--outcome", "failed", "--error", $failure))
+                } catch {
                 }
             }
-        }
-        Save-State -DbPath $StateDbPath -SeenAlerts $seen -AlertFingerprintLastShownUtc $lastShownByFingerprint
-        if (@($archivedNotifyAlerts).Count -gt 0) {
-            [void](Show-QueuedAlerts -QueuedAlerts $archivedNotifyAlerts -AlertFolderPath $ArchivePath)
+            throw
         }
     }
 
-    if ($Watch) {
-        Start-Sleep -Seconds $PollSeconds
-    }
+    if ($Watch) { Start-Sleep -Seconds $PollSeconds }
 } while ($Watch)

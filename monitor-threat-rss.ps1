@@ -4,7 +4,8 @@ param(
     [int]$LookbackHours = 72,
     [switch]$RunDeepOnMatch,
     [switch]$RunBaselineOnMatch,
-    [switch]$RunTripwireCheckOnMatch
+    [switch]$RunTripwireCheckOnMatch,
+    [switch]$Export
 )
 
 $ErrorActionPreference = "Stop"
@@ -494,6 +495,7 @@ $report = [PSCustomObject]@{
     IocFollowUp = @($iocFollowUp)
 }
 
+if ($Export) {
 Write-JsonFile -Path $jsonFile -Object $report
 
 Set-Content -LiteralPath $mdFile -Value "# Threat RSS Report`r`n"
@@ -524,8 +526,17 @@ if (@($report.NewItems).Count -eq 0) {
         Write-MdLine ""
     }
 }
+}
 
-if ([int]$report.Metadata.RelevantItemCount -gt 0) {
+$rssReportId = [IO.Path]::GetFileNameWithoutExtension($jsonFile)
+$rssFindings = @($report.NewItems | ForEach-Object -Begin { $i = 0 } -Process {
+    $item = $_; $result = [PSCustomObject]@{ finding_id = "$rssReportId-finding-$i"; finding_sequence = $i; category = "threat_rss"; severity = "medium"; classification = [string]$item.Relevance; title = [string]$item.Title; summary = [string]$item.Summary; evidence = $item; csf_mapping = "DE.CM"; guardrail_state = ""; response_state = "open" }; $i++; $result
+})
+$rssEnvelope = [PSCustomObject]@{ collector_run = [PSCustomObject]@{ collector_run_id = "$rssReportId-collector"; collector_name = "threat_rss"; started_at = $collectionTimeUtc; completed_at = $collectionTimeUtc; outcome = "success"; summary = [PSCustomObject]@{ FeedCount = $report.Metadata.FeedCount; RelevantItemCount = $report.Metadata.RelevantItemCount } }; report = [PSCustomObject]@{ report_id = $rssReportId; collector_run_id = "$rssReportId-collector"; report_type = "threat_rss"; collection_time_utc = $collectionTimeUtc; overall_status = if ([int]$report.Metadata.RelevantItemCount -gt 0) { "attention" } else { "clear" }; severity = if ([int]$report.Metadata.RelevantItemCount -gt 0) { "medium" } else { "informational" }; summary = $report.Metadata; export_json_path = $(if ($Export) { $jsonFile } else { "" }); export_markdown_path = $(if ($Export) { $mdFile } else { "" }) }; findings = $rssFindings }
+$rssTemp = [IO.Path]::GetTempFileName()
+try { [IO.File]::WriteAllText($rssTemp, (ConvertTo-Json $rssEnvelope -Depth 12), (New-Object Text.UTF8Encoding($false))); [void](Invoke-StateStore -DbPath $resolvedStateDbPath -Arguments @("persist-collector-report", "--input", $rssTemp)) } finally { if (Test-Path $rssTemp) { [IO.File]::Delete($rssTemp) } }
+
+if ($Export -and [int]$report.Metadata.RelevantItemCount -gt 0) {
     $topItems = @($report.NewItems | Select-Object -First 3)
     $detailLines = @($topItems | ForEach-Object { "{0} ({1})" -f $_.Title, $_.FeedName })
     $alert = [PSCustomObject]@{
@@ -562,5 +573,4 @@ if ([int]$report.Metadata.RelevantItemCount -gt 0) {
     Write-Host ("Alert Markdown written to: {0}" -f $alertMd)
 }
 
-Write-Host ("JSON written to: {0}" -f $jsonFile)
-Write-Host ("Markdown written to: {0}" -f $mdFile)
+if ($Export) { Write-Host ("JSON written to: {0}" -f $jsonFile); Write-Host ("Markdown written to: {0}" -f $mdFile) }

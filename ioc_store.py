@@ -2,7 +2,7 @@ import argparse
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -36,6 +36,8 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
     ensure_parent(db_path)
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute("PRAGMA foreign_keys=ON")
     return connection
 
 
@@ -334,7 +336,106 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_file_observations_path ON file_observations(path);
         CREATE INDEX IF NOT EXISTS idx_file_observations_filename ON file_observations(filename);
         CREATE INDEX IF NOT EXISTS idx_file_observations_sha256 ON file_observations(sha256);
+
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL,
+            description TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS collector_runs (
+            collector_run_id TEXT PRIMARY KEY,
+            collector_name TEXT NOT NULL,
+            collector_version TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            outcome TEXT NOT NULL,
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_collector_runs_name_started ON collector_runs(collector_name, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_collector_runs_outcome_started ON collector_runs(outcome, started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS reports (
+            report_id TEXT PRIMARY KEY,
+            collector_run_id TEXT NOT NULL,
+            report_type TEXT NOT NULL,
+            collection_time_utc TEXT NOT NULL,
+            overall_status TEXT,
+            severity TEXT,
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            export_json_path TEXT,
+            export_markdown_path TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(collector_run_id) REFERENCES collector_runs(collector_run_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reports_type_collected ON reports(report_type, collection_time_utc DESC);
+        CREATE INDEX IF NOT EXISTS idx_reports_collector_run ON reports(collector_run_id);
+
+        CREATE TABLE IF NOT EXISTS findings (
+            finding_id TEXT PRIMARY KEY,
+            report_id TEXT NOT NULL,
+            finding_sequence INTEGER NOT NULL,
+            category TEXT,
+            severity TEXT,
+            classification TEXT,
+            title TEXT,
+            summary TEXT,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            csf_mapping TEXT,
+            guardrail_state TEXT,
+            response_state TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(report_id) REFERENCES reports(report_id),
+            UNIQUE(report_id, finding_sequence)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_findings_report_severity ON findings(report_id, severity);
+        CREATE INDEX IF NOT EXISTS idx_findings_classification_response ON findings(classification, response_state);
+
+        CREATE TABLE IF NOT EXISTS alerts (
+            alert_id TEXT PRIMARY KEY,
+            report_id TEXT,
+            finding_id TEXT,
+            severity TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            lifecycle_state TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            acknowledged_at TEXT,
+            closed_at TEXT,
+            FOREIGN KEY(report_id) REFERENCES reports(report_id),
+            FOREIGN KEY(finding_id) REFERENCES findings(finding_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_alerts_lifecycle_severity ON alerts(lifecycle_state, severity, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS alert_deliveries (
+            alert_delivery_id TEXT PRIMARY KEY,
+            alert_id TEXT NOT NULL,
+            delivery_channel TEXT NOT NULL,
+            recipient TEXT,
+            delivery_state TEXT NOT NULL DEFAULT 'pending',
+            claimed_at TEXT,
+            delivered_at TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(alert_id) REFERENCES alerts(alert_id),
+            UNIQUE(alert_id, delivery_channel, recipient)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_alert_deliveries_pending ON alert_deliveries(delivery_state, created_at);
         """
+    )
+    connection.executemany(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, description) VALUES (?, ?, ?)",
+        [
+            (1, utc_now(), "Initial normalized indicator, state, baseline, and evidence schema."),
+            (2, utc_now(), "Additive Phase 2 collector, report, finding, alert, and delivery schema foundation."),
+        ],
     )
     connection.commit()
 
@@ -546,7 +647,8 @@ def match_sha256_indicators_against_baseline_hashes(
             i.value AS indicator_value,
             i.source,
             i.confidence,
-            i.severity
+            i.severity,
+            i.valid_until
         FROM baseline_file_hashes b
         JOIN baseline_runs br
           ON br.baseline_id = b.baseline_id
@@ -574,6 +676,7 @@ def match_sha256_indicators_against_baseline_hashes(
             "SELECT COUNT(*) FROM baseline_file_hashes WHERE sha256 IS NOT NULL AND trim(sha256) <> ''"
         ).fetchone()[0]
 
+    reference_time = datetime.now(timezone.utc)
     matches = [
         {
             "baseline_id": row["baseline_id"],
@@ -588,6 +691,7 @@ def match_sha256_indicators_against_baseline_hashes(
             "severity": row["severity"],
         }
         for row in rows
+        if indicator_is_active({"valid_until": row["valid_until"]}, reference_time)
     ]
     return {
         "baseline_hash_index_status": "available",
@@ -1193,13 +1297,11 @@ def match_indicators_against_evidence_snapshots(
             "coverage": {},
         }
 
-    indicator_rows = connection.execute(
-        """
-        SELECT type, value, source, confidence, severity
-        FROM indicators
-        WHERE type IN ('sha256', 'ipv4', 'ipv6', 'domain', 'url', 'registry_key', 'registry_value', 'service_name', 'scheduled_task', 'command_line_pattern')
-        """
-    ).fetchall()
+    supported_types = ('sha256', 'ipv4', 'ipv6', 'domain', 'url', 'registry_key', 'registry_value', 'service_name', 'scheduled_task', 'command_line_pattern')
+    indicator_rows = query_active_indicators(
+        connection,
+        indicator_types=supported_types,
+    )["Indicators"]
 
     indicators_by_type: Dict[str, Dict[str, List[sqlite3.Row]]] = {
         "sha256": {},
@@ -1652,36 +1754,7 @@ def export_indicators(connection: sqlite3.Connection) -> Dict[str, Any]:
         """
     ).fetchall()
 
-    indicators = []
-    for row in rows:
-        raw_source_record = None
-        if row["raw_source_record_json"]:
-            try:
-                raw_source_record = json.loads(row["raw_source_record_json"])
-            except json.JSONDecodeError:
-                raw_source_record = row["raw_source_record_json"]
-
-        indicators.append(
-            {
-                "indicator_id": row["indicator_id"],
-                "type": row["type"],
-                "value": row["value"],
-                "source": row["source"],
-                "confidence": row["confidence"],
-                "severity": row["severity"],
-                "first_seen": row["first_seen"] or "",
-                "last_seen": row["last_seen"] or "",
-                "valid_from": row["valid_from"] or "",
-                "valid_until": row["valid_until"] or "",
-                "tlp": row["tlp"] or "clear",
-                "malware_family": row["malware_family"] or "",
-                "campaign": row["campaign"] or "",
-                "threat_actor": row["threat_actor"] or "",
-                "attack_technique": row["attack_technique"] or "",
-                "reference_url": row["reference_url"] or "",
-                "raw_source_record": raw_source_record,
-            }
-        )
+    indicators = [indicator_row_to_dict(row) for row in rows]
 
     return {
         "Metadata": {
@@ -1692,6 +1765,54 @@ def export_indicators(connection: sqlite3.Connection) -> Dict[str, Any]:
         },
         "Indicators": indicators,
     }
+
+
+def indicator_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    raw_source_record = None
+    if row["raw_source_record_json"]:
+        try:
+            raw_source_record = json.loads(row["raw_source_record_json"])
+        except json.JSONDecodeError:
+            raw_source_record = row["raw_source_record_json"]
+    return {
+        "indicator_id": row["indicator_id"], "type": row["type"], "value": row["value"], "source": row["source"],
+        "confidence": row["confidence"], "severity": row["severity"], "first_seen": row["first_seen"] or "",
+        "last_seen": row["last_seen"] or "", "valid_from": row["valid_from"] or "", "valid_until": row["valid_until"] or "",
+        "tlp": row["tlp"] or "clear", "malware_family": row["malware_family"] or "", "campaign": row["campaign"] or "",
+        "threat_actor": row["threat_actor"] or "", "attack_technique": row["attack_technique"] or "",
+        "reference_url": row["reference_url"] or "", "raw_source_record": raw_source_record,
+    }
+
+
+def indicator_is_active(indicator: Dict[str, Any], now: datetime) -> bool:
+    valid_until = str(indicator.get("valid_until") or "").strip()
+    if not valid_until:
+        return True
+    try:
+        expires_at = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at > now
+
+
+def query_active_indicators(connection: sqlite3.Connection, indicator_types: Optional[Iterable[str]] = None, include_expired: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
+    normalized_types = sorted({str(value).strip().lower() for value in (indicator_types or []) if str(value).strip()})
+    params: List[Any] = []
+    where = ""
+    if normalized_types:
+        where = "WHERE lower(type) IN ({0})".format(", ".join("?" for _ in normalized_types))
+        params.extend(normalized_types)
+    rows = connection.execute(
+        f"SELECT indicator_id, type, value, source, confidence, severity, first_seen, last_seen, valid_from, valid_until, tlp, malware_family, campaign, threat_actor, attack_technique, reference_url, raw_source_record_json FROM indicators {where} ORDER BY type, value, source",
+        params,
+    ).fetchall()
+    reference_time = now or datetime.now(timezone.utc)
+    indicators = [indicator_row_to_dict(row) for row in rows]
+    if not include_expired:
+        indicators = [indicator for indicator in indicators if indicator_is_active(indicator, reference_time)]
+    return {"Metadata": {"Format": "sqlite-active-indicator-set", "CollectionTimeUtc": reference_time.isoformat(), "IndicatorCount": len(indicators), "Source": "sqlite-ioc-store", "IncludeExpired": include_expired, "Types": normalized_types}, "Indicators": indicators}
 
 
 def stats(connection: sqlite3.Connection) -> Dict[str, Any]:
@@ -1725,6 +1846,357 @@ def stats(connection: sqlite3.Connection) -> Dict[str, Any]:
         "by_type": by_type,
         "by_source": by_source,
     }
+
+
+def _required_text(document: Dict[str, Any], field_name: str) -> str:
+    value = str(document.get(field_name) or "").strip()
+    if not value:
+        raise ValueError(f"{field_name} is required.")
+    return value
+
+
+def _json_payload(value: Any) -> str:
+    return json.dumps({} if value is None else value, ensure_ascii=True, sort_keys=True)
+
+
+def persist_collector_run_report_findings(
+    connection: sqlite3.Connection,
+    collector_run: Dict[str, Any],
+    report: Dict[str, Any],
+    findings: Iterable[Dict[str, Any]],
+    alerts: Iterable[Dict[str, Any]] = (),
+) -> Dict[str, Any]:
+    """Persist one immutable collector run, report, findings, and alerts atomically."""
+    collector_run_id = _required_text(collector_run, "collector_run_id")
+    report_id = _required_text(report, "report_id")
+    if str(report.get("collector_run_id") or collector_run_id).strip() != collector_run_id:
+        raise ValueError("report.collector_run_id must match collector_run.collector_run_id.")
+
+    now = utc_now()
+    finding_rows = list(findings)
+    alert_rows = list(alerts)
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO collector_runs (
+                collector_run_id, collector_name, collector_version, started_at,
+                completed_at, outcome, summary_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                collector_run_id,
+                _required_text(collector_run, "collector_name"),
+                str(collector_run.get("collector_version") or "").strip() or None,
+                _required_text(collector_run, "started_at"),
+                str(collector_run.get("completed_at") or "").strip() or None,
+                _required_text(collector_run, "outcome"),
+                _json_payload(collector_run.get("summary")),
+                str(collector_run.get("created_at") or now),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO reports (
+                report_id, collector_run_id, report_type, collection_time_utc,
+                overall_status, severity, summary_json, export_json_path,
+                export_markdown_path, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                collector_run_id,
+                _required_text(report, "report_type"),
+                _required_text(report, "collection_time_utc"),
+                str(report.get("overall_status") or "").strip() or None,
+                str(report.get("severity") or "").strip() or None,
+                _json_payload(report.get("summary")),
+                str(report.get("export_json_path") or "").strip() or None,
+                str(report.get("export_markdown_path") or "").strip() or None,
+                str(report.get("created_at") or now),
+            ),
+        )
+        for index, finding in enumerate(finding_rows):
+            sequence = finding.get("finding_sequence", index)
+            if not isinstance(sequence, int) or sequence < 0:
+                raise ValueError("finding_sequence must be a non-negative integer.")
+            connection.execute(
+                """
+                INSERT INTO findings (
+                    finding_id, report_id, finding_sequence, category, severity,
+                    classification, title, summary, evidence_json, csf_mapping,
+                    guardrail_state, response_state, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _required_text(finding, "finding_id"),
+                    report_id,
+                    sequence,
+                    str(finding.get("category") or "").strip() or None,
+                    str(finding.get("severity") or "").strip() or None,
+                    str(finding.get("classification") or "").strip() or None,
+                    str(finding.get("title") or "").strip() or None,
+                    str(finding.get("summary") or "").strip() or None,
+                    _json_payload(finding.get("evidence")),
+                    str(finding.get("csf_mapping") or "").strip() or None,
+                    str(finding.get("guardrail_state") or "").strip() or None,
+                    str(finding.get("response_state") or "open").strip() or "open",
+                    str(finding.get("created_at") or now),
+                ),
+            )
+        finding_ids = {_required_text(finding, "finding_id") for finding in finding_rows}
+        for alert in alert_rows:
+            alert_id = _required_text(alert, "alert_id")
+            finding_id = str(alert.get("finding_id") or "").strip() or None
+            if finding_id is not None and finding_id not in finding_ids:
+                raise ValueError("alert.finding_id must identify a finding persisted with the same report.")
+            connection.execute(
+                """
+                INSERT INTO alerts (
+                    alert_id, report_id, finding_id, severity, summary, lifecycle_state,
+                    created_at, acknowledged_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    alert_id,
+                    report_id,
+                    finding_id,
+                    _required_text(alert, "severity"),
+                    _required_text(alert, "summary"),
+                    str(alert.get("lifecycle_state") or "pending").strip() or "pending",
+                    str(alert.get("created_at") or now),
+                    str(alert.get("acknowledged_at") or "").strip() or None,
+                    str(alert.get("closed_at") or "").strip() or None,
+                ),
+            )
+            delivery_channel = str(alert.get("delivery_channel") or "interactive_popup").strip()
+            recipient = str(alert.get("recipient") or "interactive-user").strip()
+            connection.execute(
+                """
+                INSERT INTO alert_deliveries (
+                    alert_delivery_id, alert_id, delivery_channel, recipient,
+                    delivery_state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (f"{alert_id}:{delivery_channel}:{recipient}", alert_id, delivery_channel, recipient, now, now),
+            )
+
+    result = {
+        "collector_run_id": collector_run_id,
+        "report_id": report_id,
+        "finding_count": len(finding_rows),
+    }
+    if alert_rows:
+        result["alert_count"] = len(alert_rows)
+    return result
+
+
+def claim_alert_deliveries(
+    connection: sqlite3.Connection, delivery_channel: str, recipient: str, limit: int = 20, claim_lease_seconds: int = 300
+) -> List[Dict[str, Any]]:
+    """Atomically claim retryable deliveries for one notifier channel and recipient."""
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        raise ValueError("limit must be an integer between 1 and 100.")
+    if not isinstance(claim_lease_seconds, int) or claim_lease_seconds < 1 or claim_lease_seconds > 3600:
+        raise ValueError("claim_lease_seconds must be an integer between 1 and 3600.")
+    channel = _required_text({"delivery_channel": delivery_channel}, "delivery_channel")
+    target = _required_text({"recipient": recipient}, "recipient")
+    claimed_at = utc_now()
+    lease_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=claim_lease_seconds)).isoformat()
+    with connection:
+        rows = connection.execute(
+            """
+            SELECT d.alert_delivery_id, d.alert_id, d.delivery_channel, d.recipient,
+                   d.attempt_count, a.report_id, a.finding_id, a.severity, a.summary,
+                   r.export_json_path, r.export_markdown_path
+            FROM alert_deliveries d
+            JOIN alerts a ON a.alert_id = d.alert_id
+            LEFT JOIN reports r ON r.report_id = a.report_id
+            WHERE d.delivery_channel = ? AND d.recipient = ?
+              AND (d.delivery_state IN ('pending', 'failed')
+                   OR (d.delivery_state = 'claimed' AND d.claimed_at <= ?))
+              AND a.lifecycle_state = 'pending'
+            ORDER BY a.created_at ASC, d.created_at ASC
+            LIMIT ?
+            """,
+            (channel, target, lease_cutoff, limit),
+        ).fetchall()
+        claimed_rows = [dict(row) for row in rows]
+        for claimed_row in claimed_rows:
+            claimed_row["attempt_count"] = int(claimed_row["attempt_count"]) + 1
+        ids = [row["alert_delivery_id"] for row in rows]
+        for delivery_id in ids:
+            connection.execute(
+                """UPDATE alert_deliveries
+                   SET delivery_state = 'claimed', claimed_at = ?, attempt_count = attempt_count + 1,
+                       updated_at = ?, last_error = NULL
+                   WHERE alert_delivery_id = ?
+                     AND (delivery_state IN ('pending', 'failed')
+                          OR (delivery_state = 'claimed' AND claimed_at <= ?))""",
+                (claimed_at, claimed_at, delivery_id, lease_cutoff),
+            )
+    return claimed_rows
+
+
+def complete_alert_delivery(
+    connection: sqlite3.Connection, delivery_id: str, outcome: str, error: str = ""
+) -> Dict[str, Any]:
+    """Mark a claimed delivery delivered or failed; failed rows remain retryable."""
+    delivery_id = _required_text({"delivery_id": delivery_id}, "delivery_id")
+    if outcome not in {"delivered", "failed"}:
+        raise ValueError("outcome must be delivered or failed.")
+    now = utc_now()
+    with connection:
+        row = connection.execute(
+            "SELECT alert_id, delivery_state FROM alert_deliveries WHERE alert_delivery_id = ?", (delivery_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("alert delivery was not found.")
+        if row["delivery_state"] != "claimed":
+            raise ValueError("alert delivery is not currently claimed.")
+        if outcome == "delivered":
+            connection.execute(
+                "UPDATE alert_deliveries SET delivery_state='delivered', delivered_at=?, updated_at=?, last_error=NULL WHERE alert_delivery_id=?",
+                (now, now, delivery_id),
+            )
+            connection.execute(
+                "UPDATE alerts SET lifecycle_state='acknowledged', acknowledged_at=? WHERE alert_id=? AND lifecycle_state='pending'",
+                (now, row["alert_id"]),
+            )
+        else:
+            connection.execute(
+                "UPDATE alert_deliveries SET delivery_state='failed', updated_at=?, last_error=? WHERE alert_delivery_id=?",
+                (now, str(error or "delivery failed"), delivery_id),
+            )
+    return {"alert_delivery_id": delivery_id, "outcome": outcome}
+
+
+def _read_json_payload(value: Any) -> Any:
+    try:
+        return json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def list_persisted_reports(connection: sqlite3.Connection, limit: int = 15) -> List[Dict[str, Any]]:
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        raise ValueError("limit must be an integer between 1 and 100.")
+    rows = connection.execute(
+        """
+        SELECT report_id, report_type, collection_time_utc, overall_status, severity,
+               summary_json, export_json_path, export_markdown_path
+        FROM reports
+        ORDER BY collection_time_utc DESC, report_id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "report_id": row["report_id"],
+            "name": row["report_id"],
+            "report_type": row["report_type"],
+            "collection_time": row["collection_time_utc"],
+            "overall_status": row["overall_status"] or "",
+            "severity": row["severity"] or "",
+            "summary": _read_json_payload(row["summary_json"]),
+            "export_json_path": row["export_json_path"] or "",
+            "export_markdown_path": row["export_markdown_path"] or "",
+        }
+        for row in rows
+    ]
+
+
+def get_persisted_report(connection: sqlite3.Connection, report_id: str) -> Dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT r.report_id, r.collector_run_id, r.report_type, r.collection_time_utc,
+               r.overall_status, r.severity, r.summary_json, r.export_json_path,
+               r.export_markdown_path, cr.collector_name, cr.collector_version,
+               cr.started_at, cr.completed_at, cr.outcome, cr.summary_json AS run_summary_json
+        FROM reports r
+        JOIN collector_runs cr ON cr.collector_run_id = r.collector_run_id
+        WHERE r.report_id = ?
+        """,
+        (str(report_id or "").strip(),),
+    ).fetchone()
+    if row is None:
+        return {"found": False, "report": None, "findings": []}
+
+    finding_rows = connection.execute(
+        """
+        SELECT finding_id, finding_sequence, category, severity, classification,
+               title, summary, evidence_json, csf_mapping, guardrail_state,
+               response_state, created_at
+        FROM findings
+        WHERE report_id = ?
+        ORDER BY finding_sequence ASC, finding_id ASC
+        """,
+        (row["report_id"],),
+    ).fetchall()
+    return {
+        "found": True,
+        "report": {
+            "report_id": row["report_id"],
+            "collector_run_id": row["collector_run_id"],
+            "report_type": row["report_type"],
+            "collection_time": row["collection_time_utc"],
+            "overall_status": row["overall_status"] or "",
+            "severity": row["severity"] or "",
+            "summary": _read_json_payload(row["summary_json"]),
+            "export_json_path": row["export_json_path"] or "",
+            "export_markdown_path": row["export_markdown_path"] or "",
+            "collector": {
+                "name": row["collector_name"],
+                "version": row["collector_version"] or "",
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"] or "",
+                "outcome": row["outcome"],
+                "summary": _read_json_payload(row["run_summary_json"]),
+            },
+        },
+        "findings": [
+            {
+                "finding_id": finding["finding_id"],
+                "finding_sequence": finding["finding_sequence"],
+                "category": finding["category"] or "",
+                "severity": finding["severity"] or "",
+                "classification": finding["classification"] or "",
+                "title": finding["title"] or "",
+                "summary": finding["summary"] or "",
+                "evidence": _read_json_payload(finding["evidence_json"]),
+                "csf_mapping": finding["csf_mapping"] or "",
+                "guardrail_state": finding["guardrail_state"] or "",
+                "response_state": finding["response_state"],
+                "created_at": finding["created_at"],
+            }
+            for finding in finding_rows
+        ],
+    }
+
+
+def get_persisted_alert(connection: sqlite3.Connection, alert_id: str) -> Dict[str, Any]:
+    row = connection.execute(
+        """SELECT a.alert_id, a.report_id, a.finding_id, a.severity, a.summary,
+                  a.lifecycle_state, a.created_at, a.acknowledged_at, a.closed_at,
+                  r.export_json_path, r.export_markdown_path
+           FROM alerts a LEFT JOIN reports r ON r.report_id=a.report_id
+           WHERE a.alert_id=?""",
+        (str(alert_id or "").strip(),),
+    ).fetchone()
+    return {"found": bool(row), "alert": dict(row) if row else None}
+
+
+def list_persisted_alerts(connection: sqlite3.Connection, limit: int = 50) -> List[Dict[str, Any]]:
+    rows = connection.execute(
+        """SELECT alert_id, report_id, finding_id, severity, summary, lifecycle_state,
+                  created_at, acknowledged_at, closed_at
+           FROM alerts
+           ORDER BY CASE lifecycle_state WHEN 'pending' THEN 0 ELSE 1 END,
+                    created_at DESC, alert_id ASC
+           LIMIT ?""",
+        (max(1, int(limit)),),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_app_state(connection: sqlite3.Connection, namespace: str, state_key: str) -> Dict[str, Any]:
@@ -1991,6 +2463,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     export_parser = subparsers.add_parser("export-json", help="Export normalized indicators from SQLite to JSON.")
     export_parser.add_argument("--output", required=True, help="Destination JSON file.")
+    export_indicators_parser = subparsers.add_parser("export-indicators", help="Explicitly export normalized indicators from SQLite to JSON.")
+    export_indicators_parser.add_argument("--output", required=True, help="Destination JSON file.")
+
+    active_indicator_parser = subparsers.add_parser("query-active-indicators", help="Read active normalized indicators from SQLite.")
+    active_indicator_parser.add_argument("--type", action="append", default=[], help="Optional indicator type filter; repeat for multiple types.")
+    active_indicator_parser.add_argument("--include-expired", action="store_true", help="Include expired indicators for diagnostics or tests.")
+
+    persist_report_parser = subparsers.add_parser("persist-collector-report", help="Atomically persist a collector run, report, and findings from a JSON envelope.")
+    persist_report_parser.add_argument("--input", required=True, help="JSON object with collector_run, report, findings, and optional alerts fields.")
+
+    claim_delivery_parser = subparsers.add_parser("claim-alert-deliveries", help="Atomically claim pending or failed alert deliveries for one notifier.")
+    claim_delivery_parser.add_argument("--channel", required=True, help="Delivery channel, such as interactive_popup.")
+    claim_delivery_parser.add_argument("--recipient", required=True, help="Stable recipient identity for the notifier.")
+    claim_delivery_parser.add_argument("--limit", type=int, default=20, help="Maximum deliveries to claim (1-100).")
+    claim_delivery_parser.add_argument("--claim-lease-seconds", type=int, default=300, help="Reclaim an interrupted claim only after this lease (1-3600 seconds).")
+
+    complete_delivery_parser = subparsers.add_parser("complete-alert-delivery", help="Complete a claimed delivery or return it to retryable failed state.")
+    complete_delivery_parser.add_argument("--delivery-id", required=True, help="Immutable claimed alert-delivery identifier.")
+    complete_delivery_parser.add_argument("--outcome", required=True, choices=["delivered", "failed"], help="Final delivery outcome.")
+    complete_delivery_parser.add_argument("--error", default="", help="Failure detail retained for retry diagnostics.")
+
+    persisted_report_parser = subparsers.add_parser("get-persisted-report", help="Read one persisted report and its ordered findings by immutable report ID.")
+    persisted_report_parser.add_argument("--report-id", required=True, help="Immutable report identifier to read.")
+
+    export_report_parser = subparsers.add_parser("export-report", help="Explicitly export one persisted report and findings to JSON.")
+    export_report_parser.add_argument("--report-id", required=True)
+    export_report_parser.add_argument("--output", required=True)
+    export_alert_parser = subparsers.add_parser("export-alert", help="Explicitly export one persisted alert to JSON.")
+    export_alert_parser.add_argument("--alert-id", required=True)
+    export_alert_parser.add_argument("--output", required=True)
 
     state_get_parser = subparsers.add_parser("state-get", help="Read a JSON state document from SQLite.")
     state_get_parser.add_argument("--namespace", required=True, help="Logical namespace for the state record.")
@@ -2069,12 +2571,59 @@ def main() -> int:
             finish_ingest_run(connection, run_id, "error", 0, str(exc))
             raise
 
-    if args.command == "export-json":
+    if args.command in {"export-json", "export-indicators"}:
         output_path = Path(args.output).resolve()
         payload = export_indicators(connection)
         write_json(output_path, payload)
         print(f"Exported indicators: {payload['Metadata']['IndicatorCount']}")
         print(f"Output: {output_path}")
+        return 0
+
+    if args.command == "query-active-indicators":
+        payload = query_active_indicators(connection, indicator_types=args.type, include_expired=args.include_expired)
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "persist-collector-report":
+        envelope = load_json(Path(args.input).resolve())
+        if not isinstance(envelope, dict):
+            raise ValueError("Collector report envelope must be a JSON object.")
+        collector_run = envelope.get("collector_run")
+        report = envelope.get("report")
+        findings = envelope.get("findings", [])
+        alerts = envelope.get("alerts", [])
+        if not isinstance(collector_run, dict) or not isinstance(report, dict) or not isinstance(findings, list) or not isinstance(alerts, list):
+            raise ValueError("Collector report envelope requires object collector_run/report fields and array findings/alerts fields.")
+        payload = persist_collector_run_report_findings(connection, collector_run, report, findings, alerts)
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "claim-alert-deliveries":
+        print(json.dumps(claim_alert_deliveries(connection, args.channel, args.recipient, args.limit, args.claim_lease_seconds), indent=2))
+        return 0
+
+    if args.command == "complete-alert-delivery":
+        print(json.dumps(complete_alert_delivery(connection, args.delivery_id, args.outcome, args.error), indent=2))
+        return 0
+
+    if args.command == "get-persisted-report":
+        print(json.dumps(get_persisted_report(connection, args.report_id), indent=2))
+        return 0
+
+    if args.command == "export-report":
+        payload = get_persisted_report(connection, args.report_id)
+        if not payload["found"]:
+            raise ValueError("persisted report was not found.")
+        write_json(Path(args.output).resolve(), payload)
+        print(f"Exported report: {args.report_id}")
+        return 0
+
+    if args.command == "export-alert":
+        payload = get_persisted_alert(connection, args.alert_id)
+        if not payload["found"]:
+            raise ValueError("persisted alert was not found.")
+        write_json(Path(args.output).resolve(), payload)
+        print(f"Exported alert: {args.alert_id}")
         return 0
 
     if args.command == "state-get":
