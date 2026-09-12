@@ -144,6 +144,14 @@ Status: open; observed 2026-09-09.
 
 Creating the one-time SYSTEM task needed to refresh the trusted tripwire baseline caused that task and its task-file removal to appear as Critical changes in the next check. The guardrail behavior is correct: the changes must not be automatically accepted. Design a dedicated SYSTEM baseline execution path that does not leave the bootstrap task in the captured scheduled-task snapshot, and add an end-to-end regression check.
 
+### Define SQLite operational retention and controlled compaction
+
+Status: open; identified 2026-09-11 after Phase 5 verification.
+
+The SQLite-first runtime has no automatic pruning or compaction policy. Expired indicators are excluded from active matching, but their rows remain stored; collector observations, reports, findings, alerts, deliveries, evidence snapshots, and baseline records likewise have no configured retention window. The retained local database measured 412 MB with 167,487 indicators and multiple observation tables containing tens of thousands of rows.
+
+Define approved, type-specific retention windows; implement transactional pruning that preserves the foreign-key relationships required for report, finding, alert, delivery, acceptance, and rollback auditability; and add an operator-invoked maintenance command that performs a verified SQLite `VACUUM` only after pruning. Do not add an unattended destructive cleanup task until retention periods, backup requirements, and rollback obligations are explicitly approved. Add fixture and live-maintenance tests proving expired rows are removed only within policy and that the database can be compacted safely.
+
 ### Investigate SQLite handle retention in the tripwire-guardrails test
 
 Status: resolved 2026-09-09; verified on Windows with Python 3.12.10.
