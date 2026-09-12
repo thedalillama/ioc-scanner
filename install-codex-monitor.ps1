@@ -174,6 +174,21 @@ function Get-CurrentIdentityName {
     throw "Unable to resolve the current Windows user identity for the notifier task."
 }
 
+function Grant-NotifierStateAccess {
+    param(
+        [string]$Identity,
+        [string]$StateDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Identity)) {
+        throw "Interactive notifier identity is required to grant SQLite state access."
+    }
+    & icacls.exe $StateDirectory /grant ("{0}:(OI)(CI)M" -f $Identity) /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to grant notifier Modify access to SQLite state directory: $StateDirectory"
+    }
+}
+
 function Register-CodexSystemTask {
     param(
         [string]$TaskName,
@@ -380,6 +395,7 @@ if ($CreateSystemTasks) {
 
 if ($CreateUserNotifierTask) {
     $notifierUser = Get-CurrentIdentityName
+    Grant-NotifierStateAccess -Identity $notifierUser -StateDirectory (Join-Path $DataRoot "state")
     $notifierRuntimePath = $NotifierScriptPath
     if ($notifierRuntimePath -like "C:\Program Files\*") {
         $notifierRuntimePath = $notifierRuntimePath -replace '^C:\\Program Files', 'C:\Progra~1'
@@ -387,7 +403,7 @@ if ($CreateUserNotifierTask) {
     $vbsRuntimePath = (Join-Path $runtimeRootTaskPath "run-hidden.vbs")
     $notifierStateDbTaskPath = Join-Path $dataRootTaskPath "state\ioc-store.db"
     $notifierLauncher = Join-Path $RuntimeRoot "codex-alert-notifier.cmd"
-    Write-LauncherScript -Path $notifierLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}"" -WatchPath ""{1}\alerts\pending"" -StateDbPath ""{2}""" -f $NotifierScriptPath, $DataRoot, (Join-Path $DataRoot "state\ioc-store.db"))
+    Write-LauncherScript -Path $notifierLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}"" -StateDbPath ""{1}""" -f $NotifierScriptPath, (Join-Path $DataRoot "state\ioc-store.db"))
     $notifierLauncherTaskPath = $notifierLauncher -replace '\\', '\'
     $xmlPath = Join-Path $env:TEMP "CodexAlertNotifierTask.generated.xml"
     $startBoundary = (Get-Date).AddMinutes(1).ToString("s")

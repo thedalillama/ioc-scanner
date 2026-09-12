@@ -137,7 +137,7 @@ powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoo
 schtasks /Create /SC HOURLY /MO 1 /TN "Codex Host Tripwire" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\invoke-host-tripwire.ps1 -Mode Check" /RU SYSTEM /RL HIGHEST /F
 schtasks /Create /SC HOURLY /MO 1 /TN "Codex Threat RSS Monitor" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\monitor-threat-rss.ps1 -RunTripwireCheckOnMatch" /RU SYSTEM /RL HIGHEST /F
 schtasks /Create /SC DAILY /ST 02:00 /TN "Codex Threat Feed Import" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\import-threat-feeds.ps1 -OutputPath <DataRoot>\indicators\feed-indicators-latest.json -LocationConfigPath <RuntimeRoot>\ioc-monitor-locations.json -IocStorePath <DataRoot>\state\ioc-store.db" /RU SYSTEM /RL HIGHEST /F
-schtasks /Create /SC DAILY /ST 03:00 /TN "Codex IOC Daily Scan" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\invoke-host-ioc.ps1 -Mode IOC -IocPath <DataRoot>\indicators\feed-indicators-latest.json" /RU SYSTEM /RL HIGHEST /F
+schtasks /Create /SC DAILY /ST 03:00 /TN "Codex IOC Daily Scan" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\invoke-host-ioc.ps1 -Mode IOC" /RU SYSTEM /RL HIGHEST /F
 ```
 
 ### User-context notification helper
