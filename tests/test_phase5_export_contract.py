@@ -50,6 +50,28 @@ class PhaseFiveExportContractTests(unittest.TestCase):
         self.assertNotIn("alert_inbox_path", ui_source)
         self.assertNotIn("alert_archive_path", ui_source)
 
+    def test_notifier_opens_sqlite_alert_detail_and_data_root(self) -> None:
+        notifier_source = self.read_script("start-codex-alert-helper.ps1")
+        ui_launcher_source = self.read_script("start-codex-monitor-ui.ps1")
+        self.assertIn("function Get-HelperDataRoot", notifier_source)
+        self.assertIn("function Open-AlertInUi", notifier_source)
+        self.assertIn("$launchArguments = '-NoProfile -ExecutionPolicy Bypass -File", notifier_source)
+        self.assertIn('Start-Process -FilePath "powershell.exe" -ArgumentList $launchArguments -WindowStyle Hidden', notifier_source)
+        self.assertIn("AlertId = [string]$_.alert_id", notifier_source)
+        self.assertIn("Show-QueuedAlerts -QueuedAlerts $popupAlerts -AlertFolderPath $dataRoot", notifier_source)
+        self.assertNotIn("MarkdownPath = [string]$_.export_markdown_path", notifier_source)
+        self.assertIn('[string]$OpenPath = "/"', ui_launcher_source)
+        self.assertIn('@("--open-browser", "--open-path", $OpenPath)', ui_launcher_source)
+
+    def test_notifier_preserves_sqlite_presentation_suppression(self) -> None:
+        notifier_source = self.read_script("start-codex-alert-helper.ps1")
+        self.assertIn("function Get-DeliveryPresentationState", notifier_source)
+        self.assertIn("function Save-DeliveryPresentationState", notifier_source)
+        self.assertIn('"--key", "delivery_presentations"', notifier_source)
+        self.assertIn("Get-DeliveryPresentationState -DbPath $StateDbPath -SuppressHours $RepeatSuppressHours", notifier_source)
+        self.assertIn("$presentationState.ContainsKey($alertId)", notifier_source)
+        self.assertIn("Save-DeliveryPresentationState -DbPath $StateDbPath -PresentationState $presentationState", notifier_source)
+
 
 if __name__ == "__main__":
     unittest.main()

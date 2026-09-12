@@ -3360,6 +3360,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8765, help="Bind port.")
     parser.add_argument("--settings", default=str(Path(__file__).resolve().parent / "codex-monitor.settings.json"), help="Path to codex-monitor.settings.json.")
     parser.add_argument("--open-browser", action="store_true", help="Open the dashboard in the default browser on startup.")
+    parser.add_argument("--open-path", default="/", help="Local UI path to open when --open-browser is used.")
     return parser.parse_args()
 
 
@@ -3368,7 +3369,10 @@ def main() -> int:
     config = load_settings(Path(args.settings))
     server = ThreadingHTTPServer((args.host, args.port), CodexUiHandler)
     server.app_config = config  # type: ignore[attr-defined]
-    url = f"http://{args.host}:{args.port}/"
+    open_path = str(args.open_path or "/")
+    if not open_path.startswith("/") or open_path.startswith("//"):
+        open_path = "/"
+    url = f"http://{args.host}:{args.port}{open_path}"
     print(f"Codex Monitor UI listening on {url}")
     if args.open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

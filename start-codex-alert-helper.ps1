@@ -169,6 +169,48 @@ function Get-HelperStateDbPath {
     return (Join-Path $PSScriptRoot "state\ioc-store.db")
 }
 
+function Get-HelperDataRoot {
+    param([string]$DbPath)
+
+    $settingsPath = Get-SettingsPath
+    if (Test-Path -LiteralPath $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if (-not [string]::IsNullOrWhiteSpace([string]$settings.DataRoot)) {
+                return (Resolve-SettingsPathValue -Value ([string]$settings.DataRoot) -SettingsPath $settingsPath)
+            }
+        } catch {
+        }
+    }
+
+    $stateDirectory = Split-Path -Path $DbPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($stateDirectory)) {
+        $dataRoot = Split-Path -Path $stateDirectory -Parent
+        if (-not [string]::IsNullOrWhiteSpace($dataRoot)) {
+            return $dataRoot
+        }
+    }
+
+    return $PSScriptRoot
+}
+
+function Open-AlertInUi {
+    param([string]$AlertId)
+
+    if ([string]::IsNullOrWhiteSpace($AlertId)) {
+        return
+    }
+
+    $uiLauncherPath = Join-Path $PSScriptRoot "start-codex-monitor-ui.ps1"
+    if (-not (Test-Path -LiteralPath $uiLauncherPath)) {
+        return
+    }
+
+    $openPath = "/alert?id=" + [System.Uri]::EscapeDataString($AlertId)
+    $launchArguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -OpenBrowser -OpenPath "{1}"' -f $uiLauncherPath, $openPath
+    Start-Process -FilePath "powershell.exe" -ArgumentList $launchArguments -WindowStyle Hidden | Out-Null
+}
+
 function Get-ArchivePath {
     param([string]$CurrentWatchPath)
 
@@ -295,12 +337,61 @@ function Save-State {
     }
 }
 
+function Get-DeliveryPresentationState {
+    param(
+        [string]$DbPath,
+        [int]$SuppressHours
+    )
+
+    $retained = @{}
+    try {
+        $raw = Invoke-StateStore -DbPath $DbPath -Arguments @("state-get", "--namespace", "alert_helper", "--key", "delivery_presentations")
+        $payload = $raw | ConvertFrom-Json
+        if (-not $payload.found -or $null -eq $payload.value) {
+            return $retained
+        }
+
+        $cutoff = (Get-Date).ToUniversalTime().AddHours(-1 * [math]::Abs($SuppressHours))
+        foreach ($entry in @($payload.value.PSObject.Properties)) {
+            $shownAt = [datetime]::MinValue
+            if ([string]::IsNullOrWhiteSpace([string]$entry.Name) -or -not [datetime]::TryParse([string]$entry.Value, [ref]$shownAt)) {
+                continue
+            }
+            if ($shownAt.ToUniversalTime() -gt $cutoff) {
+                $retained[[string]$entry.Name] = $shownAt.ToUniversalTime().ToString("o")
+            }
+        }
+    } catch {
+        throw "Unable to read SQLite alert-presentation state: $($_.Exception.Message)"
+    }
+
+    return $retained
+}
+
+function Save-DeliveryPresentationState {
+    param(
+        [string]$DbPath,
+        [hashtable]$PresentationState
+    )
+
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $json = ConvertTo-Json -InputObject $PresentationState -Depth 4
+        [System.IO.File]::WriteAllText($tempPath, $json, [System.Text.UTF8Encoding]::new($false))
+        [void](Invoke-StateStore -DbPath $DbPath -Arguments @("state-put", "--namespace", "alert_helper", "--key", "delivery_presentations", "--input", $tempPath))
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            [System.IO.File]::Delete($tempPath)
+        }
+    }
+}
+
 function Show-AlertPopup {
     param(
         [string]$Title,
         [string]$Message,
         [string[]]$DetailLines = @(),
-        [string]$AlertMarkdownPath = "",
+        [string]$AlertId = "",
         [string]$AlertFolderPath = ""
     )
 
@@ -361,7 +452,7 @@ function Show-AlertPopup {
         }
 
         $hintBlock = New-Object System.Windows.Controls.TextBlock
-        $hintBlock.Text = 'Use Open Alert to inspect the report, or Dismiss to acknowledge.'
+        $hintBlock.Text = 'Use Open Alert to inspect the SQLite alert record, or Dismiss to acknowledge.'
         $hintBlock.FontStyle = 'Italic'
         $hintBlock.Foreground = [System.Windows.Media.Brushes]::DimGray
         $hintBlock.TextWrapping = 'Wrap'
@@ -379,11 +470,9 @@ function Show-AlertPopup {
         $openAlertButton.Content = 'Open Alert'
         $openAlertButton.MinWidth = 90
         $openAlertButton.Margin = '0,0,8,0'
-        $openAlertButton.IsEnabled = -not [string]::IsNullOrWhiteSpace($AlertMarkdownPath)
+        $openAlertButton.IsEnabled = -not [string]::IsNullOrWhiteSpace($AlertId)
         $openAlertButton.Add_Click({
-            if (-not [string]::IsNullOrWhiteSpace($AlertMarkdownPath) -and (Test-Path -LiteralPath $AlertMarkdownPath)) {
-                Start-Process -FilePath $AlertMarkdownPath | Out-Null
-            }
+            Open-AlertInUi -AlertId $AlertId
         })
         [void]$buttonPanel.Children.Add($openAlertButton)
 
@@ -568,7 +657,7 @@ function Show-QueuedAlerts {
 
     if (@($QueuedAlerts).Count -eq 1) {
         $item = $QueuedAlerts[0]
-        return Show-AlertPopup -Title $item.Title -Message $item.Message -DetailLines $item.DetailLines -AlertMarkdownPath $item.MarkdownPath -AlertFolderPath $AlertFolderPath
+        return Show-AlertPopup -Title $item.Title -Message $item.Message -DetailLines $item.DetailLines -AlertId $item.AlertId -AlertFolderPath $AlertFolderPath
     }
 
     $latest = $QueuedAlerts[-1]
@@ -584,11 +673,12 @@ function Show-QueuedAlerts {
         -Title ('Codex monitor alerts ({0})' -f @($QueuedAlerts).Count) `
         -Message ('{0} new alerts queued while you were away. Dismiss once to archive this batch.' -f @($QueuedAlerts).Count) `
         -DetailLines $detailLines `
-        -AlertMarkdownPath $latest.MarkdownPath `
+        -AlertId $latest.AlertId `
         -AlertFolderPath $AlertFolderPath
 }
 
 $StateDbPath = Get-HelperStateDbPath -ConfiguredStateDbPath $StateDbPath -ConfiguredStatePath $StatePath
+$dataRoot = Get-HelperDataRoot -DbPath $StateDbPath
 $deliveryChannel = "interactive_popup"
 $recipient = "interactive-user"
 
@@ -603,23 +693,57 @@ do {
         }
     }
     if (@($claims).Count -gt 0) {
-        $popupAlerts = @($claims | ForEach-Object {
+        $presentationState = Get-DeliveryPresentationState -DbPath $StateDbPath -SuppressHours $RepeatSuppressHours
+        $suppressedClaims = @()
+        $displayClaims = @()
+        foreach ($claim in $claims) {
+            $alertId = [string]$claim.alert_id
+            if (-not [string]::IsNullOrWhiteSpace($alertId) -and $presentationState.ContainsKey($alertId)) {
+                $suppressedClaims += $claim
+            } else {
+                $displayClaims += $claim
+            }
+        }
+
+        foreach ($claim in $suppressedClaims) {
+            [void](Invoke-StateStore -DbPath $StateDbPath -Arguments @("complete-alert-delivery", "--delivery-id", [string]$claim.alert_delivery_id, "--outcome", "delivered"))
+        }
+
+        if (@($displayClaims).Count -le 0) {
+            continue
+        }
+
+        $shownAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        foreach ($claim in $displayClaims) {
+            $presentationState[[string]$claim.alert_id] = $shownAtUtc
+        }
+        Save-DeliveryPresentationState -DbPath $StateDbPath -PresentationState $presentationState
+
+        $popupAlerts = @($displayClaims | ForEach-Object {
             [PSCustomObject]@{
                 Title = ("Codex monitor alert ({0})" -f [string]$_.severity)
                 Message = [string]$_.summary
                 DetailLines = @("Source report: {0}" -f [string]$_.report_id, "Finding: {0}" -f [string]$_.finding_id)
-                MarkdownPath = [string]$_.export_markdown_path
+                AlertId = [string]$_.alert_id
             }
         })
+        $popupPresented = $false
         try {
-            $shown = Show-QueuedAlerts -QueuedAlerts $popupAlerts -AlertFolderPath ""
+            $shown = Show-QueuedAlerts -QueuedAlerts $popupAlerts -AlertFolderPath $dataRoot
             if (-not $shown) { throw "The interactive alert popup could not be shown." }
-            foreach ($claim in $claims) {
+            $popupPresented = $true
+            foreach ($claim in $displayClaims) {
                 [void](Invoke-StateStore -DbPath $StateDbPath -Arguments @("complete-alert-delivery", "--delivery-id", [string]$claim.alert_delivery_id, "--outcome", "delivered"))
             }
         } catch {
             $failure = [string]$_.Exception.Message
-            foreach ($claim in $claims) {
+            if (-not $popupPresented) {
+                foreach ($claim in $displayClaims) {
+                    [void]$presentationState.Remove([string]$claim.alert_id)
+                }
+                Save-DeliveryPresentationState -DbPath $StateDbPath -PresentationState $presentationState
+            }
+            foreach ($claim in $displayClaims) {
                 try {
                     [void](Invoke-StateStore -DbPath $StateDbPath -Arguments @("complete-alert-delivery", "--delivery-id", [string]$claim.alert_delivery_id, "--outcome", "failed", "--error", $failure))
                 } catch {

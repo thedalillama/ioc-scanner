@@ -203,10 +203,10 @@ Expected:
 
 ### 6. Alert helper verification
 
-Drop a synthetic alert JSON into `alerts\pending` and run:
+Use a pending SQLite alert/delivery record created by a supported collector test fixture, then run the helper against that disposable state database:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\start-codex-alert-helper.ps1 -WatchPath .\alerts\pending -StateDbPath .\state\ioc-store.db
+powershell -ExecutionPolicy Bypass -File .\start-codex-alert-helper.ps1 -StateDbPath .\state\ioc-store.db
 ```
 
 Expected:
@@ -214,13 +214,16 @@ Expected:
 - popup window appears
 - popup offers:
   - `Open Alert`
+    - opens the immutable SQLite alert-detail route in the local UI
   - `Open Folder`
+    - opens the configured data root
   - `Dismiss`
-- alert JSON and matching Markdown file move to `alerts\archive`
-- alert helper state is visible in SQLite:
+- dismissal records acknowledgement for the claimed delivery in SQLite
+- no alert JSON or Markdown file is required or created
+- alert/delivery state is visible in SQLite:
 
 ```powershell
-python .\ioc_store.py --db .\state\ioc-store.db state-get --namespace alert_helper --key seen_alerts
+python .\ioc_store.py --db .\state\ioc-store.db stats
 ```
 
 ### 6a. Management UI verification

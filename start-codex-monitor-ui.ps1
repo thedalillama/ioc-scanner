@@ -2,6 +2,7 @@ param(
     [string]$SettingsPath = (Join-Path $PSScriptRoot "codex-monitor.settings.json"),
     [string]$BindHost = "127.0.0.1",
     [int]$Port = 8765,
+    [string]$OpenPath = "/",
     [switch]$OpenBrowser
 )
 
@@ -74,7 +75,7 @@ $arguments = @(
 )
 
 if ($OpenBrowser) {
-    $arguments += "--open-browser"
+    $arguments += @("--open-browser", "--open-path", $OpenPath)
 }
 
 & $pythonCommand @arguments

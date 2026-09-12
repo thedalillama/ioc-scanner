@@ -111,6 +111,8 @@ When a pending alert is processed, the helper shows a desktop popup window with:
 
 After the popup is handled, the notifier records acknowledgement or a retryable delivery failure in SQLite. It does not move alert files because alert files are not part of the operational delivery path.
 
+To prevent repeat popups, the notifier records a presentation marker for each immutable alert ID before displaying it. If the notifier is interrupted after a popup was presented, the same alert is suppressed for the configured repeat-suppression window rather than repeatedly reopening. A popup that cannot be presented remains retryable.
+
 ## Severity model
 
 Current tripwire severity is simple:
