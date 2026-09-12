@@ -83,6 +83,19 @@ powershell -ExecutionPolicy Bypass -File .\monitor-threat-rss.ps1 -RunTripwireCh
 
 The detection scripts persist alert records in SQLite. The notifier claims pending records atomically, presents the interactive popup, and records delivery and acknowledgement in SQLite. Alert JSON/Markdown is available only through the explicit `export-alert` command.
 
+### Monitor-generated PowerShell events
+
+The IOC collector excludes only PowerShell Operational 4103/4104 events that
+contain the exact `CODEX_MONITOR_SELF_EVENT` marker embedded in this monitor's
+PowerShell source. It retrieves up to 200 candidate events before removing those
+entries and retains up to 40 remaining events, so routine monitor operation does
+not displace external PowerShell telemetry. The excluded count is retained in the
+in-memory deep-collection `KeyEvents` summary for troubleshooting.
+
+This is a volume-control exclusion, not a trust boundary: a third party could
+copy the marker into a script. Do not use the marker in external scripts, and do
+not rely on this exclusion to suppress a security investigation.
+
 Persistent monitor state now lives in SQLite:
 
 - `state\ioc-store.db`

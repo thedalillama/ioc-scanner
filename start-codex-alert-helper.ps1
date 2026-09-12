@@ -1,3 +1,4 @@
+# CODEX_MONITOR_SELF_EVENT
 param(
     [string]$WatchPath = "",
     [string]$StatePath = "",

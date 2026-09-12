@@ -1,3 +1,4 @@
+# CODEX_MONITOR_SELF_EVENT
 param(
     [ValidateSet("Baseline", "Check")]
     [string]$Mode = "Baseline",

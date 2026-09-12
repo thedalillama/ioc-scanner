@@ -1,5 +1,6 @@
-﻿function New-PostureDriftRule {
-    param(
+function New-PostureDriftRule {
+# CODEX_MONITOR_SELF_EVENT
+param(
         [string]$RuleId,
         [bool]$Enabled,
         [int]$Priority,

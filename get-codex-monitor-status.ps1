@@ -1,3 +1,4 @@
+# CODEX_MONITOR_SELF_EVENT
 param(
     [string]$SettingsPath = (Join-Path $PSScriptRoot "codex-monitor.settings.json"),
     [string]$StateDbPath = "",

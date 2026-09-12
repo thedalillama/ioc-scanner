@@ -1,4 +1,5 @@
 [CmdletBinding(DefaultParameterSetName = 'ByIndex')]
+# CODEX_MONITOR_SELF_EVENT
 param(
     [string]$ReportPath,
 
@@ -429,4 +430,3 @@ finally {
         Remove-Item -LiteralPath $tempJson -Force
     }
 }
-

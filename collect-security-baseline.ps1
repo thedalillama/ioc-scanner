@@ -6,7 +6,8 @@ $jsonFile = Join-Path $PSScriptRoot ("SYSTEM_SECURITY_BASELINE_{0}.json" -f $tim
 $normalizedJsonFile = Join-Path $PSScriptRoot ("SYSTEM_IOC_RECORDS_{0}.json" -f $timestamp)
 
 function Add-Line {
-    param(
+# CODEX_MONITOR_SELF_EVENT
+param(
         [string]$Text = ""
     )
 

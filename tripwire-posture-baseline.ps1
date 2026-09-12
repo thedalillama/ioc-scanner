@@ -1,4 +1,4 @@
-﻿function Get-StringSha256 {
+function Get-StringSha256 {
     param([string]$Text)
     $bytes = [Text.Encoding]::UTF8.GetBytes($(if ($null -eq $Text) { '' } else { [string]$Text }))
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -518,7 +518,8 @@ function Test-ScriptOrExecutablePath {
 }
 
 function Set-ExpectedChurnClassification {
-    param(
+# CODEX_MONITOR_SELF_EVENT
+param(
         $Change,
         [string]$Interpretation,
         [string]$ExtraNote = ''

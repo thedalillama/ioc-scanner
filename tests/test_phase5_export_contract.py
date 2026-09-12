@@ -72,6 +72,36 @@ class PhaseFiveExportContractTests(unittest.TestCase):
         self.assertIn("$presentationState.ContainsKey($alertId)", notifier_source)
         self.assertIn("Save-DeliveryPresentationState -DbPath $StateDbPath -PresentationState $presentationState", notifier_source)
 
+    def test_ioc_excludes_only_exact_monitor_marked_powershell_events(self) -> None:
+        ioc = self.read_script("invoke-host-ioc.ps1")
+        self.assertIn('$MonitorSelfEventMarker = "CODEX_MONITOR_SELF_EVENT"', ioc)
+        self.assertIn(
+            '([string]$Event.Message).IndexOf($MonitorSelfEventMarker, [System.StringComparison]::Ordinal) -ge 0',
+            ioc,
+        )
+        self.assertIn('Get-MonitorRelevantPowerShellEvents -Start $Start -EventId 4103', ioc)
+        self.assertIn('Get-MonitorRelevantPowerShellEvents -Start $Start -EventId 4104', ioc)
+        self.assertIn(' -MaxEvents 200 |', ioc)
+        self.assertIn('Where-Object { -not (Test-IsMonitorOwnedPowerShellEvent -Event $_) }', ioc)
+        self.assertIn('Select-Object -First 40', ioc)
+
+    def test_runtime_powershell_scripts_carry_the_self_event_marker(self) -> None:
+        for script_name in (
+            "accept-posture-drift.ps1",
+            "collect-security-baseline.ps1",
+            "get-codex-monitor-status.ps1",
+            "import-threat-feeds.ps1",
+            "install-codex-monitor.ps1",
+            "invoke-host-ioc.ps1",
+            "invoke-host-tripwire.ps1",
+            "monitor-threat-rss.ps1",
+            "posture-drift-rules.ps1",
+            "start-codex-alert-helper.ps1",
+            "start-codex-monitor-ui.ps1",
+            "tripwire-posture-baseline.ps1",
+        ):
+            self.assertIn("# CODEX_MONITOR_SELF_EVENT", self.read_script(script_name), script_name)
+
 
 if __name__ == "__main__":
     unittest.main()

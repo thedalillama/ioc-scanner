@@ -1,3 +1,4 @@
+# CODEX_MONITOR_SELF_EVENT
 param(
     [ValidateSet("Baseline", "Deep", "IOC")]
     [string]$Mode = "Baseline",
@@ -14,6 +15,7 @@ $collectionTimeUtc = (Get-Date).ToUniversalTime().ToString("o")
 $outBase = Join-Path $PSScriptRoot ("HOST_IOC_{0}_{1}" -f $Mode.ToUpperInvariant(), $timestamp)
 $jsonFile = "$outBase.json"
 $mdFile = "$outBase.md"
+$MonitorSelfEventMarker = "CODEX_MONITOR_SELF_EVENT"
 
 function Write-JsonFile {
     param(
@@ -697,14 +699,46 @@ function Get-Certificates {
     }
 }
 
+function Test-IsMonitorOwnedPowerShellEvent {
+    param($Event)
+
+    if ($null -eq $Event -or [string]::IsNullOrWhiteSpace([string]$Event.Message)) {
+        return $false
+    }
+
+    return ([string]$Event.Message).IndexOf($MonitorSelfEventMarker, [System.StringComparison]::Ordinal) -ge 0
+}
+
+function Get-MonitorRelevantPowerShellEvents {
+    param(
+        [datetime]$Start,
+        [int]$EventId
+    )
+
+    # Retrieve beyond the retained limit before filtering so monitor activity cannot
+    # crowd external PowerShell telemetry out of the evidence snapshot.
+    $candidateEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-PowerShell/Operational'; StartTime = $Start; Id = $EventId } -MaxEvents 200 |
+        Select-Object TimeCreated, Id, ProviderName, Message)
+    $excludedEvents = @($candidateEvents | Where-Object { Test-IsMonitorOwnedPowerShellEvent -Event $_ })
+
+    [PSCustomObject]@{
+        Events = @($candidateEvents |
+            Where-Object { -not (Test-IsMonitorOwnedPowerShellEvent -Event $_) } |
+            Select-Object -First 40)
+        ExcludedCount = @($excludedEvents).Count
+    }
+}
+
 function Get-KeyEvents {
     param([datetime]$Start)
 
+    $powerShell4103 = Get-MonitorRelevantPowerShellEvents -Start $Start -EventId 4103
+    $powerShell4104 = Get-MonitorRelevantPowerShellEvents -Start $Start -EventId 4104
+
     [PSCustomObject]@{
-        PowerShell4103 = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-PowerShell/Operational'; StartTime = $Start; Id = 4103 } -MaxEvents 40 |
-            Select-Object TimeCreated, Id, ProviderName, Message
-        PowerShell4104 = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-PowerShell/Operational'; StartTime = $Start; Id = 4104 } -MaxEvents 40 |
-            Select-Object TimeCreated, Id, ProviderName, Message
+        PowerShell4103 = @($powerShell4103.Events)
+        PowerShell4104 = @($powerShell4104.Events)
+        SelfGeneratedPowerShellEventCount = [int]$powerShell4103.ExcludedCount + [int]$powerShell4104.ExcludedCount
         Security4688 = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; StartTime = $Start; Id = 4688 } -MaxEvents 40 |
             Select-Object TimeCreated, Id, Message
         Security4698 = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; StartTime = $Start; Id = 4698 } -MaxEvents 20 |
