@@ -17,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+import ioc_store
+
 
 TASK_NAMES = [
     "Codex Threat Feed Import",
@@ -262,8 +264,6 @@ class AppConfig:
     runtime_root: Path
     data_root: Path
     state_db_path: Path
-    alert_inbox_path: Path
-    alert_archive_path: Path
     indicator_export_path: Path
     protection_profile: str
     ui_persona: str
@@ -552,8 +552,6 @@ def load_settings(settings_path: Path) -> AppConfig:
     runtime_root = resolve_settings_path(settings_dir, settings.get("RuntimeRoot"), settings_dir)
     data_root = resolve_settings_path(settings_dir, settings.get("DataRoot"), runtime_root)
     state_db_path = resolve_settings_path(settings_dir, settings.get("StateDbPath"), data_root / "state" / "ioc-store.db")
-    alert_inbox_path = resolve_settings_path(settings_dir, settings.get("AlertInboxPath") or settings.get("AlertWatchPath"), data_root / "alerts" / "pending")
-    alert_archive_path = resolve_settings_path(settings_dir, settings.get("AlertArchivePath"), data_root / "alerts" / "archive")
     indicator_export_path = resolve_settings_path(settings_dir, settings.get("IndicatorExportPath"), data_root / "indicators" / "feed-indicators-latest.json")
     protection_profile = str(settings.get("ProtectionProfile") or "microsoft_baseline")
     persona_profiles = load_persona_profiles(repo_root)
@@ -566,8 +564,6 @@ def load_settings(settings_path: Path) -> AppConfig:
         runtime_root=runtime_root,
         data_root=data_root,
         state_db_path=state_db_path,
-        alert_inbox_path=alert_inbox_path,
-        alert_archive_path=alert_archive_path,
         indicator_export_path=indicator_export_path,
         protection_profile=protection_profile,
         ui_persona=ui_persona,
@@ -801,53 +797,38 @@ def query_indicator_stats(db_path: Path) -> Dict[str, Any]:
         connection.close()
 
 
-def build_alert_record(json_path: Path, bucket: str) -> Dict[str, Any]:
-    payload = parse_json(json_path)
-    metadata = payload.get("Metadata", {})
-    summary = payload.get("Summary", {})
-    md_path = json_path.with_suffix(".md")
-    return {
-        "name": json_path.name,
-        "bucket": bucket,
-        "path": str(json_path),
-        "markdown_path": str(md_path) if md_path.exists() else "",
-        "title": summary.get("Title") or json_path.name,
-        "message": summary.get("Message") or "",
-        "detail_lines": summary.get("DetailLines") or [],
-        "severity": metadata.get("Severity") or "Unknown",
-        "alert_type": metadata.get("AlertType") or "",
-        "change_count": metadata.get("ChangeCount"),
-        "collection_time": metadata.get("CollectionTimeUtc") or "",
-        "source_report": metadata.get("SourceReport") or "",
-        "payload": payload,
-    }
-
-
-def list_alert_records(directory: Path, bucket: str) -> List[Dict[str, Any]]:
-    if not directory.exists():
+def list_sqlite_alerts(state_db_path: Path, limit: int = 50) -> List[Dict[str, Any]]:
+    if not state_db_path.is_file():
         return []
-    records = []
-    for path in sorted(directory.glob("ALERT_*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
         try:
-            records.append(build_alert_record(path, bucket))
-        except Exception as exc:
-            records.append(
-                {
-                    "name": path.name,
-                    "bucket": bucket,
-                    "path": str(path),
-                    "title": path.name,
-                    "message": f"Unable to parse alert: {exc}",
-                    "detail_lines": [],
-                    "severity": "Error",
-                    "alert_type": "",
-                    "change_count": None,
-                    "collection_time": "",
-                    "source_report": "",
-                    "payload": None,
-                }
-            )
-    return records
+            records = ioc_store.list_persisted_alerts(connection, limit=limit)
+            for record in records:
+                record["title"] = record.get("summary") or record.get("alert_id") or "SQLite alert"
+                record["message"] = record.get("summary") or ""
+                record["collection_time"] = record.get("created_at") or ""
+                record["change_count"] = None
+            return records
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return []
+
+
+def get_sqlite_alert_detail(state_db_path: Path, alert_id: str) -> Dict[str, Any]:
+    if not state_db_path.is_file() or not str(alert_id or "").strip():
+        return {"found": False, "alert": None}
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            return ioc_store.get_persisted_alert(connection, alert_id)
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return {"found": False, "alert": None}
 
 
 def list_recent_reports(runtime_root: Path) -> List[Dict[str, Any]]:
@@ -877,6 +858,72 @@ def list_recent_reports(runtime_root: Path) -> List[Dict[str, Any]]:
         except Exception:
             items.append({"name": report.name, "path": str(report), "report_type": "Unknown", "collection_time": "", "summary": {}})
     return items
+
+
+def list_sqlite_reports_preview(state_db_path: Path, limit: int = 15) -> List[Dict[str, Any]]:
+    """Inactive Phase 3 adapter; callers must explicitly opt in after Phase 2 parity validation."""
+    if not state_db_path.is_file():
+        return []
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            return ioc_store.list_persisted_reports(connection, limit=limit)
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return []
+
+
+def get_sqlite_report_detail_preview(state_db_path: Path, report_id: str) -> Dict[str, Any]:
+    """Inactive Phase 3 detail adapter; it is intentionally not wired to /report yet."""
+    if not state_db_path.is_file() or not str(report_id or "").strip():
+        return {"found": False, "report": None, "findings": []}
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            return ioc_store.get_persisted_report(connection, report_id)
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return {"found": False, "report": None, "findings": []}
+
+
+def build_sqlite_report_href(report_id: str) -> str:
+    return f"/report?id={urllib.parse.quote(str(report_id or ''), safe='')}"
+
+
+def render_sqlite_report_preview_row(report: Dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    text = ", ".join(f"{key}={value}" for key, value in summary.items() if value not in (None, "", 0)) or "No summary fields"
+    return f'<tr><td><a href="{esc(build_sqlite_report_href(str(report.get("report_id") or "")))}">{esc(report.get("name") or report.get("report_id"))}</a></td><td>{esc(report.get("report_type"))}</td><td>{esc(pretty_time(report.get("collection_time") or ""))}</td><td>{esc(text)}</td></tr>'
+
+
+def build_sqlite_finding_acceptance_preview(finding_id: str) -> Dict[str, Any]:
+    """Inactive Phase 3 contract; live acceptance remains path/index based until cutover approval."""
+    return {"finding_id": str(finding_id or "").strip(), "requires_exact_finding_id": True, "live_action_enabled": False}
+
+
+def resolve_inactive_sqlite_report_route(state_db_path: Path, report_id: str) -> Dict[str, Any]:
+    return get_sqlite_report_detail_preview(state_db_path, report_id)
+
+
+def render_sqlite_finding_preview(finding: Dict[str, Any]) -> str:
+    return f'<article class="finding"><h4>{esc(finding.get("title") or "Finding")}</h4><div>{esc(finding.get("severity") or "Unknown")}</div><div>{esc(finding.get("summary") or "")}</div></article>'
+
+
+def render_sqlite_report_detail_preview(detail: Dict[str, Any]) -> str:
+    report = detail.get("report") or {}
+    findings = "".join(render_sqlite_finding_preview(item) for item in detail.get("findings") or []) or "<p>No findings.</p>"
+    return f'<section class="panel"><h2>{esc(report.get("report_id") or "Report")}</h2><div>{esc(report.get("report_type") or "")}</div>{findings}</section>'
+
+
+def build_sqlite_finding_acceptance_command_preview(finding: Dict[str, Any]) -> Dict[str, Any]:
+    finding_id = str(finding.get("finding_id") or "").strip()
+    protected = str(finding.get("guardrail_state") or "").lower() == "protected"
+    exact = bool(finding_id)
+    return {"finding_id": finding_id, "requires_exact_finding_id": True, "live_action_enabled": False, "eligible": exact and not protected, "reason": "guardrail-protected" if protected else ("ready-for-future-cutover" if exact else "missing-finding-id")}
 
 
 def find_latest_tripwire_check_report(config: AppConfig, snapshot: Dict[str, Any]) -> Optional[Path]:
@@ -1061,6 +1108,13 @@ def build_acceptance_helper_command(report_path: Path, finding_index: int) -> st
     )
 
 
+def build_sqlite_acceptance_helper_command(report_id: str, finding_id: str, state_db_path: Path) -> str:
+    return (
+        f'.\\accept-posture-drift.ps1 -ReportId "{report_id}" -FindingId "{finding_id}" '
+        f'-Reason "Reviewed exact change" -StateDbPath "{state_db_path}"'
+    )
+
+
 def build_respond_finding(change: Dict[str, Any], index: int, report_path: Path) -> Dict[str, Any]:
     evidence = []
     for label, key in (
@@ -1117,7 +1171,33 @@ def build_respond_finding(change: Dict[str, Any], index: int, report_path: Path)
 
 
 def build_respond_queue_data(config: AppConfig, snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    report_path = find_latest_tripwire_check_report(config, snapshot)
+    persisted = [item for item in list_sqlite_reports_preview(config.state_db_path, limit=30) if item.get("report_type") == "tripwire_check"]
+    if persisted:
+        detail = get_sqlite_report_detail_preview(config.state_db_path, str(persisted[0].get("report_id") or ""))
+        report = detail.get("report") or {}
+        if detail.get("found") and report:
+            report_id = str(report.get("report_id") or "")
+            report_href = build_sqlite_report_href(report_id)
+            export_path = Path(str(report.get("export_json_path") or config.runtime_root / report_id))
+            active_findings, recorded_findings = [], []
+            for index, stored in enumerate(detail.get("findings") or [], start=1):
+                evidence = stored.get("evidence") or {}
+                change = {"FindingId": stored.get("finding_id"), "Category": stored.get("category"), "Section": stored.get("category"), "Name": stored.get("title"), "ItemName": stored.get("title"), "ItemType": stored.get("category"), "Field": "CurrentValue", "CurrentValue": evidence.get("new_value", ""), "OldValue": evidence.get("old_value", ""), "BaselineValue": evidence.get("old_value", ""), "Severity": stored.get("severity"), "Classification": stored.get("classification"), "CsfMapping": stored.get("csf_mapping"), "MatchedRuleId": evidence.get("rule_id", ""), "MatchedRuleDescription": evidence.get("rule_description", ""), "GuardrailMatched": stored.get("guardrail_state") == "protected", "GuardrailReason": evidence.get("guardrail_reason", ""), "IsAcceptedDrift": stored.get("response_state") == "accepted", "RecommendedAction": stored.get("summary", "")}
+                finding = build_respond_finding(change, index, export_path)
+                finding["report_href"] = report_href
+                finding["report_name"] = report_id
+                finding["accept_helper_command"] = build_sqlite_acceptance_helper_command(report_id, str(stored.get("finding_id") or ""), config.state_db_path)
+                if finding["is_accepted"] or finding["is_expected"]:
+                    recorded_findings.append(finding)
+                elif is_guardrail_protected_change(change) or is_response_required_change(change) or is_needs_review_change(change):
+                    active_findings.append(finding)
+            active_findings.sort(key=lambda item: finding_priority(item["source_change"]))
+            recorded_findings.sort(key=lambda item: finding_priority(item["source_change"]))
+            observed = len(active_findings) + len(recorded_findings)
+            guardrails = sum(1 for item in active_findings if item.get("guardrail_matched"))
+            accepted = sum(1 for item in recorded_findings if item.get("is_accepted"))
+            return {"queue_state": "active" if active_findings else ("recorded_only" if observed else "no_drift"), "queue_message": f"{len(active_findings)} finding(s) need a decision or response." if active_findings else "No findings currently require response.", "latest_report_path": str(export_path), "latest_report_href": report_href, "latest_report_name": report_id, "latest_report_time": report.get("collection_time") or "", "active_findings": active_findings, "recorded_findings": recorded_findings, "summary_cards": [{"label": "Response required", "value": len(active_findings), "tone": "high" if active_findings else "ok"}, {"label": "Guardrail protected", "value": guardrails, "tone": "high" if guardrails else "ok"}, {"label": "Accepted posture changes", "value": accepted, "tone": "ok"}, {"label": "Observed posture changes", "value": observed, "tone": "info"}], "observed_count": observed}
+
     base = {
         "queue_state": "missing_report",
         "queue_message": "No posture check report is available yet. Run a posture check from Detect.",
@@ -1130,6 +1210,11 @@ def build_respond_queue_data(config: AppConfig, snapshot: Dict[str, Any]) -> Dic
         "summary_cards": [],
         "observed_count": 0,
     }
+    # Phase 5: reports are operationally sourced only from SQLite.  Legacy
+    # JSON parsing remains below solely as retained migration-reference code.
+    return base
+
+    report_path = find_latest_tripwire_check_report(config, snapshot)
     if not report_path:
         return base
     try:
@@ -1643,23 +1728,23 @@ def render_detect_focus_card(card: Dict[str, Any]) -> str:
 
 
 def render_respond_action_links(alert: Dict[str, Any], lifecycle_state: str) -> str:
-    encoded = urllib.parse.quote(alert["path"], safe="")
-    report_path = alert.get("source_report") or alert.get("path")
-    report_href = f"/report?path={urllib.parse.quote(str(report_path), safe='')}" if report_path else f"/alert?path={encoded}"
-    export_href = f"/alert?path={encoded}"
-    anchor = re.sub(r"[^a-z0-9]+", "-", str(alert.get("name") or alert.get("title") or "alert").lower()).strip("-") or "alert"
+    alert_id = str(alert.get("alert_id") or "")
+    report_id = str(alert.get("report_id") or "")
+    report_href = build_sqlite_report_href(report_id) if report_id else "/reports"
+    anchor = re.sub(r"[^a-z0-9]+", "-", alert_id.lower()).strip("-") or "alert"
     mark_expected_detail = "Mark expected is a planning-only step in this UI. Document expected changes outside the app until alert workflow state is implemented."
     return (
         '<div class="task-actions" style="margin-top:8px">'
         f'<a class="btn" href="#alert-{esc(anchor)}-ack">Acknowledge</a>'
         f'<a class="btn" href="#alert-{esc(anchor)}-investigate">Investigate</a>'
         f'<a class="btn" href="{esc(report_href)}">View evidence</a>'
-        f'<a class="btn" href="{esc(export_href)}">Export alert</a>'
+        f'<a class="btn" href="#alert-{esc(anchor)}-export">Export alert</a>'
         f'<a class="btn" href="#alert-{esc(anchor)}-expected">Mark expected</a>'
         '</div>'
         f'<details class="inline-detail mini" id="alert-{esc(anchor)}-ack"><summary>Acknowledge</summary><div class="detail-body">Lifecycle state is currently {esc(lifecycle_state)}. Use this step to note that the alert has been seen and is awaiting human review. No backend state is changed yet.</div></details>'
         f'<details class="inline-detail mini" id="alert-{esc(anchor)}-investigate"><summary>Investigate</summary><div class="detail-body">Open the alert evidence, review the related report, and compare the alert against recent expected maintenance or software changes on this PC.</div></details>'
         f'<details class="inline-detail mini" id="alert-{esc(anchor)}-expected"><summary>Mark expected</summary><div class="detail-body">{esc(mark_expected_detail)}</div></details>'
+        f'<details class="inline-detail mini" id="alert-{esc(anchor)}-export"><summary>Export alert</summary><div class="detail-body">Use `ioc_store.py export-alert --alert-id {esc(alert_id)}` with an operator-selected output path.</div></details>'
     )
 
 
@@ -1772,7 +1857,7 @@ def build_recommended_responses(
     baseline_missing = not status.get("State", {}).get("TripwireBaselineCollectionTimeUtc")
     stale_report = all(
         is_stale_timestamp(
-            (status.get("LatestArtifacts") or {}).get(key, {}).get("LastWriteTimeUtc"),
+            ((status.get("LatestArtifacts") or {}).get(key) or {}).get("LastWriteTimeUtc"),
             48,
         )
         for key in ("LatestIocReport", "LatestTripwireReport", "LatestThreatRssReport")
@@ -1878,7 +1963,6 @@ def render_task(task: Dict[str, Any]) -> str:
 
 
 def render_alert_row(alert: Dict[str, Any], *, lifecycle_state: str = "", show_actions: bool = False) -> str:
-    encoded = urllib.parse.quote(alert["path"], safe="")
     message = str(alert.get("message") or "").strip()
     if message and len(message) > 120:
         message_markup = compact_detail("Details", message)
@@ -1893,22 +1977,23 @@ def render_alert_row(alert: Dict[str, Any], *, lifecycle_state: str = "", show_a
     return f"""
 <tr>
   <td>{severity_markup}</td>
-  <td><a href="/alert?path={encoded}">{esc(alert.get("title"))}</a>{message_markup}{action_markup}</td>
+  <td><a href="/alert?id={urllib.parse.quote(str(alert.get("alert_id") or ""), safe="")}">{esc(alert.get("summary") or alert.get("alert_id"))}</a>{message_markup}{action_markup}</td>
   <td>{lifecycle_markup}</td>
-  <td>{esc(alert.get("change_count") if alert.get("change_count") is not None else "—")}</td>
-  <td>{esc(pretty_time(alert.get("collection_time") or "—"))}</td>
+  <td>{esc(alert.get("finding_id") or "—")}</td>
+  <td>{esc(pretty_time(alert.get("created_at") or "—"))}</td>
 </tr>
 """
 
 
 def render_report_row(report: Dict[str, Any]) -> str:
-    encoded = urllib.parse.quote(report["path"], safe="")
+    encoded = urllib.parse.quote(report.get("path", ""), safe="")
+    href = build_sqlite_report_href(str(report.get("report_id"))) if report.get("report_id") else f"/report?path={encoded}"
     summary_parts = [f"{key}={value}" for key, value in report.get("summary", {}).items() if value not in (None, "", 0)]
     summary_text = ", ".join(summary_parts) if summary_parts else "No summary fields"
     summary_markup = compact_detail("View summary", summary_text) if len(summary_text) > 90 else esc(summary_text)
     return f"""
 <tr>
-  <td><a href="/report?path={encoded}">{esc(report.get("name"))}</a></td>
+  <td><a href="{esc(href)}">{esc(report.get("name") or report.get("report_id"))}</a></td>
   <td>{esc(report.get("report_type"))}</td>
   <td>{esc(pretty_time(report.get("collection_time") or "—"))}</td>
   <td>{summary_markup}</td>
@@ -1994,9 +2079,10 @@ def build_snapshot(config: AppConfig) -> Dict[str, Any]:
             findings.append(finding)
         status["HealthFindings"] = findings
     indicators = query_indicator_stats(config.state_db_path)
-    pending_alerts = list_alert_records(config.alert_inbox_path, "pending")
-    archive_alerts = list_alert_records(config.alert_archive_path, "archive")
-    recent_reports = list_recent_reports(config.runtime_root)
+    sqlite_alerts = list_sqlite_alerts(config.state_db_path)
+    pending_alerts = [alert for alert in sqlite_alerts if str(alert.get("lifecycle_state") or "").lower() == "pending"]
+    archive_alerts = [alert for alert in sqlite_alerts if str(alert.get("lifecycle_state") or "").lower() != "pending"]
+    recent_reports = list_sqlite_reports_preview(config.state_db_path)
     return {
         "status": status,
         "task_details": task_details,
@@ -2232,9 +2318,9 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
             ],
             "evidence_metrics": [
                 {"label": "Tripwire baseline", "value": status["State"]["TripwireBaselineCollectionTimeUtc"] or "Missing", "is_time": True},
-                {"label": "Latest IOC report", "value": pretty_time((status.get("LatestArtifacts") or {}).get("LatestIocReport", {}).get("LastWriteTimeUtc") or "Missing")},
-                {"label": "Latest Tripwire report", "value": pretty_time((status.get("LatestArtifacts") or {}).get("LatestTripwireReport", {}).get("LastWriteTimeUtc") or "Missing")},
-                {"label": "Latest RSS report", "value": pretty_time((status.get("LatestArtifacts") or {}).get("LatestThreatRssReport", {}).get("LastWriteTimeUtc") or "Missing")},
+                {"label": "Latest IOC report", "value": pretty_time(((status.get("LatestArtifacts") or {}).get("LatestIocReport") or {}).get("LastWriteTimeUtc") or "Missing")},
+                {"label": "Latest Tripwire report", "value": pretty_time(((status.get("LatestArtifacts") or {}).get("LatestTripwireReport") or {}).get("LastWriteTimeUtc") or "Missing")},
+                {"label": "Latest RSS report", "value": pretty_time(((status.get("LatestArtifacts") or {}).get("LatestThreatRssReport") or {}).get("LastWriteTimeUtc") or "Missing")},
             ],
         },
         "summary_metrics": [
@@ -2380,8 +2466,6 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
                 "data_root": str(config.data_root),
                 "state_db_path": str(config.state_db_path),
                 "indicator_export_path": str(config.indicator_export_path),
-                "alert_inbox_path": str(config.alert_inbox_path),
-                "alert_archive_path": str(config.alert_archive_path),
             },
         },
         "metadata": status.get("Metadata", {}),
@@ -2947,8 +3031,8 @@ def render_respond_page(config: AppConfig, snapshot: Dict[str, Any], message: st
     tasks_by_name = model["task_job_health"]["by_name"]
     notifier_task = tasks_by_name.get("Codex Alert Notifier", {})
     notifier_status = classify_task_result(notifier_task) if notifier_task else {"label": "Unknown", "tone": "medium", "message": "Alert delivery state is unavailable."}
-    pending_rows = "".join(render_alert_row(item, lifecycle_state="New", show_actions=True) for item in model["alerts"]["pending"][:20]) or "<tr><td colspan='5' class='mini'>No pending alerts.</td></tr>"
-    archive_rows = "".join(render_alert_row(item, lifecycle_state="Archived", show_actions=False) for item in model["alerts"]["archived"][:20]) or "<tr><td colspan='5' class='mini'>No archived alerts.</td></tr>"
+    pending_rows = "".join(render_alert_row(item, lifecycle_state=str(item.get("lifecycle_state") or "pending").title(), show_actions=True) for item in model["alerts"]["pending"][:20]) or "<tr><td colspan='5' class='mini'>No pending alerts.</td></tr>"
+    archive_rows = "".join(render_alert_row(item, lifecycle_state=str(item.get("lifecycle_state") or "recorded").title(), show_actions=False) for item in model["alerts"]["archived"][:20]) or "<tr><td colspan='5' class='mini'>No recorded alerts.</td></tr>"
     triage_steps = "".join(f"<li>{esc(step)}</li>" for step in respond["triage_steps"])
     lifecycle_rows = "".join(f"<tr><td>{render_status_badge(item['state'], 'info' if item['state'] != 'Archived' else 'ok')}</td><td>{esc(item['meaning'])}</td></tr>" for item in respond["lifecycle"])
     active_cards = "".join(render_respond_finding_card(item, persona_profile) for item in respond.get("active_findings") or [])
@@ -3006,12 +3090,12 @@ def render_respond_page(config: AppConfig, snapshot: Dict[str, Any], message: st
   <div class="panel stack">
     <div class="kicker">Respond</div>
     <h2>Pending Alerts</h2>
-    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Count</th><th>Collected</th></tr></thead><tbody>{pending_rows}</tbody></table>
+    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Finding ID</th><th>Collected</th></tr></thead><tbody>{pending_rows}</tbody></table>
   </div>
   <div class="panel stack">
     <div class="kicker">Respond</div>
-    <h2>Archived Alerts</h2>
-    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Count</th><th>Collected</th></tr></thead><tbody>{archive_rows}</tbody></table>
+    <h2>Recorded Alerts</h2>
+    <table><thead><tr><th>Severity</th><th>Alert</th><th>State</th><th>Finding ID</th><th>Collected</th></tr></thead><tbody>{archive_rows}</tbody></table>
   </div>
 </section>
 """
@@ -3062,8 +3146,6 @@ def render_diagnostics_page(config: AppConfig, snapshot: Dict[str, Any], message
     <dt>Data root</dt><dd>{esc(config.data_root)}</dd>
     <dt>State DB</dt><dd>{esc(config.state_db_path)}</dd>
     <dt>Indicator export</dt><dd>{esc(config.indicator_export_path)}</dd>
-    <dt>Pending alerts</dt><dd>{esc(config.alert_inbox_path)}</dd>
-    <dt>Archive alerts</dt><dd>{esc(config.alert_archive_path)}</dd>
   </div>
 </section>
 """
@@ -3145,22 +3227,23 @@ class CodexUiHandler(BaseHTTPRequestHandler):
                 return self.respond_html(render_diagnostics_page(self.app_config, snapshot, message))
 
             if parsed.path == "/alert":
-                requested = params.get("path", [""])[0]
-                alert_path = safe_path(
-                    requested,
-                    [self.app_config.alert_inbox_path, self.app_config.alert_archive_path, self.app_config.data_root],
-                )
-                if alert_path is None or not alert_path.exists():
-                    return self.respond_error(HTTPStatus.NOT_FOUND, "Alert file not found.")
-                alert_payload = parse_json(alert_path)
-                md_path = alert_path.with_suffix(".md")
-                text_parts = [json.dumps(alert_payload, indent=2)]
-                if md_path.exists():
-                    text_parts.append("\n--- markdown companion ---\n")
-                    text_parts.append(read_text(md_path))
-                return self.respond_html(render_file_detail(alert_path.name, str(alert_path), "\n".join(text_parts)))
+                alert_id = params.get("id", [""])[0]
+                detail = get_sqlite_alert_detail(self.app_config.state_db_path, alert_id)
+                if not detail.get("found"):
+                    return self.respond_error(HTTPStatus.NOT_FOUND, "SQLite alert not found.")
+                return self.respond_html(render_file_detail(
+                    str(detail["alert"].get("alert_id") or "SQLite alert"),
+                    "SQLite alert record; use export-alert with this immutable ID for a JSON export.",
+                    json.dumps(detail, indent=2),
+                ))
 
             if parsed.path == "/report":
+                report_id = params.get("id", [""])[0]
+                if report_id:
+                    detail = resolve_inactive_sqlite_report_route(self.app_config.state_db_path, report_id)
+                    if not detail.get("found"):
+                        return self.respond_error(HTTPStatus.NOT_FOUND, "SQLite report not found.")
+                    return self.respond_html(render_sqlite_report_detail_preview(detail))
                 requested = params.get("path", [""])[0]
                 roots = [self.app_config.runtime_root, self.app_config.data_root, self.app_config.repo_root]
                 report_path = safe_path(requested, roots)

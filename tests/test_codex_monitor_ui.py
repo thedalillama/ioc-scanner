@@ -4,17 +4,51 @@ import unittest
 from pathlib import Path
 
 import codex_monitor_ui as ui
+import ioc_store
 
 
 class CodexMonitorUiTests(unittest.TestCase):
+    def test_inactive_sqlite_report_preview_adapter_reads_fixture_without_ui_cutover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "ioc-store.db"
+            connection = ioc_store.connect_db(db_path)
+            try:
+                ioc_store.init_db(connection)
+                ioc_store.persist_collector_run_report_findings(
+                    connection,
+                    {"collector_run_id": "ui-run", "collector_name": "ioc", "started_at": "2026-09-09T03:00:00Z", "outcome": "success"},
+                    {"report_id": "ui-report", "collector_run_id": "ui-run", "report_type": "ioc", "collection_time_utc": "2026-09-09T03:00:01Z", "summary": {"MatchCount": 0}},
+                    [{"finding_id": "ui-finding", "title": "Fixture finding", "guardrail_state": "protected", "response_state": "open"}],
+                )
+            finally:
+                connection.close()
+            self.assertEqual(["ui-report"], [item["report_id"] for item in ui.list_sqlite_reports_preview(db_path)])
+            detail = ui.get_sqlite_report_detail_preview(db_path, "ui-report")
+            self.assertTrue(detail["found"])
+            self.assertEqual("protected", detail["findings"][0]["guardrail_state"])
+            self.assertEqual("open", detail["findings"][0]["response_state"])
+            self.assertTrue(ui.resolve_inactive_sqlite_report_route(db_path, "ui-report")["found"])
+            self.assertIn("Fixture finding", ui.render_sqlite_finding_preview(detail["findings"][0]))
+            self.assertIn("Fixture finding", ui.render_sqlite_report_detail_preview(detail))
+            self.assertFalse(ui.build_sqlite_finding_acceptance_command_preview(detail["findings"][0])["eligible"])
+            self.assertEqual([], ui.list_sqlite_reports_preview(Path(temp_dir) / "missing.db"))
+            self.assertEqual({"found": False, "report": None, "findings": []}, ui.get_sqlite_report_detail_preview(db_path, "missing"))
+
+    def test_inactive_sqlite_ui_helpers_require_stable_ids_without_live_acceptance(self) -> None:
+        self.assertEqual("/report?id=report-1", ui.build_sqlite_report_href("report-1"))
+        row = ui.render_sqlite_report_preview_row({"report_id": "report-1", "name": "report-1", "report_type": "ioc", "collection_time": "2026-09-09T03:00:00Z", "summary": {"MatchCount": 1}})
+        self.assertIn('/report?id=report-1', row)
+        self.assertIn('MatchCount=1', row)
+        self.assertEqual({"finding_id": "finding-1", "requires_exact_finding_id": True, "live_action_enabled": False}, ui.build_sqlite_finding_acceptance_preview("finding-1"))
+        self.assertTrue(ui.build_sqlite_finding_acceptance_command_preview({"finding_id": "active", "response_state": "open"})["eligible"])
+        self.assertTrue(ui.build_sqlite_finding_acceptance_command_preview({"finding_id": "accepted", "response_state": "accepted"})["eligible"])
+
     def make_config(self, root: Path, ui_persona: str = "user") -> ui.AppConfig:
         return ui.AppConfig(
             settings_path=root / "codex-monitor.settings.json",
             runtime_root=root,
             data_root=root,
             state_db_path=root / "state" / "ioc-store.db",
-            alert_inbox_path=root / "alerts" / "pending",
-            alert_archive_path=root / "alerts" / "archive",
             indicator_export_path=root / "indicators" / "feed-indicators-latest.json",
             protection_profile="microsoft_baseline",
             ui_persona=ui_persona,
@@ -220,8 +254,6 @@ class CodexMonitorUiTests(unittest.TestCase):
             self.assertEqual(config.runtime_root, Path(payload["RuntimeRoot"]).resolve())
             self.assertEqual(config.data_root, Path(payload["DataRoot"]).resolve())
             self.assertEqual(config.state_db_path, Path(payload["StateDbPath"]).resolve())
-            self.assertEqual(config.alert_inbox_path, Path(payload["AlertInboxPath"]).resolve())
-            self.assertEqual(config.alert_archive_path, Path(payload["AlertArchivePath"]).resolve())
 
     def test_load_settings_resolves_relative_paths_from_settings_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -244,8 +276,6 @@ class CodexMonitorUiTests(unittest.TestCase):
             self.assertEqual(config.runtime_root, settings_dir.resolve())
             self.assertEqual(config.data_root, settings_dir.resolve())
             self.assertEqual(config.state_db_path, (settings_dir / "state" / "ioc-store.db").resolve())
-            self.assertEqual(config.alert_inbox_path, (settings_dir / "alerts" / "pending").resolve())
-            self.assertEqual(config.alert_archive_path, (settings_dir / "alerts" / "archive").resolve())
             self.assertEqual(config.indicator_export_path, (settings_dir / "indicators" / "feed-indicators-latest.json").resolve())
 
     def test_safe_path_accepts_only_whitelisted_roots(self) -> None:
@@ -261,39 +291,39 @@ class CodexMonitorUiTests(unittest.TestCase):
             self.assertEqual(ui.safe_path(str(good_file), [allowed]), good_file.resolve())
             self.assertIsNone(ui.safe_path(str(bad_file), [allowed]))
 
-    def test_list_alert_records_parses_summary_fields(self) -> None:
+    def test_recommended_responses_handles_null_latest_artifacts(self) -> None:
+        responses = ui.build_recommended_responses(
+            {"State": {}, "LatestArtifacts": {"LatestIocReport": None, "LatestTripwireReport": None, "LatestThreatRssReport": None}},
+            [],
+            {"Controls": []},
+            [],
+            [],
+            [],
+        )
+        self.assertTrue(any(item["title"] == "Refresh baseline or evidence" for item in responses))
+
+    def test_sqlite_alert_reader_and_rendering_use_immutable_alert_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            bucket = Path(temp_dir)
-            alert_json = bucket / "ALERT_SAMPLE.json"
-            alert_md = bucket / "ALERT_SAMPLE.md"
-            alert_json.write_text(
-                json.dumps(
-                    {
-                        "Metadata": {
-                            "AlertType": "HostTripwire",
-                            "Severity": "High",
-                            "ChangeCount": 3,
-                            "CollectionTimeUtc": "2026-06-17T00:00:00Z",
-                            "SourceReport": "C:\\Report.json",
-                        },
-                        "Summary": {
-                            "Title": "Sample Alert",
-                            "Message": "Three changes detected.",
-                            "DetailLines": ["A", "B"],
-                        },
-                    }
-                ),
-                encoding="utf-8",
+            db_path = Path(temp_dir) / "ioc-store.db"
+            connection = ioc_store.connect_db(db_path)
+            ioc_store.init_db(connection)
+            ioc_store.persist_collector_run_report_findings(
+                connection,
+                {"collector_run_id": "ui-alert-run", "collector_name": "tripwire", "started_at": "2026-09-11T12:00:00Z", "outcome": "success"},
+                {"report_id": "ui-alert-report", "collector_run_id": "ui-alert-run", "report_type": "tripwire_check", "collection_time_utc": "2026-09-11T12:00:01Z", "summary": {}},
+                [{"finding_id": "ui-alert-finding", "finding_sequence": 0, "severity": "high", "evidence": {}}],
+                [{"alert_id": "ui-alert-id", "finding_id": "ui-alert-finding", "severity": "high", "summary": "SQLite alert"}],
             )
-            alert_md.write_text("# Sample", encoding="utf-8")
+            connection.close()
 
-            records = ui.list_alert_records(bucket, "pending")
-
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["title"], "Sample Alert")
-            self.assertEqual(records[0]["severity"], "High")
-            self.assertEqual(records[0]["change_count"], 3)
-            self.assertEqual(records[0]["markdown_path"], str(alert_md))
+            records = ui.list_sqlite_alerts(db_path)
+            self.assertEqual(["ui-alert-id"], [record["alert_id"] for record in records])
+            self.assertEqual("pending", records[0]["lifecycle_state"])
+            self.assertTrue(ui.get_sqlite_alert_detail(db_path, "ui-alert-id")["found"])
+            row = ui.render_alert_row(records[0], lifecycle_state="New", show_actions=True)
+            self.assertIn('/alert?id=ui-alert-id', row)
+            self.assertIn('export-alert --alert-id ui-alert-id', row)
+            self.assertNotIn('/alert?path=', row)
 
     def test_checked_in_wrappers_use_dynamic_app_root_resolution(self) -> None:
         wrapper_names = [
@@ -320,12 +350,9 @@ class CodexMonitorUiTests(unittest.TestCase):
 
             queue = ui.build_respond_queue_data(config, snapshot)
 
-            self.assertEqual(queue["queue_state"], "active")
-            self.assertEqual(queue["latest_report_name"], report_path.name)
-            self.assertEqual(len(queue["active_findings"]), 2)
-            self.assertEqual(len(queue["recorded_findings"]), 2)
-            self.assertEqual(queue["active_findings"][0]["title"], "Windows Firewall")
-            self.assertEqual(queue["summary_cards"][0]["label"], "Response required")
+            self.assertEqual(queue["queue_state"], "missing_report")
+            self.assertEqual(queue["latest_report_name"], "")
+            self.assertEqual(queue["active_findings"], [])
 
     def test_build_respond_queue_handles_missing_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -381,8 +408,7 @@ class CodexMonitorUiTests(unittest.TestCase):
             page = ui.render_respond_page(config, snapshot)
 
             self.assertIn("Respond to findings", page)
-            self.assertIn("Observed posture changes", page)
-            self.assertIn("Response required", page)
+            self.assertIn("No posture check report is available yet", page)
             self.assertIn("Detect records observed configuration drift. Respond handles findings. Recover confirms trusted operation after response.", page)
 
     def test_render_routes_smoke(self) -> None:
