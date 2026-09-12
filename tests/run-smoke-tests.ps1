@@ -88,8 +88,8 @@ Assert-TransferManifestEntry -TransferBuilderPath $transferBuilderPath -Target "
 Assert-TransferManifestEntry -TransferBuilderPath $transferBuilderPath -Target "profiles"
 
 $hiddenRunnerPath = Join-Path $Root "run-hidden.vbs"
-if (-not (Select-String -LiteralPath $hiddenRunnerPath -Pattern 'command\s*=\s*"cmd\.exe /d /s /c ".*WScript\.Arguments\(0\)' -Quiet)) {
-    throw "Hidden task launcher must run quoted batch launchers through cmd.exe."
+if (-not (Select-String -LiteralPath $hiddenRunnerPath -Pattern 'Chr\(34\) & Chr\(34\) & WScript\.Arguments\(0\) & Chr\(34\) & Chr\(34\)' -Quiet)) {
+    throw "Hidden task launcher must preserve nested quotes around protected batch launchers."
 }
 Write-Host "HIDDEN_LAUNCHER_QUOTING_OK"
 
