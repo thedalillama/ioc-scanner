@@ -129,24 +129,11 @@ If you want the settings file elsewhere, use:
 powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoot "C:\Program Files\CodexMonitor" -DataRoot "C:\ProgramData\CodexMonitor" -SettingsRoot "C:\Some\Other\Path"
 ```
 
-## Example scheduled tasks
+## Scheduled tasks
 
-### `SYSTEM` collection tasks
+Use `install-codex-monitor.ps1 -CreateSystemTasks -CreateUserNotifierTask` to create the four `SYSTEM` collection tasks and the interactive user-context notifier task. The installer supplies protected-runtime launchers with the required quoting and SQLite data path; do not recreate the tasks from legacy `schtasks` examples.
 
-```powershell
-schtasks /Create /SC HOURLY /MO 1 /TN "Codex Host Tripwire" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\invoke-host-tripwire.ps1 -Mode Check" /RU SYSTEM /RL HIGHEST /F
-schtasks /Create /SC HOURLY /MO 1 /TN "Codex Threat RSS Monitor" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\monitor-threat-rss.ps1 -RunTripwireCheckOnMatch" /RU SYSTEM /RL HIGHEST /F
-schtasks /Create /SC DAILY /ST 02:00 /TN "Codex Threat Feed Import" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\import-threat-feeds.ps1 -OutputPath <DataRoot>\indicators\feed-indicators-latest.json -LocationConfigPath <RuntimeRoot>\ioc-monitor-locations.json -IocStorePath <DataRoot>\state\ioc-store.db" /RU SYSTEM /RL HIGHEST /F
-schtasks /Create /SC DAILY /ST 03:00 /TN "Codex IOC Daily Scan" /TR "powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\invoke-host-ioc.ps1 -Mode IOC" /RU SYSTEM /RL HIGHEST /F
-```
-
-### User-context notification helper
-
-```powershell
-schtasks /Create /SC MINUTE /MO 1 /TN "Codex Alert Notifier" /TR "wscript.exe //B //nologo <RuntimeRoot>\run-hidden.vbs ""powershell.exe -ExecutionPolicy Bypass -File <RuntimeRoot>\start-codex-alert-helper.ps1 -WatchPath <DataRoot>\alerts\pending -StateDbPath <DataRoot>\state\ioc-store.db""" /RL LIMITED /F
-```
-
-The notifier should run from the protected runtime path, but consume and mutate files in the writable data root. It is a one-shot task that runs each minute, not a long-running watcher.
+The notifier runs from the protected runtime path and atomically claims pending SQLite alerts from the writable data root. It is a one-shot task that runs each minute, not a long-running file watcher.
 It shows an interactive popup with:
 
 - `Open Alert`
@@ -167,7 +154,7 @@ powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode Baseline
 ```
 
 6. create the user notification task
-7. verify popup delivery by dropping a synthetic `ALERT_*.json` into `<DataRoot>\alerts\pending`
+7. verify popup delivery with one controlled, persisted SQLite alert and confirm it is acknowledged after dismissal
 8. confirm protection health with:
 
 ```powershell

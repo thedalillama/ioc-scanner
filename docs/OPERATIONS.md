@@ -79,22 +79,9 @@ powershell -ExecutionPolicy Bypass -File .\get-codex-monitor-status.ps1 -AsJson
 powershell -ExecutionPolicy Bypass -File .\monitor-threat-rss.ps1 -RunTripwireCheckOnMatch
 ```
 
-## Alert files
+## Alert records
 
-The detection scripts write explicit alert artifacts:
-
-- `alerts\pending\ALERT_HOST_TRIPWIRE_<timestamp>.json/md`
-- `alerts\pending\ALERT_THREAT_RSS_<timestamp>.json/md`
-
-The user-context notifier task scans `<DataRoot>\alerts\pending` once per minute.
-After processing an alert, the notifier moves the alert JSON and matching Markdown file into `alerts\archive`.
-It also records seen-alert state in SQLite so the same alert is not shown repeatedly.
-
-The watch path is configurable by:
-
-- `-WatchPath`
-- `CODEX_MONITOR_WATCHPATH`
-- `codex-monitor.settings.json`
+The detection scripts persist alert records in SQLite. The notifier claims pending records atomically, presents the interactive popup, and records delivery and acknowledgement in SQLite. Alert JSON/Markdown is available only through the explicit `export-alert` command.
 
 Persistent monitor state now lives in SQLite:
 
@@ -216,15 +203,15 @@ Recommended scheduled protection tasks:
 Test the notifier directly:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\start-codex-alert-helper.ps1 -WatchPath .\alerts\pending -StateDbPath .\state\ioc-store.db
+powershell -ExecutionPolicy Bypass -File .\start-codex-alert-helper.ps1 -StateDbPath .\state\ioc-store.db
 ```
 
 Check:
 
 - a user is logged in interactively
 - `Codex Alert Notifier` is running in the interactive user context
-- alerts are landing in `alerts\pending`
-- alerts are not already marked seen in SQLite
+- a pending alert record exists in SQLite
+- the alert is not already claimed, acknowledged, or closed
 
 ### Scheduled task creation is not visible in logs
 
