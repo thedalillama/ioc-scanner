@@ -12,6 +12,7 @@ $files = @(
     'vm-install.cmd',
     'invoke-host-ioc.ps1',
     'invoke-host-tripwire.ps1',
+    'refresh-tripwire-baseline.ps1',
     'monitor-threat-rss.ps1',
     'start-codex-alert-helper.ps1',
     'import-threat-feeds.ps1',

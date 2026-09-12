@@ -317,6 +317,7 @@ $runtimeFiles = @(
     @{ Target = "start-codex-monitor-ui.ps1"; Candidates = @("start-codex-monitor-ui.ps1") },
     @{ Target = "invoke-host-ioc.ps1"; Candidates = @("invoke-host-ioc.ps1", "ioc.ps1") },
     @{ Target = "invoke-host-tripwire.ps1"; Candidates = @("invoke-host-tripwire.ps1", "tripwire.ps1") },
+    @{ Target = "refresh-tripwire-baseline.ps1"; Candidates = @("refresh-tripwire-baseline.ps1") },
     @{ Target = "monitor-threat-rss.ps1"; Candidates = @("monitor-threat-rss.ps1", "rss.ps1") },
     @{ Target = "start-codex-alert-helper.ps1"; Candidates = @("start-codex-alert-helper.ps1", "alert-helper.ps1") },
     @{ Target = "import-threat-feeds.ps1"; Candidates = @("import-threat-feeds.ps1", "feed-import.ps1") },

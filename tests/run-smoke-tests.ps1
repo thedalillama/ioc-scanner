@@ -49,6 +49,7 @@ function Assert-TransferManifestEntry {
 $scripts = @(
     "invoke-host-ioc.ps1",
     "invoke-host-tripwire.ps1",
+    "refresh-tripwire-baseline.ps1",
     "monitor-threat-rss.ps1",
     "start-codex-alert-helper.ps1",
     "install-codex-monitor.ps1",
@@ -66,6 +67,7 @@ $requiredRuntimeTargets = @(
     "accept-posture-drift.ps1",
     "posture-drift-rules.ps1",
     "tripwire-posture-baseline.ps1",
+    "refresh-tripwire-baseline.ps1",
     "protection-profiles.json",
     "profiles\persona-profiles.json",
     "profiles\system-profiles.json",

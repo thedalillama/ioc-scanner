@@ -10,6 +10,7 @@ param(
     [string]$BaselineReason = "",
     [string]$CreatedBy = "",
     [bool]$CreatedAfterReview = $true,
+    [switch]$ExcludeTransientBaselineRefreshTask,
     [switch]$Export
 )
 
@@ -975,10 +976,17 @@ function Get-ServiceSnapshot {
 }
 
 function Get-TaskSnapshot {
+    param([switch]$ExcludeTransientBaselineRefreshTask)
+
+    $transientRefreshTaskName = '\Codex Tripwire Baseline Refresh'
     Get-ScheduledTask | Sort-Object TaskPath, TaskName | ForEach-Object {
         $task = $_
+        $fullTaskName = "{0}{1}" -f $task.TaskPath, $task.TaskName
+        if ($ExcludeTransientBaselineRefreshTask -and $fullTaskName -eq $transientRefreshTaskName) {
+            return
+        }
         [PSCustomObject]@{
-            Name = "{0}{1}" -f $task.TaskPath, $task.TaskName
+            Name = $fullTaskName
             TaskPath = $task.TaskPath
             TaskName = $task.TaskName
             Author = $task.Author
@@ -1395,6 +1403,8 @@ if ($Mode -eq "Check") {
 if ($Mode -eq "Baseline") {
     Set-TripwireRunLock -LockPath $tripwireLockPath -Mode $Mode
     $tripwireLockAcquired = $true
+} elseif ($ExcludeTransientBaselineRefreshTask) {
+    throw "ExcludeTransientBaselineRefreshTask is valid only for Tripwire Baseline mode."
 }
 
 try {
@@ -1407,11 +1417,12 @@ try {
             IocLocationConfigPath = $IocLocationConfigPath
             StateDbPath = $resolvedStateDbPath
             ExecutionContext = $tripwireExecutionContext
+            ExcludedTransientScheduledTask = if ($ExcludeTransientBaselineRefreshTask) { '\Codex Tripwire Baseline Refresh' } else { '' }
         }
         LocalUsers = @(Get-LocalUsersSnapshot)
         LocalGroups = @(Get-LocalGroupMembersSnapshot -Groups @($config.LocalGroups))
         Services = @(Get-ServiceSnapshot)
-        ScheduledTasks = @(Get-TaskSnapshot)
+        ScheduledTasks = @(Get-TaskSnapshot -ExcludeTransientBaselineRefreshTask:$ExcludeTransientBaselineRefreshTask)
         Autoruns = @(Get-RunKeySnapshot)
         WatchedFiles = @(Get-WatchedFilesSnapshot -Config $config)
         RecentEvents = Get-KeyEventSnapshot -RecentWindowHours ([int]$config.RecentWindowHours)

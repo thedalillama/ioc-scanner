@@ -162,6 +162,19 @@ When validating tripwire manually, run `Baseline` and `Check` sequentially.
 Do not launch them in parallel, because `Check` can read the previous SQLite baseline before the new one is written.
 If a baseline is already in progress, `Check` now refuses to run and prints a warning that includes the host, PID, and baseline start time.
 
+For a protected installation that needs the baseline to be created as `SYSTEM`, use
+the dedicated elevated refresh runner after reviewing the intended state:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\refresh-tripwire-baseline.ps1 -Reason "Reviewed maintenance change"
+```
+
+The runner creates a fixed-name, one-shot SYSTEM task, excludes only that task
+from the new baseline's scheduled-task snapshot, waits for completion, then removes
+it. It refuses to reuse an existing task of that name. Normal Tripwire checks do
+not exclude any scheduled tasks, and the runner cannot suppress other persistence
+changes.
+
 ### Add watched locations
 
 Edit `host-tripwire-config.json` or use the example in `examples\host-tripwire-config.example.json`.
