@@ -11,6 +11,81 @@ The app is still a local Windows NIST CSF posture/control audit module, but thos
 This document is a presentation and interaction specification. It should not be read as a claim that every planned Respond or Recover experience is already complete in code.
 
 ---
+## CSF Analyst Interaction Model
+
+The management interface has one user-facing role: **CSF Analyst**. It teaches the NIST Cybersecurity Framework through the work itself; it is not a set of personas that change the meaning of findings or the user's authority.
+
+Authority remains separate from the interface role. Protected actions such as authorizing a trusted baseline refresh still require the appropriate elevation, explicit confirmation, reason, and durable evidence.
+
+The top of every route presents the six CSF Functions in a fixed, clickable action map:
+
+```text
+Govern -> Identify -> Protect -> Detect -> Respond -> Recover
+```
+
+The row teaches the conceptual order but does not lock the analyst into a linear wizard. Each Function is always selectable. In this product, a selected CSF Function is called a **mode**; a concrete operation the analyst initiates is called an **action**. Do not use "action" for the top-row CSF selections.
+
+The top workspace has a persistent masthead with the product title and UI version. Action-map buttons show only the Function name. Hovering or keyboard-focusing a mode previews short guidance below the map:
+
+- its purpose
+- the evidence and decisions that belong there
+
+The directional arrows between modes communicate the conceptual relationship; they do not require a rigid sequence. For example, Detect records an observed change or IOC signal. The analyst may then move to Protect for configuration-baseline review, Identify for risk assessment and exception tracking, Govern for authority and policy decisions, or Respond when the evidence suggests a credible security incident.
+
+Notifications are attention mechanisms, not the primary operating model. The interface should lead with CSF evidence, open reviews, and guided decisions rather than a generic alert count.
+
+### CSF Explorer: approved target for the selected-mode workspace
+
+The selected-mode workspace is a vertically stacked, horizontal CSF Explorer. It teaches the Framework through the user's workflow:
+
+```text
+Function/mode -> Category -> Subcategory/outcome -> Local evidence -> User action
+```
+
+**Implementation status (2026-09-14):** the source and local development preview implement the read-only official catalog shell, direct Category/Subcategory URL selection, and explicit unmapped-outcome state. The first reviewed evidence/action mapping is the `DE.CM` Continuous Monitoring Category, which displays the existing monitoring-task history and reviewed **Run now** controls. SQLite storage for advisory-only local Categories and outcomes is implemented and tested, but its authoring UI is not yet wired. Broader outcome mappings and deployment validation remain future slices; this source status is not a production-deployment claim.
+
+At the top of the explorer is a fixed-height, internally scrolling Category table for the selected Function. A selected Category opens a second fixed-height, internally scrolling Subcategory table below it. Selecting a Subcategory opens the full-width outcome workspace beneath both tables. The page itself remains fixed at the 1024x1280 baseline; each list and the outcome detail area scroll internally as needed.
+
+The outcome workspace shows, in this order:
+
+1. NIST CSF identifier and official title.
+2. Official NIST implementation example(s): plain text for one example and a bulleted list when NIST provides several.
+3. Available local evidence, including an explicit no-evidence state when no mapping exists.
+4. The product actions that genuinely support that outcome.
+5. A clear action-state label: active, evidence-only, planned, or out of scope.
+
+Do not turn every CSF Category or Subcategory into an enabled button. The complete NIST CSF 2.0 catalog is a learning and navigation source; the app enables only actions it can perform safely and auditably. An action can support one or more CSF outcomes, but the interface must not imply that a local product action is itself prescribed by NIST.
+
+For example, the Detect outcome `DE.CM — Continuous Monitoring` presents the plain-English purpose, the monitoring-task log (last run, next run, outcome, and freshness), and the applicable **Run now** actions. `DE.AE — Adverse Event Analysis` presents the resulting evidence and classification/review actions. Scheduled collection belongs primarily in Detect; Govern oversees whether the monitoring program is adequate.
+
+#### NIST content and local extensions
+
+NIST CSF 2.0 Functions, Categories, Subcategories, identifiers, and official titles are versioned read-only catalog content. Local custom categories are permitted only as clearly labeled extensions. A local extension must record its parent Function, custom title, plain-English objective, optional local outcomes, and optional descriptive evidence and action guidance. It must use a separate identifier namespace such as `LOCAL.GV.01`; it must never reuse a NIST identifier or appear to be official NIST content.
+
+Local extensions are advisory only. They may describe relevant evidence and recommended human actions, but they must not create scripts, shell commands, executable links, task invocations, evidence queries, forms, or action buttons. Only centrally implemented and reviewed product mappings may expose an evidence query or executable action in the outcome workspace. This keeps locally authored learning content from becoming an unreviewed execution surface.
+
+#### Attention hints
+
+Attention hints guide review without treating every condition as an incident. They appear at the mode, Category, Subcategory, and outcome-workspace levels and link directly to the supporting outcome.
+
+- **Red:** credible security event or response-required finding.
+- **Amber:** review needed, such as stale evidence, a failed task, a control gap, or unclassified posture drift.
+- **Blue/gray:** no current evidence or no product mapping for the outcome.
+- **Green:** current evidence supports the outcome.
+
+Each hint explains the condition in plain English and offers the relevant action when one is available. A single "next recommended review" may appear in the masthead or mode map, but it must link to the specific Category/Subcategory rather than present a generic alert count.
+
+### Fixed-workspace behavior
+
+At a **1024x1280 display baseline**, the app is a fixed-height CSF workspace: the browser document does not scroll. The CSS activates at a 1000x1000 content viewport to allow for normal browser chrome at that display size. The action map, the selected Function, and the current condition remain visible; long findings, evidence, and activity records scroll only inside their assigned work area.
+
+Selecting a CSF Function updates that workspace in place while preserving a direct URL and normal browser Back/Forward behavior. Direct routes remain usable without JavaScript.
+
+The app collects the full live PC snapshot once at startup. Ordinary CSF navigation reuses that snapshot; Detect, Respond, Recover, Reports, and the overview additionally refresh their small SQLite-backed evidence views. A visible **Refresh live PC snapshot** action deliberately performs the slower full Windows inventory when current live machine state is required.
+
+Report, alert, and evidence links open a centered, keyboard-dismissible detail modal. The modal is an inspection surface only: it preserves the direct record URL and does not bypass export, elevation, immutable-ID, or guardrail controls. Below the supported content-viewport threshold, normal page scrolling is permitted so content remains readable.
+
+---
 ## Design Principle
 
 The product should feel like:
@@ -618,4 +693,3 @@ The redesigned UI should:
 - support Home User, Advanced User, NIST CSF Native, Analyst, and Technician personas
 - remain auditable for advanced use
 - keep security details available without forcing them into the default experience
-

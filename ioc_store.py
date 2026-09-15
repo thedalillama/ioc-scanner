@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from csf_guidance import PLAIN_ENGLISH_GUIDANCE_EN_US
+from csf_profile import SUBCATEGORY_PROFILE_METADATA_EN_US
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -428,6 +431,49 @@ def init_db(connection: sqlite3.Connection) -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_alert_deliveries_pending ON alert_deliveries(delivery_state, created_at);
+
+        CREATE TABLE IF NOT EXISTS local_csf_categories (
+            local_category_id TEXT PRIMARY KEY,
+            function_id TEXT NOT NULL CHECK(function_id IN ('GV', 'ID', 'PR', 'DE', 'RS', 'RC')),
+            title TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            advisory_evidence_text TEXT,
+            advisory_action_text TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_local_csf_categories_function ON local_csf_categories(function_id, local_category_id);
+
+        CREATE TABLE IF NOT EXISTS local_csf_outcomes (
+            local_outcome_id TEXT PRIMARY KEY,
+            local_category_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            advisory_evidence_text TEXT,
+            advisory_action_text TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(local_category_id) REFERENCES local_csf_categories(local_category_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_local_csf_outcomes_category ON local_csf_outcomes(local_category_id, local_outcome_id);
+
+        CREATE TABLE IF NOT EXISTS csf_subcategory_guidance (
+            subcategory_id TEXT NOT NULL,
+            language_code TEXT NOT NULL,
+            plain_english_text TEXT NOT NULL CHECK(length(trim(plain_english_text)) > 0),
+            PRIMARY KEY(subcategory_id, language_code)
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_subcategory_profile_metadata (
+            subcategory_id TEXT NOT NULL,
+            language_code TEXT NOT NULL,
+            assessment_method TEXT NOT NULL CHECK(assessment_method IN ('evidence', 'attestation', 'review', 'hybrid')),
+            research_guidance TEXT NOT NULL CHECK(length(trim(research_guidance)) > 0),
+            supporting_note_required INTEGER NOT NULL CHECK(supporting_note_required IN (0, 1)),
+            PRIMARY KEY(subcategory_id, language_code)
+        );
         """
     )
     connection.executemany(
@@ -435,9 +481,211 @@ def init_db(connection: sqlite3.Connection) -> None:
         [
             (1, utc_now(), "Initial normalized indicator, state, baseline, and evidence schema."),
             (2, utc_now(), "Additive Phase 2 collector, report, finding, alert, and delivery schema foundation."),
+            (3, utc_now(), "Add advisory-only local CSF Category and outcome storage."),
+            (4, utc_now(), "Add product-authored plain-English guidance for official CSF Subcategories."),
+            (5, utc_now(), "Add Single-PC CSF Profile assessment metadata for official CSF Subcategories."),
+        ],
+    )
+    connection.executemany(
+        """
+        INSERT INTO csf_subcategory_guidance(subcategory_id, language_code, plain_english_text)
+        VALUES (?, 'en-US', ?)
+        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET
+            plain_english_text = excluded.plain_english_text
+        """,
+        [(subcategory_id, text) for subcategory_id, text in PLAIN_ENGLISH_GUIDANCE_EN_US.items()],
+    )
+    connection.executemany(
+        """
+        INSERT INTO csf_subcategory_profile_metadata(
+            subcategory_id, language_code, assessment_method, research_guidance, supporting_note_required
+        )
+        VALUES (?, 'en-US', ?, ?, ?)
+        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET
+            assessment_method = excluded.assessment_method,
+            research_guidance = excluded.research_guidance,
+            supporting_note_required = excluded.supporting_note_required
+        """,
+        [
+            (
+                subcategory_id,
+                metadata["assessment_method"],
+                metadata["research_guidance"],
+                int(metadata["supporting_note_required"]),
+            )
+            for subcategory_id, metadata in SUBCATEGORY_PROFILE_METADATA_EN_US.items()
         ],
     )
     connection.commit()
+
+
+LOCAL_CSF_FUNCTION_IDS = {"GV", "ID", "PR", "DE", "RS", "RC"}
+LOCAL_CSF_CATEGORY_ID_RE = re.compile(r"^LOCAL\.(GV|ID|PR|DE|RS|RC)\.(\d{2,})$")
+LOCAL_CSF_OUTCOME_ID_RE = re.compile(r"^LOCAL\.(GV|ID|PR|DE|RS|RC)\.(\d{2,})\.(\d{2,})$")
+
+
+def get_csf_subcategory_guidance(
+    connection: sqlite3.Connection, subcategory_id: str, language_code: str = "en-US"
+) -> Dict[str, str]:
+    """Return centrally maintained product guidance for one official CSF Subcategory."""
+    row = connection.execute(
+        """
+        SELECT subcategory_id, language_code, plain_english_text
+        FROM csf_subcategory_guidance
+        WHERE subcategory_id = ? AND language_code = ?
+        """,
+        (str(subcategory_id or "").strip().upper(), str(language_code or "").strip()),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def get_csf_subcategory_profile_metadata(
+    connection: sqlite3.Connection, subcategory_id: str, language_code: str = "en-US"
+) -> Dict[str, Any]:
+    """Return product assessment metadata for one official CSF Subcategory."""
+    row = connection.execute(
+        """
+        SELECT subcategory_id, language_code, assessment_method, research_guidance, supporting_note_required
+        FROM csf_subcategory_profile_metadata
+        WHERE subcategory_id = ? AND language_code = ?
+        """,
+        (str(subcategory_id or "").strip().upper(), str(language_code or "").strip()),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def _local_csf_text(value: Any, field_name: str, *, required: bool, maximum: int) -> str:
+    text = str(value or "").strip()
+    if required and not text:
+        raise ValueError(f"{field_name} is required.")
+    if len(text) > maximum:
+        raise ValueError(f"{field_name} must be {maximum} characters or fewer.")
+    return text
+
+
+def _next_local_csf_suffix(connection: sqlite3.Connection, function_id: str) -> int:
+    rows = connection.execute(
+        "SELECT local_category_id FROM local_csf_categories WHERE function_id = ?",
+        (function_id,),
+    ).fetchall()
+    suffixes = []
+    for row in rows:
+        match = LOCAL_CSF_CATEGORY_ID_RE.fullmatch(str(row["local_category_id"]))
+        if match:
+            suffixes.append(int(match.group(2)))
+    return (max(suffixes) if suffixes else 0) + 1
+
+
+def create_local_csf_category(
+    connection: sqlite3.Connection,
+    function_id: str,
+    title: Any,
+    objective: Any,
+    advisory_evidence_text: Any = "",
+    advisory_action_text: Any = "",
+) -> Dict[str, Any]:
+    """Create advisory-only local CSF content; no executable field exists in this contract."""
+    function = str(function_id or "").strip().upper()
+    if function not in LOCAL_CSF_FUNCTION_IDS:
+        raise ValueError("Local Category must belong to one official CSF Function.")
+    now = utc_now()
+    with connection:
+        local_category_id = f"LOCAL.{function}.{_next_local_csf_suffix(connection, function):02d}"
+        connection.execute(
+            """
+            INSERT INTO local_csf_categories (
+                local_category_id, function_id, title, objective, advisory_evidence_text,
+                advisory_action_text, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                local_category_id,
+                function,
+                _local_csf_text(title, "Title", required=True, maximum=160),
+                _local_csf_text(objective, "Objective", required=True, maximum=2000),
+                _local_csf_text(advisory_evidence_text, "Advisory evidence description", required=False, maximum=2000),
+                _local_csf_text(advisory_action_text, "Advisory action description", required=False, maximum=2000),
+                now,
+                now,
+            ),
+        )
+    return get_local_csf_category(connection, local_category_id)
+
+
+def get_local_csf_category(connection: sqlite3.Connection, local_category_id: str) -> Dict[str, Any]:
+    row = connection.execute(
+        "SELECT * FROM local_csf_categories WHERE local_category_id = ?",
+        (str(local_category_id or "").strip().upper(),),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def list_local_csf_categories(connection: sqlite3.Connection, function_id: str) -> List[Dict[str, Any]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            "SELECT * FROM local_csf_categories WHERE function_id = ? ORDER BY local_category_id",
+            (str(function_id or "").strip().upper(),),
+        ).fetchall()
+    ]
+
+
+def create_local_csf_outcome(
+    connection: sqlite3.Connection,
+    local_category_id: str,
+    title: Any,
+    objective: Any,
+    advisory_evidence_text: Any = "",
+    advisory_action_text: Any = "",
+) -> Dict[str, Any]:
+    category = get_local_csf_category(connection, local_category_id)
+    if not category:
+        raise ValueError("Local outcome must belong to an existing local Category.")
+    match = LOCAL_CSF_CATEGORY_ID_RE.fullmatch(category["local_category_id"])
+    if not match:
+        raise ValueError("Local Category identifier is invalid.")
+    rows = connection.execute(
+        "SELECT local_outcome_id FROM local_csf_outcomes WHERE local_category_id = ?",
+        (category["local_category_id"],),
+    ).fetchall()
+    suffixes = [
+        int(item.group(3))
+        for row in rows
+        if (item := LOCAL_CSF_OUTCOME_ID_RE.fullmatch(str(row["local_outcome_id"])))
+    ]
+    local_outcome_id = f"{category['local_category_id']}.{(max(suffixes) if suffixes else 0) + 1:02d}"
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO local_csf_outcomes (
+                local_outcome_id, local_category_id, title, objective, advisory_evidence_text,
+                advisory_action_text, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                local_outcome_id,
+                category["local_category_id"],
+                _local_csf_text(title, "Title", required=True, maximum=160),
+                _local_csf_text(objective, "Objective", required=True, maximum=2000),
+                _local_csf_text(advisory_evidence_text, "Advisory evidence description", required=False, maximum=2000),
+                _local_csf_text(advisory_action_text, "Advisory action description", required=False, maximum=2000),
+                now,
+                now,
+            ),
+        )
+    row = connection.execute("SELECT * FROM local_csf_outcomes WHERE local_outcome_id = ?", (local_outcome_id,)).fetchone()
+    return dict(row) if row else {}
+
+
+def list_local_csf_outcomes(connection: sqlite3.Connection, local_category_id: str) -> List[Dict[str, Any]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            "SELECT * FROM local_csf_outcomes WHERE local_category_id = ? ORDER BY local_outcome_id",
+            (str(local_category_id or "").strip().upper(),),
+        ).fetchall()
+    ]
 
 
 def parse_tripwire_timestamp(value: Any) -> str:

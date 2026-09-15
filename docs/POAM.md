@@ -138,6 +138,14 @@ Keep `CodexTest.zip`, `_ui_snapshot.html`, `ui-verify.png`, `winerror.h`, and ge
 
 ## Backlog Items
 
+### Make SQLite alert detail an operator-facing investigation view
+
+Status: open; identified 2026-09-13 during live Tripwire alert validation.
+
+`Open Alert` correctly resolves an immutable SQLite alert, but the current `/alert?id=...` page renders raw JSON metadata. An operator must manually copy the linked `report_id` and construct a `/report?id=...` URL to inspect the findings that caused the popup. This is not a reasonable investigation workflow.
+
+Replace the raw alert-detail view with an operator-facing page that presents the alert summary, severity, lifecycle, collection time, linked report, and linked finding. Include an obvious `View report and findings` action using the immutable report ID; show a finding-focused action when the linked finding exists. Keep raw JSON available only through the existing explicit `export-alert` command. Add fixtures for a linked alert, an alert whose report or finding has been retained or is unavailable, and an alert with a guardrail-protected finding. Verify the desktop popup's `Open Alert` action reaches this investigation view end to end.
+
 ### Avoid self-generated scheduled-task drift during SYSTEM baseline refresh
 
 Status: open; observed 2026-09-09.

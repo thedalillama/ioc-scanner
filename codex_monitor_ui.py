@@ -1,4 +1,5 @@
 import argparse
+import copy
 import html
 import json
 import re
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import ioc_store
+import csf_catalog
 
 
 TASK_NAMES = [
@@ -29,6 +31,10 @@ TASK_NAMES = [
 ]
 
 TRIPWIRE_BASELINE_TASK_NAME = "Codex Host Tripwire Baseline (System)"
+CSF_ANALYST_PERSONA_ID = "analyst"
+UI_DISPLAY_VERSION = "1.0"
+PRODUCT_DISPLAY_NAME = "CSF Analyst UI"
+FRAMEWORK_DISPLAY_NAME = "National Institute of Standards and Technology Cybersecurity Framework (NIST CSF) 2"
 
 
 def utc_now_iso() -> str:
@@ -208,6 +214,153 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+UI_CLIENT_SCRIPT = """
+<script>
+(() => {
+  const fragmentUrl = (href, fragment) => {
+    const url = new URL(href, window.location.origin);
+    url.searchParams.set("fragment", fragment);
+    return url.toString();
+  };
+
+  const replaceWorkspace = (markup, focusExplorerList = "") => {
+    const current = document.getElementById("csf-app");
+    if (!current) return false;
+    current.outerHTML = markup;
+    requestAnimationFrame(() => {
+      document.querySelectorAll(".csf-explorer-list .csf-explorer-row.active").forEach((row) => {
+        row.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+      if (focusExplorerList) document.querySelector(`.csf-explorer-list[data-explorer-list="${focusExplorerList}"]`)?.focus({ preventScroll: true });
+    });
+    return true;
+  };
+
+  const navigate = async (href, push, focusExplorerList = "") => {
+    const app = document.getElementById("csf-app");
+    if (!app) { window.location.assign(href); return; }
+    app.setAttribute("aria-busy", "true");
+    try {
+      const response = await fetch(fragmentUrl(href, "app"), { headers: { "X-Codex-Fragment": "app" } });
+      if (!response.ok || !replaceWorkspace(await response.text(), focusExplorerList)) throw new Error("Workspace response was unavailable.");
+      if (push) window.history.pushState({ csfWorkspace: true }, "", href);
+    } catch (_) {
+      window.location.assign(href);
+    }
+  };
+
+  const explorerScrollStep = (list) => {
+    const row = list.querySelector(".csf-explorer-row");
+    if (!row) return 0;
+    const rowGap = Number.parseFloat(window.getComputedStyle(list).rowGap) || 0;
+    return row.getBoundingClientRect().height + rowGap;
+  };
+
+  const scrollExplorerList = (list, direction) => {
+    const step = explorerScrollStep(list);
+    if (!step || list.scrollHeight <= list.clientHeight) return false;
+    const currentRow = Math.round(list.scrollTop / step);
+    const maxRow = Math.round((list.scrollHeight - list.clientHeight) / step);
+    const nextRow = Math.max(0, Math.min(maxRow, currentRow + direction));
+    if (nextRow === currentRow) return false;
+    list.scrollTo({ top: nextRow * step, behavior: "auto" });
+    return true;
+  };
+
+  const closeModal = () => {
+    const host = document.getElementById("csf-modal-host");
+    const dialog = host?.querySelector("[role=dialog]");
+    const returnFocus = dialog?.dataset.returnFocus;
+    if (host) host.replaceChildren();
+    if (returnFocus) document.getElementById(returnFocus)?.focus();
+  };
+
+  const openModal = async (href, opener) => {
+    const host = document.getElementById("csf-modal-host");
+    if (!host) { window.location.assign(href); return; }
+    try {
+      const response = await fetch(fragmentUrl(href, "modal"), { headers: { "X-Codex-Fragment": "modal" } });
+      if (!response.ok) throw new Error("Detail response was unavailable.");
+      host.innerHTML = await response.text();
+      const dialog = host.querySelector("[role=dialog]");
+      if (dialog) {
+        dialog.dataset.returnFocus = opener ? opener.id : "";
+        dialog.querySelector("[data-modal-close]")?.focus();
+      }
+    } catch (_) {
+      window.location.assign(href);
+    }
+  };
+
+  const setGuidance = (source) => {
+    const app = document.getElementById("csf-app");
+    const purpose = document.getElementById("csf-guidance-purpose");
+    const useHere = document.getElementById("csf-guidance-use");
+    if (!app || !purpose || !useHere) return;
+    purpose.textContent = source?.dataset.csfPurpose || app.dataset.csfGuidancePurpose || "";
+    useHere.textContent = source?.dataset.csfUse || app.dataset.csfGuidanceUse || "";
+  };
+
+  document.addEventListener("click", (event) => {
+    const modalClose = event.target.closest("button[data-modal-close]");
+    const backdrop = event.target.closest(".modal-backdrop");
+    if (modalClose || (backdrop && event.target === backdrop)) { event.preventDefault(); closeModal(); return; }
+    const modalLink = event.target.closest("a[data-record-modal]");
+    if (modalLink && event.button === 0 && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      if (!modalLink.id) modalLink.id = `modal-opener-${Date.now()}`;
+      openModal(modalLink.href, modalLink);
+      return;
+    }
+    const route = event.target.closest("a[data-csf-route]");
+    if (route && event.button === 0 && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      navigate(route.href, true, route.closest(".csf-explorer-list")?.dataset.explorerList || "");
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.querySelector("#csf-modal-host [role=dialog]")) closeModal();
+    const explorerList = event.target.closest?.(".csf-explorer-list");
+    if (explorerList && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      scrollExplorerList(explorerList, event.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+
+  document.addEventListener("wheel", (event) => {
+    const explorerList = event.target.closest?.(".csf-explorer-list");
+    if (!explorerList || !event.deltaY) return;
+    event.preventDefault();
+    scrollExplorerList(explorerList, event.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
+
+  document.addEventListener("mouseover", (event) => {
+    const route = event.target.closest("a[data-csf-route]");
+    if (route && !route.contains(event.relatedTarget)) setGuidance(route);
+  });
+
+  document.addEventListener("mouseout", (event) => {
+    const route = event.target.closest("a[data-csf-route]");
+    if (route && !route.contains(event.relatedTarget)) setGuidance();
+  });
+
+  document.addEventListener("focusin", (event) => {
+    const route = event.target.closest("a[data-csf-route]");
+    if (route) setGuidance(route);
+  });
+
+  document.addEventListener("focusout", (event) => {
+    const route = event.target.closest("a[data-csf-route]");
+    if (route && !route.contains(event.relatedTarget)) setGuidance();
+  });
+
+  window.addEventListener("popstate", () => navigate(window.location.href, false));
+})();
+</script>
+"""
+
+
 def html_page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -221,14 +374,14 @@ def html_page(title: str, body: str) -> str:
     a {{ color:#4f6c7e; text-decoration:none; }} a:hover {{ color:#2f4957; }}
     .shell {{ max-width:1440px; margin:0 auto; padding:28px 22px 56px; }} .page-stack > * + * {{ margin-top:22px; }}
     .panel {{ background:var(--panel); border:1px solid var(--line); border-radius:24px; box-shadow:var(--shadow); padding:24px; }} .panel.soft {{ background:rgba(255,255,255,.65); }}
-    .hero {{ display:grid; gap:18px; grid-template-columns:minmax(0,2fr) minmax(320px,.95fr); align-items:stretch; }} .hero-main {{ position:relative; overflow:hidden; border-radius:30px; padding:34px; min-height:280px; --mood-glow: rgba(125,163,143,.22); --mood-wash: rgba(255,248,240,.92); --mood-image:none; background:linear-gradient(180deg,rgba(255,255,255,.75),var(--mood-wash)),radial-gradient(circle at 75% 22%, var(--mood-glow), transparent 24%),radial-gradient(circle at 15% 82%, rgba(135,169,194,.18), transparent 26%),linear-gradient(135deg,#fcfbf8 0%,#f2ece2 100%); border:1px solid rgba(34,50,59,.10); box-shadow:0 26px 60px rgba(93,102,108,.12); }}
+    .hero {{ display:grid; gap:18px; grid-template-columns:minmax(0,2fr) minmax(320px,.95fr); align-items:stretch; }} .hero.single {{ grid-template-columns:1fr; }} .hero-main {{ position:relative; overflow:hidden; border-radius:30px; padding:34px; min-height:280px; --mood-glow: rgba(125,163,143,.22); --mood-wash: rgba(255,248,240,.92); --mood-image:none; background:linear-gradient(180deg,rgba(255,255,255,.75),var(--mood-wash)),radial-gradient(circle at 75% 22%, var(--mood-glow), transparent 24%),radial-gradient(circle at 15% 82%, rgba(135,169,194,.18), transparent 26%),linear-gradient(135deg,#fcfbf8 0%,#f2ece2 100%); border:1px solid rgba(34,50,59,.10); box-shadow:0 26px 60px rgba(93,102,108,.12); }}
     .hero-main.mood-steady {{ --mood-glow: rgba(125,163,143,.24); --mood-wash: rgba(244,250,245,.92); }}
     .hero-main.mood-needs_review {{ --mood-glow: rgba(216,171,99,.24); --mood-wash: rgba(255,249,239,.94); }}
     .hero-main.mood-action_needed {{ --mood-glow: rgba(187,123,114,.24); --mood-wash: rgba(253,244,242,.94); }}
     .hero-main::before {{ content:""; position:absolute; inset:0; pointer-events:none; background-image:var(--mood-image); background-size:cover; background-position:center; opacity:.08; }}
     .page-topbar {{ display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:14px; }} .brand-mark {{ display:inline-flex; align-items:center; gap:10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.16em; font-weight:700; }} .brand-dot {{ width:12px; height:12px; border-radius:999px; background:linear-gradient(135deg,#9ec0ab,#83a9c8); box-shadow:0 0 0 6px rgba(125,163,143,.10); }}
     .kicker {{ text-transform:uppercase; letter-spacing:.14em; color:#698576; font-size:11px; margin-bottom:12px; font-weight:700; }} h1,h2,h3 {{ margin:0; letter-spacing:-.03em; color:var(--ink); }} h1 {{ font-size:46px; line-height:1.02; max-width:12ch; margin-bottom:14px; font-weight:650; }} h2 {{ font-size:24px; margin-bottom:14px; font-weight:620; }} h3 {{ font-size:12px; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin-bottom:12px; font-weight:700; }} .lede {{ margin:0; max-width:64ch; font-size:16px; color:#5f6e76; }}
-    .hero-actions,.task-actions,.subnav {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .hero-actions {{ margin-top:24px; }} .hero-meta {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; color:var(--muted); font-size:13px; }}
+    .hero-actions,.task-actions,.subnav {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .hero-actions {{ margin-top:24px; }} .hero-meta {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; color:var(--muted); font-size:13px; }} .csf-map {{ max-width:1260px; margin:0 auto; text-align:center; }} .app-masthead {{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:14px; text-align:left; }} .app-title {{ color:var(--ink); font-size:19px; font-weight:700; letter-spacing:-.02em; }} .app-version {{ color:var(--muted); font-size:12px; font-weight:650; letter-spacing:.08em; text-transform:uppercase; white-space:nowrap; }} .csf-map .kicker {{ margin-bottom:16px; }} .csf-action-bar {{ display:grid; gap:28px; grid-template-columns:repeat(6,minmax(0,1fr)); }} .csf-action {{ position:relative; display:grid; align-content:center; gap:7px; min-height:118px; padding:18px 14px; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.68); color:var(--ink); text-align:center; }} .csf-action:not(:last-child)::after {{ content:"→"; position:absolute; z-index:2; top:50%; right:-23px; transform:translateY(-50%); width:18px; color:#698576; font-size:18px; font-weight:700; line-height:1; pointer-events:none; }} .csf-action span {{ font-size:12px; font-weight:750; text-transform:uppercase; letter-spacing:.08em; }} .csf-action small {{ color:var(--muted); font-size:11px; line-height:1.35; }} .csf-action:hover {{ background:var(--sage-soft); border-color:rgba(125,163,143,.48); color:#365243; }} .csf-action.active {{ background:linear-gradient(135deg,#4f6c7e,#637f91); border-color:#4f6c7e; box-shadow:0 12px 24px rgba(79,108,126,.24); color:#fff; }} .csf-action.active small {{ color:rgba(255,255,255,.86); }} .csf-guidance {{ display:grid; gap:6px; margin-top:14px; padding:14px; border-radius:16px; background:var(--blue-soft); border:1px solid rgba(135,169,194,.28); color:#415b6a; text-align:left; }} .csf-guidance strong {{ color:#2f4957; }} .csf-utilities {{ justify-content:center; margin-top:14px; }}
     .grid {{ display:grid; gap:18px; }} .grid.two {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .grid.three {{ grid-template-columns:repeat(3,minmax(0,1fr)); }} .stack > * + * {{ margin-top:14px; }} .cards {{ display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); }}
     .metric,.focus-card,.care-tile,.task,.activity-item,.mood-chip {{ background:rgba(255,255,255,.76); border:1px solid rgba(34,50,59,.10); border-radius:18px; }} .metric {{ padding:16px; min-height:104px; }} .metric .label,.mood-chip .label {{ color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.12em; font-weight:700; }} .metric .value {{ font-size:26px; font-weight:650; margin-top:7px; color:var(--ink); overflow-wrap:anywhere; }} .metric .value .metric-time-sub {{ display:block; font-size:15px; line-height:1.25; margin-top:5px; color:#607079; font-weight:500; }}
     .status-pill {{ display:inline-flex; align-items:center; gap:8px; white-space:nowrap; padding:8px 13px; border-radius:999px; font-size:12px; font-weight:700; border:1px solid transparent; }} .status-ok,.status-Healthy {{ background:var(--sage-soft); color:#4d705d; border-color:rgba(125,163,143,.35); }} .status-medium,.status-Warning {{ background:var(--amber-soft); color:#8a6735; border-color:rgba(216,171,99,.32); }} .status-high,.status-High {{ background:var(--rose-soft); color:#90564c; border-color:rgba(187,123,114,.28); }} .status-info {{ background:var(--blue-soft); color:#58758a; border-color:rgba(135,169,194,.32); }}
@@ -243,11 +396,15 @@ def html_page(title: str, body: str) -> str:
     .finding {{ padding:12px 14px; border-radius:16px; border:1px solid rgba(34,50,59,.10); background:rgba(255,255,255,.72); }} .finding.high {{ background:var(--rose-soft); }} .finding.medium {{ background:var(--amber-soft); }}
     .path,pre {{ background:#f8f5ef; border:1px solid rgba(34,50,59,.10); border-radius:16px; color:#354751; }} .path {{ font:12px/1.5 "Cascadia Code","Consolas",monospace; padding:9px 11px; }} pre {{ margin:0; padding:16px; overflow:auto; font:12px/1.55 "Cascadia Code","Consolas",monospace; }}
     .mood-strip {{ display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }} .mood-chip {{ padding:14px 16px; }} .mood-chip .value {{ margin-top:6px; font-size:17px; font-weight:620; color:var(--ink); }}
-    @media (max-width:1100px) {{ .hero,.grid.two,.grid.three {{ grid-template-columns:1fr; }} h1 {{ max-width:none; font-size:38px; }} }} @media (max-width:760px) {{ .shell {{ padding:18px 14px 40px; }} .panel,.hero-main {{ padding:20px; }} .task-head,.page-topbar {{ flex-direction:column; align-items:flex-start; }} .kv {{ grid-template-columns:1fr; }} }}
+    .csf-workspace {{ display:grid; gap:18px; }} .workspace-scroll {{ min-width:0; }} .workspace-scroll > * + * {{ margin-top:18px; }} .workspace-scroll .grid.two,.workspace-scroll .grid.three {{ grid-template-columns:minmax(0,1fr); }} .csf-explorer {{ display:grid; gap:10px; }} .csf-explorer-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }} .csf-explorer-list-panel {{ display:grid; grid-template-rows:auto minmax(0,1fr); gap:6px; min-height:0; }} .csf-explorer-list-panel h3 {{ margin:0; }} .csf-explorer-list {{ display:grid; grid-auto-rows:104px; gap:8px; height:104px; max-height:104px; overflow:auto; padding-right:4px; overscroll-behavior:contain; }} .csf-explorer-list:focus {{ outline:2px solid rgba(135,169,194,.72); outline-offset:3px; border-radius:14px; }} .csf-explorer-row {{ display:grid; grid-template-columns:106px minmax(180px,.6fr) minmax(0,1.8fr); align-items:center; gap:12px; height:104px; overflow:hidden; padding:11px 13px; border:1px solid rgba(34,50,59,.10); border-radius:14px; background:rgba(255,255,255,.72); color:var(--ink); text-align:left; }} .csf-explorer-row:hover {{ background:var(--blue-soft); border-color:rgba(135,169,194,.42); }} .csf-explorer-row.active {{ background:var(--sage-soft); border-color:rgba(125,163,143,.48); box-shadow:inset 4px 0 0 #7da38f; }} .csf-explorer-id {{ font-size:12px; font-weight:750; letter-spacing:.05em; color:#4f6c7e; }} .csf-explorer-title {{ font-weight:700; }} .csf-explorer-copy {{ display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3; color:var(--muted); font-size:13px; }} .csf-explorer-placeholder {{ padding:18px; border:1px dashed rgba(34,50,59,.20); border-radius:16px; color:var(--muted); background:rgba(248,245,239,.70); }} .csf-outcome {{ display:grid; gap:12px; padding:18px; border-radius:18px; background:rgba(232,239,245,.55); border:1px solid rgba(135,169,194,.28); }} .csf-outcome .focus-title {{ font-size:20px; }} .csf-outcome h3 {{ margin:0; }} .csf-outcome p {{ margin:0; color:#475861; }} .csf-outcome-state {{ padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.76); border:1px solid rgba(34,50,59,.10); }} .modal-backdrop {{ position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:24px; background:rgba(26,39,47,.42); }} .modal-dialog {{ width:min(860px,100%); max-height:min(860px,calc(100vh - 48px)); display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border:1px solid rgba(34,50,59,.18); border-radius:24px; background:var(--panel); box-shadow:0 28px 80px rgba(20,32,38,.32); }} .modal-head {{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 22px; border-bottom:1px solid var(--line); }} .modal-body {{ min-height:0; overflow:auto; padding:20px 22px; }} .modal-body .panel {{ box-shadow:none; }}
+    @media (min-width:1000px) and (min-height:1000px) {{ html,body {{ height:100%; overflow:hidden; }} .shell {{ height:100vh; max-width:none; padding:14px 18px; }} .page-stack,#csf-app {{ height:100%; min-height:0; }} .page-stack > * + * {{ margin-top:0; }} #csf-app {{ display:grid; grid-template-rows:auto minmax(0,1fr); gap:12px; }} .csf-map {{ width:100%; max-width:none; padding:14px 18px; }} .app-masthead {{ margin-bottom:8px; }} .app-title {{ font-size:17px; }} .csf-map .kicker {{ display:none; }} .csf-action-bar {{ gap:32px; grid-template-columns:repeat(6,minmax(0,1fr)) !important; }} .csf-action {{ min-height:72px; padding:10px 12px; }} .csf-action:not(:last-child)::after {{ right:-25px; font-size:15px; }} .csf-guidance {{ grid-template-columns:auto 1fr; align-items:center; gap:10px; margin-top:10px; padding:9px 12px; }} .csf-utilities {{ display:none; }} .csf-workspace {{ min-height:0; grid-template-rows:minmax(0,1fr); gap:12px; overflow:hidden; }} .workspace-scroll {{ min-height:0; display:grid; grid-template-columns:minmax(0,1fr); grid-auto-rows:minmax(0,1fr); gap:12px; overflow:hidden; }} .workspace-scroll > .grid {{ display:contents; }} .workspace-scroll > .panel,.workspace-scroll > .grid > .panel {{ min-height:0; max-height:none; margin:0 !important; overflow:auto; overscroll-behavior:contain; }} .workspace-scroll > .csf-explorer {{ grid-column:1; }} .workspace-scroll > .csf-selection-list {{ grid-template-rows:auto minmax(0,1fr); overflow:hidden; }} .workspace-scroll > .csf-selection-list .csf-explorer-list-panel {{ min-height:0; }} .workspace-scroll > .csf-selection-list .csf-explorer-list {{ min-height:0; height:104px; max-height:104px; overflow:auto; }} .workspace-scroll > .panel:only-child {{ grid-column:1; }} .workspace-scroll .panel {{ padding:14px 18px; }} .workspace-scroll .grid {{ gap:12px; }} .workspace-scroll .task + .task {{ margin-top:10px; }} .workspace-scroll .metric {{ min-height:78px; padding:12px; }} .workspace-scroll .care-tile,.workspace-scroll .focus-card {{ padding:13px; }} }}
+    @media (max-width:1100px) {{ .hero,.grid.two,.grid.three {{ grid-template-columns:1fr; }} .csf-action-bar {{ grid-template-columns:repeat(3,minmax(0,1fr)); }} .csf-action:not(:last-child)::after {{ display:none; }} h1 {{ max-width:none; font-size:38px; }} }} @media (max-width:760px) {{ .shell {{ padding:18px 14px 40px; }} .panel,.hero-main {{ padding:20px; }} .csf-action-bar {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .csf-action {{ min-height:104px; }} .task-head,.page-topbar,.csf-explorer-head {{ flex-direction:column; align-items:flex-start; }} .csf-explorer-list {{ grid-auto-rows:auto; }} .csf-explorer-row {{ grid-template-columns:1fr; height:auto; min-height:104px; gap:4px; }} .kv {{ grid-template-columns:1fr; }} }}
   </style>
 </head>
 <body>
   <div class="shell"><div class="page-stack">{body}</div></div>
+  <div id="csf-modal-host"></div>
+  {UI_CLIENT_SCRIPT}
 </body>
 </html>
 """
@@ -305,8 +462,8 @@ DEFAULT_PERSONA_PROFILES = {
     },
     "analyst": {
         "persona_id": "analyst",
-        "display_name": "Analyst",
-        "description": "Analysis-oriented local-PC view for security practitioners who want findings, posture review, evidence interpretation, threat context, and reports without full repair diagnostics by default.",
+        "display_name": "CSF Analyst",
+        "description": "Single guided CSF experience for interpreting evidence, reviewing risk, and preserving decisions without changing a user's authority.",
         "default_skin": "lifestyle",
         "report_language": "technical",
         "show_csf_codes": True,
@@ -485,8 +642,7 @@ def load_system_profiles(repo_root: Path) -> Dict[str, Dict[str, Any]]:
 
 def get_effective_persona(config: AppConfig, persona_profiles: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     catalog = persona_profiles or load_persona_profiles(config.repo_root)
-    persona_id = str(config.ui_persona or "user").strip().lower() or "user"
-    return dict(catalog.get(persona_id) or catalog.get("user") or normalize_persona_profile("user", {}, DEFAULT_PERSONA_PROFILES["user"]))
+    return dict(catalog.get(CSF_ANALYST_PERSONA_ID) or DEFAULT_PERSONA_PROFILES[CSF_ANALYST_PERSONA_ID])
 
 
 def get_effective_system_profile(status: Dict[str, Any], system_profiles: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -555,9 +711,7 @@ def load_settings(settings_path: Path) -> AppConfig:
     indicator_export_path = resolve_settings_path(settings_dir, settings.get("IndicatorExportPath"), data_root / "indicators" / "feed-indicators-latest.json")
     protection_profile = str(settings.get("ProtectionProfile") or "microsoft_baseline")
     persona_profiles = load_persona_profiles(repo_root)
-    ui_persona = str(settings.get("UiPersona") or "user").strip().lower() or "user"
-    if ui_persona not in persona_profiles:
-        ui_persona = "user"
+    ui_persona = CSF_ANALYST_PERSONA_ID
 
     return AppConfig(
         settings_path=settings_path.resolve(),
@@ -746,17 +900,11 @@ def set_protection_profile(config: AppConfig, profile_id: str) -> str:
 
 
 def set_ui_persona(config: AppConfig, persona_id: str) -> str:
-    persona = str(persona_id or "").strip().lower()
-    persona_profiles = load_persona_profiles(config.repo_root)
-    if persona not in persona_profiles:
-        raise RuntimeError("Unknown UI persona was provided.")
-    settings = {}
-    if config.settings_path.exists():
-        settings = parse_json(config.settings_path)
-    settings["UiPersona"] = persona
-    config.settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    config.ui_persona = persona
-    return f"UI persona set to {persona_label(coerce_persona_profile(persona))}."
+    requested = str(persona_id or "").strip().lower()
+    if requested and requested != CSF_ANALYST_PERSONA_ID:
+        raise RuntimeError("The management UI uses the single CSF Analyst workflow; persona switching is no longer available.")
+    config.ui_persona = CSF_ANALYST_PERSONA_ID
+    return "CSF Analyst workflow is active."
 
 
 def query_indicator_stats(db_path: Path) -> Dict[str, Any]:
@@ -815,6 +963,61 @@ def list_sqlite_alerts(state_db_path: Path, limit: int = 50) -> List[Dict[str, A
             connection.close()
     except (OSError, sqlite3.Error, ValueError):
         return []
+
+
+def list_sqlite_csf_guidance(state_db_path: Path, language_code: str = "en-US") -> Dict[str, str]:
+    """Read centrally maintained Tile 4 explanations without changing the state store."""
+    if not state_db_path.is_file():
+        return {}
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                """
+                SELECT subcategory_id, plain_english_text
+                FROM csf_subcategory_guidance
+                WHERE language_code = ?
+                ORDER BY subcategory_id
+                """,
+                (language_code,),
+            ).fetchall()
+            return {str(row["subcategory_id"]): str(row["plain_english_text"]) for row in rows}
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return {}
+
+
+def list_sqlite_csf_profile_metadata(state_db_path: Path, language_code: str = "en-US") -> Dict[str, Dict[str, Any]]:
+    """Read generated Profile metadata without changing the state store."""
+    if not state_db_path.is_file():
+        return {}
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                """
+                SELECT subcategory_id, assessment_method, research_guidance, supporting_note_required
+                FROM csf_subcategory_profile_metadata
+                WHERE language_code = ?
+                ORDER BY subcategory_id
+                """,
+                (language_code,),
+            ).fetchall()
+            return {
+                str(row["subcategory_id"]): {
+                    "assessment_method": str(row["assessment_method"]),
+                    "research_guidance": str(row["research_guidance"]),
+                    "supporting_note_required": bool(row["supporting_note_required"]),
+                }
+                for row in rows
+            }
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return {}
 
 
 def get_sqlite_alert_detail(state_db_path: Path, alert_id: str) -> Dict[str, Any]:
@@ -897,7 +1100,7 @@ def build_sqlite_report_href(report_id: str) -> str:
 def render_sqlite_report_preview_row(report: Dict[str, Any]) -> str:
     summary = report.get("summary") or {}
     text = ", ".join(f"{key}={value}" for key, value in summary.items() if value not in (None, "", 0)) or "No summary fields"
-    return f'<tr><td><a href="{esc(build_sqlite_report_href(str(report.get("report_id") or "")))}">{esc(report.get("name") or report.get("report_id"))}</a></td><td>{esc(report.get("report_type"))}</td><td>{esc(pretty_time(report.get("collection_time") or ""))}</td><td>{esc(text)}</td></tr>'
+    return f'<tr><td><a data-record-modal href="{esc(build_sqlite_report_href(str(report.get("report_id") or "")))}">{esc(report.get("name") or report.get("report_id"))}</a></td><td>{esc(report.get("report_type"))}</td><td>{esc(pretty_time(report.get("collection_time") or ""))}</td><td>{esc(text)}</td></tr>'
 
 
 def build_sqlite_finding_acceptance_preview(finding_id: str) -> Dict[str, Any]:
@@ -1977,7 +2180,7 @@ def render_alert_row(alert: Dict[str, Any], *, lifecycle_state: str = "", show_a
     return f"""
 <tr>
   <td>{severity_markup}</td>
-  <td><a href="/alert?id={urllib.parse.quote(str(alert.get("alert_id") or ""), safe="")}">{esc(alert.get("summary") or alert.get("alert_id"))}</a>{message_markup}{action_markup}</td>
+  <td><a data-record-modal href="/alert?id={urllib.parse.quote(str(alert.get("alert_id") or ""), safe="")}">{esc(alert.get("summary") or alert.get("alert_id"))}</a>{message_markup}{action_markup}</td>
   <td>{lifecycle_markup}</td>
   <td>{esc(alert.get("finding_id") or "—")}</td>
   <td>{esc(pretty_time(alert.get("created_at") or "—"))}</td>
@@ -1993,7 +2196,7 @@ def render_report_row(report: Dict[str, Any]) -> str:
     summary_markup = compact_detail("View summary", summary_text) if len(summary_text) > 90 else esc(summary_text)
     return f"""
 <tr>
-  <td><a href="{esc(href)}">{esc(report.get("name") or report.get("report_id"))}</a></td>
+  <td><a data-record-modal href="{esc(href)}">{esc(report.get("name") or report.get("report_id"))}</a></td>
   <td>{esc(report.get("report_type"))}</td>
   <td>{esc(pretty_time(report.get("collection_time") or "—"))}</td>
   <td>{summary_markup}</td>
@@ -2084,6 +2287,7 @@ def build_snapshot(config: AppConfig) -> Dict[str, Any]:
     archive_alerts = [alert for alert in sqlite_alerts if str(alert.get("lifecycle_state") or "").lower() != "pending"]
     recent_reports = list_sqlite_reports_preview(config.state_db_path)
     return {
+        "ui_snapshot_collected_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
         "task_details": task_details,
         "indicators": indicators,
@@ -2091,6 +2295,17 @@ def build_snapshot(config: AppConfig) -> Dict[str, Any]:
         "archive_alerts": archive_alerts,
         "recent_reports": recent_reports,
     }
+
+
+def refresh_sqlite_backed_snapshot(config: AppConfig, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Refresh data that scheduled collectors persist without rerunning Windows inventory."""
+    refreshed = copy.deepcopy(snapshot)
+    refreshed["indicators"] = query_indicator_stats(config.state_db_path)
+    sqlite_alerts = list_sqlite_alerts(config.state_db_path)
+    refreshed["pending_alerts"] = [alert for alert in sqlite_alerts if str(alert.get("lifecycle_state") or "").lower() == "pending"]
+    refreshed["archive_alerts"] = [alert for alert in sqlite_alerts if str(alert.get("lifecycle_state") or "").lower() != "pending"]
+    refreshed["recent_reports"] = list_sqlite_reports_preview(config.state_db_path)
+    return refreshed
 
 
 def _assert_status_badge_rendering() -> None:
@@ -2291,9 +2506,9 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
             "headline": "Protection status, without the debugging noise.",
             "lede": "See whether protection is healthy, what needs action now, and when the monitoring jobs last ran. Engineering details are still available, but they no longer crowd the main screen.",
             "message": message,
-            "ui_persona": config.ui_persona,
+            "ui_persona": CSF_ANALYST_PERSONA_ID,
             "persona_profile": effective_persona,
-            "available_personas": [persona_profiles[key] for key in ["user", "advanced_user", "csf_native", "analyst", "tech"] if key in persona_profiles] + [persona_profiles[key] for key in persona_profiles.keys() if key not in DEFAULT_PERSONA_PROFILES],
+            "available_personas": [effective_persona],
             "system_profile": effective_system_profile,
             "profile_catalog_paths": {key: str(value) for key, value in profile_catalog_paths(config.repo_root).items()},
         },
@@ -2479,6 +2694,8 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
         {**card, "links": [link for link in (card.get("links") or []) if link]}
         for card in model["csf_sections"]["detect"]["subcards"]
     ]
+    model["csf_explorer_selection"] = dict(snapshot.get("csf_explorer_selection") or {})
+    model["csf_subcategory_guidance"] = dict(snapshot.get("csf_subcategory_guidance") or {})
     return model
 
 
@@ -2490,6 +2707,15 @@ FUNCTION_ROUTE_ORDER = [
     ("respond", "/respond", "Respond"),
     ("recover", "/recover", "Recover"),
 ]
+
+CSF_FUNCTION_ID_BY_ROUTE = {
+    "/govern": "GV",
+    "/identify": "ID",
+    "/protect": "PR",
+    "/detect": "DE",
+    "/respond": "RS",
+    "/recover": "RC",
+}
 
 
 
@@ -2520,66 +2746,247 @@ def simplify_for_home(persona: Any, technical_text: str, plain_text: str) -> str
     return simplify_for_persona(coerce_persona_profile(persona), technical_text, plain_text)
 
 
+CSF_FUNCTION_GUIDANCE = {
+    "govern": ("Set direction and accountability.", "Use this space for policy, approval authority, and evidence needed to authorize risk decisions.", "Move to Identify when you need to assess a risk or exception."),
+    "identify": ("Understand assets, risk, and gaps.", "Use this space to assess a finding's impact and record the risk decision it requires.", "Move to Protect to review configuration controls and baselines."),
+    "protect": ("Maintain safeguards and trusted configuration.", "Use this space for configuration-baseline reviews, control health, and authorized changes.", "Move to Detect when you need evidence of a change or possible threat."),
+    "detect": ("Find and analyze possible adverse events.", "Use this space for observed changes, IOC matches, and evidence that needs classification.", "Move to Respond only when investigation indicates a possible security incident."),
+    "respond": ("Investigate and manage credible security events.", "Use this space to scope, document, and mitigate findings that require a response.", "Move to Recover after corrective actions need validation."),
+    "recover": ("Restore and improve trusted operation.", "Use this space to validate recovery, retain lessons learned, and return safeguards to a trusted state.", "Move to Govern to improve policy and approval rules from what was learned."),
+}
+
+
+def csf_section_for_path(current_path: str) -> str:
+    return str(current_path or "/").strip("/").split("/", 1)[0].lower()
+
+
 def render_primary_nav(current_path: str, *, persona_profile: Dict[str, Any], show_technical: bool = False) -> str:
-    links = [f'<a class="btn{" active" if current_path == "/" else ""}" href="/">Dashboard</a>']
-    for _, href, label in FUNCTION_ROUTE_ORDER:
-        if persona_allows_route(persona_profile, href):
-            links.append(f'<a class="btn{" active" if current_path == href else ""}" href="{href}">{esc(label)}</a>')
-    if persona_show_reports(persona_profile) and persona_allows_route(persona_profile, "/reports"):
-        links.append(f'<a class="btn{" active" if current_path == "/reports" else ""}" href="/reports">Reports</a>')
-    if show_technical and persona_show_diagnostics(persona_profile) and persona_allows_route(persona_profile, "/diagnostics"):
-        links.append(f'<a class="btn{" active" if current_path == "/diagnostics" else ""}" href="/diagnostics">Diagnostics</a>')
-    return "".join(links)
+    actions = []
+    for key, href, label in FUNCTION_ROUTE_ORDER:
+        is_active = current_path == href
+        active = " active" if is_active else ""
+        current = ' aria-current="page"' if is_active else ""
+        purpose, use_here, _next_step = CSF_FUNCTION_GUIDANCE[key]
+        actions.append(
+            f'<a class="csf-action{active}" data-csf-route href="{href}"{current}'
+            f' data-csf-purpose="{esc(purpose)}" data-csf-use="{esc(use_here)}">'
+            f'<span>{esc(label)}</span></a>'
+        )
+    return "".join(actions)
+
+
+def csf_guidance_values(current_path: str) -> tuple[str, str]:
+    section = csf_section_for_path(current_path)
+    if section not in CSF_FUNCTION_GUIDANCE:
+        return (
+            "CSF Analyst overview.",
+            "Choose a CSF Function to understand its purpose, inspect evidence, and take the next appropriate action.",
+        )
+    purpose, use_here, _next_step = CSF_FUNCTION_GUIDANCE[section]
+    return purpose, use_here
+
+
+def build_csf_explorer_href(current_path: str, category_id: str = "", subcategory_id: str = "") -> str:
+    query: Dict[str, str] = {}
+    if category_id:
+        query["csf_category"] = category_id
+    if subcategory_id:
+        query["csf_subcategory"] = subcategory_id
+    return current_path + (("?" + urllib.parse.urlencode(query)) if query else "")
+
+
+def render_de_cm_monitoring_mapping(model: Dict[str, Any]) -> str:
+    """Render the reviewed, category-level DE.CM task mapping and nothing else."""
+    task_names = (model.get("task_job_health") or {}).get("groups", {}).get("detect", [])
+    tasks_by_name = (model.get("task_job_health") or {}).get("by_name", {})
+    task_rows = []
+    for task_name in task_names:
+        task = tasks_by_name.get(task_name)
+        if not task:
+            continue
+        state = classify_task_result(task)
+        task_rows.append(
+            f'''<div class="csf-outcome-state"><div class="task-head"><div><strong>{esc(task_name)}</strong>
+<div class="mini">Last run: {esc(pretty_time(task.get("LastRunTime") or ""))} · Next run: {esc(pretty_time(task.get("NextRunTime") or ""))}</div>
+<div class="mini">{esc(state["message"])} This task contributes monitored local evidence for this PC.</div></div>
+<div class="task-actions"><span>{render_status_badge(state["label"], state["tone"])} </span><form method="post" action="/run-task"><input type="hidden" name="task_name" value="{esc(task_name)}"><input type="hidden" name="return_to" value="/detect"><button class="btn primary" type="submit">Run now</button></form></div></div></div>'''
+        )
+    if not task_rows:
+        return '<div class="csf-outcome-state"><h3>Local evidence and actions</h3><p>No reviewed monitoring-task records are available in the current snapshot. This is an unavailable-evidence state, not a passing result.</p></div>'
+    return f'''<section class="csf-outcome" aria-labelledby="de-cm-mapping-title">
+  <div class="kicker">Reviewed product mapping</div>
+  <div id="de-cm-mapping-title" class="focus-title">DE.CM · Continuous Monitoring</div>
+  <p>These scheduled collectors keep locally available threat intelligence and host-change evidence current. Their status indicates monitoring coverage, not that the PC is free of threats.</p>
+  <h3>Monitoring task history and reviewed actions</h3>{"".join(task_rows)}
+</section>'''
+
+
+def render_nist_implementation_examples(subcategory: Dict[str, Any]) -> str:
+    """Render every official NIST example in the compact learning tile."""
+    examples = [str(example).strip() for example in subcategory.get("implementation_examples") or [] if str(example).strip()]
+    if not examples:
+        return (
+            '<div class="csf-outcome-state"><p>No NIST implementation example is available in the vendored catalog for this outcome.</p></div>'
+        )
+    if len(examples) == 1:
+        return f'<div class="csf-outcome-state"><p>{esc(examples[0])}</p></div>'
+    rows = "".join(f"<li>{esc(example)}</li>" for example in examples)
+    return f'<div class="csf-outcome-state"><ul>{rows}</ul></div>'
+
+
+def render_csf_explorer(
+    current_path: str,
+    selection: Optional[Dict[str, str]] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Render the selected Function as separate Category, Subcategory, outcome, and evidence tiles."""
+    function_id = CSF_FUNCTION_ID_BY_ROUTE.get(current_path)
+    if not function_id:
+        return ""
+    catalog = csf_catalog.load_official_catalog()
+    function = next((item for item in catalog["functions"] if item["id"] == function_id), None)
+    if function is None:
+        return ""
+
+    selection = selection or {}
+    selected_category_id = str(selection.get("category_id") or "").strip().upper()
+    selected_category = next((item for item in function["categories"] if item["id"] == selected_category_id), None)
+    selected_subcategory_id = str(selection.get("subcategory_id") or "").strip().upper()
+    selected_subcategory = None
+    if selected_category is not None:
+        selected_subcategory = next(
+            (item for item in selected_category["subcategories"] if item["id"] == selected_subcategory_id),
+            None,
+        )
+
+    category_rows = "".join(
+        f'<a class="csf-explorer-row{(" active" if category is selected_category else "")}" data-csf-route '
+        f'href="{esc(build_csf_explorer_href(current_path, category["id"]))}">'
+        f'<span class="csf-explorer-id">{esc(category["id"])}</span>'
+        f'<span class="csf-explorer-title">{esc(category["title"])}</span>'
+        f'<span class="csf-explorer-copy">{esc(category["outcome"] or "Official NIST CSF Category.")}</span></a>'
+        for category in function["categories"]
+    )
+    if selected_category is None:
+        subcategory_heading = "Select a Category · Subcategories"
+        subcategory_content = '<div class="csf-explorer-placeholder">Select a Category to open its official Subcategories and outcomes.</div>'
+        outcome_content = '<div class="csf-explorer-placeholder">Select a Category, then a Subcategory, to see what it means for this PC.</div>'
+        evidence_content = '<div class="csf-explorer-placeholder">Select a Subcategory to see the evidence and actions reviewed for that outcome.</div>'
+    else:
+        subcategory_heading = f'{selected_category["id"]} · {selected_category["title"]} · Subcategories'
+        subcategory_content = "".join(
+            f'<a class="csf-explorer-row{(" active" if subcategory is selected_subcategory else "")}" data-csf-route '
+            f'href="{esc(build_csf_explorer_href(current_path, selected_category["id"], subcategory["id"]))}">'
+            f'<span class="csf-explorer-id">{esc(subcategory["id"])}</span>'
+            f'<span class="csf-explorer-title">{esc(subcategory["title"])}</span>'
+            f'<span class="csf-explorer-copy">{esc(subcategory["outcome"] or "Official NIST CSF Subcategory.")}</span></a>'
+            for subcategory in selected_category["subcategories"]
+        )
+        if selected_subcategory is None:
+            outcome_content = f'''<div class="csf-outcome">
+  <div class="kicker">Official NIST CSF 2.0 Category</div>
+  <div class="focus-label">{esc(selected_category["id"])} · {esc(selected_category["title"])}</div>
+  <div class="focus-title">{esc(selected_category["outcome"] or "Official Category outcome text is not available in the catalog source.")}</div>
+  <p>Select a Subcategory to inspect its specific outcome and local evidence mapping.</p>
+</div>'''
+            evidence_content = (
+                render_de_cm_monitoring_mapping(model or {})
+                if current_path == "/detect" and selected_category["id"] == "DE.CM"
+                else '<div class="csf-explorer-placeholder">No reviewed Category-level evidence or action is mapped here. Select a Subcategory for its outcome-specific mapping.</div>'
+            )
+            outcome_content = '<div class="csf-explorer-placeholder">Select a Subcategory to see what it means for this PC.</div>'
+        else:
+            outcome_content = f'''<section class="csf-outcome" aria-labelledby="csf-outcome-title">
+  <div class="kicker">Official NIST CSF 2.0 outcome</div>
+  <div class="focus-label">{esc(selected_subcategory["id"])} · {esc(selected_subcategory["title"])}</div>
+  <div id="csf-outcome-title" class="focus-title">{esc(selected_subcategory["outcome"] or "Official outcome text is not available in the catalog source.")}</div>
+</section>'''
+            outcome_content = render_nist_implementation_examples(selected_subcategory)
+            evidence_content = '<div class="csf-outcome-state"><h3>Local evidence and actions</h3><p>No Codex Monitor mapping is implemented for this outcome yet. This is not evidence that the outcome is satisfied; it means the product has no reviewed local evidence or action to present here.</p></div>'
+
+    return f'''<section class="panel csf-explorer csf-selection-list" aria-labelledby="csf-explorer-title">
+  <div class="csf-explorer-head"><div><div id="csf-explorer-title" class="kicker">{esc(function["title"])} · Categories</div><div class="mini">Select an official Category. Official content is read-only; product evidence and actions are shown only when a reviewed mapping exists.</div></div></div>
+  <div class="csf-explorer-list-panel"><div class="csf-explorer-list" tabindex="0" data-explorer-list="categories" aria-label="{esc(function["title"])} Categories">{category_rows}</div></div>
+</section>
+<section class="panel csf-explorer csf-selection-list" aria-labelledby="csf-subcategories-title">
+  <div id="csf-subcategories-title" class="kicker">{esc(subcategory_heading)}</div>
+  <div class="csf-explorer-list-panel"><div class="csf-explorer-list" tabindex="0" data-explorer-list="subcategories" aria-label="Selected Category Subcategories">{subcategory_content}</div></div>
+</section>
+<section class="panel csf-explorer" aria-label="NIST Implementation examples">
+  {outcome_content}
+</section>
+<section class="panel csf-explorer" aria-labelledby="csf-evidence-workspace-title">
+  <div class="kicker">Local-PC evidence</div><h2 id="csf-evidence-workspace-title">Evidence and actions</h2>{evidence_content}
+</section>'''
+
+
+def render_csf_guidance(current_path: str) -> str:
+    purpose, use_here = csf_guidance_values(current_path)
+    return (
+        '<div class="csf-guidance">'
+        f'<strong id="csf-guidance-purpose">{esc(purpose)}</strong>'
+        f'<span id="csf-guidance-use">{esc(use_here)}</span>'
+        '</div>'
+    )
 
 
 def render_page_shell(model: Dict[str, Any], current_path: str, title: str, lede: str, body_html: str, *, show_technical_nav: bool = False) -> str:
     flash = f'<div class="flash">{esc(model["app"]["message"])}</div>' if model["app"]["message"] else ""
-    persona_id = str((model.get("app") or {}).get("ui_persona") or "user")
+    persona_id = CSF_ANALYST_PERSONA_ID
     persona_profile = coerce_persona_profile((model.get("app") or {}).get("persona_profile") or {"persona_id": persona_id})
-    available_personas = (model.get("app") or {}).get("available_personas") or [persona_profile]
-    persona_options = "".join(
-        f'<option value="{esc(str(option.get("persona_id") or "user"))}"{" selected" if str(option.get("persona_id") or "user") == persona_id else ""}>{esc(option.get("display_name") or option.get("persona_id") or "Home User")}</option>'
-        for option in available_personas
-    )
     mood = dashboard_mood(model)
     tone = "ok" if mood["tone"] == "calm" else ("medium" if mood["tone"] == "warning" else "high")
+    guidance_purpose, guidance_use = csf_guidance_values(current_path)
+    workspace_html = (
+        render_csf_explorer(current_path, model.get("csf_explorer_selection"), model)
+        if current_path in CSF_FUNCTION_ID_BY_ROUTE
+        else body_html
+    )
     body = f"""
+<!-- csf-app:start -->
+<div id="csf-app" data-csf-route="{esc(current_path)}" data-csf-guidance-purpose="{esc(guidance_purpose)}" data-csf-guidance-use="{esc(guidance_use)}">
 {flash}
-<section class="hero">
-  <div class="hero-main mood-{esc(mood['mood_class'])}">
-    <div class="page-topbar">
-      <div class="brand-mark"><span class="brand-dot"></span>PC Care &amp; Security</div>
-      {render_status_badge(mood['tag'], tone)}
-    </div>
-    <div class="kicker">{esc(title)}</div>
-    <h1>{esc(title if current_path != '/' else mood['headline'])}</h1>
-    <p class="lede">{esc(lede if current_path != '/' else mood['subtext'])}</p>
-    <div class="hero-actions">
-      <a class="btn primary" href="{esc(next_best_action(model)['href'])}">{esc(next_best_action(model)['label'])}</a>
-      <a class="btn" href="/detect">Review what changed</a>
-    </div>
-    <div class="hero-meta">
-      <span>Current view: {esc(persona_label(persona_profile))}</span>
-      <span>Protection score: {esc((model.get('protection_controls') or {}).get('score'))}/100</span>
-      <span>Pending alerts: {esc(len((model.get('alerts') or {}).get('pending', [])))}</span>
-    </div>
-  </div>
-  <div class="panel stack">
-    <div class="kicker">Navigation</div>
-    <div class="subnav">{render_primary_nav(current_path, persona_profile=persona_profile, show_technical=show_technical_nav)}</div>
-    <form method="post" action="/set-ui-persona" class="task-actions">
-      <label class="mini" for="ui_persona">View</label>
-      <input type="hidden" name="return_to" value="{esc(current_path)}">
-      <select id="ui_persona" name="persona_id" class="btn" style="padding-right:30px;">{persona_options}</select>
-      <button class="btn" type="submit">Apply</button>
-    </form>
-    <div class="mini">{esc("Choose how much detail you want to see. Extra records stay tucked away unless your view asks for them." if not persona_show_diagnostics(persona_profile) else "Choose how much detail you want to see. Reports and diagnostics stay out of the way unless your view asks for them.")}</div>
-  </div>
+<section class="panel csf-map">
+  <header class="app-masthead"><div class="app-title">Codex Monitor</div><div class="app-version">CSF Analyst · UI v{UI_DISPLAY_VERSION}</div></header>
+  <div class="kicker">CSF action map</div>
+  <nav class="csf-action-bar" aria-label="NIST Cybersecurity Framework actions">{render_primary_nav(current_path, persona_profile=persona_profile, show_technical=show_technical_nav)}</nav>
+  {render_csf_guidance(current_path)}
+  <div class="task-actions csf-utilities"><a class="btn" href="/">Overview</a><a class="btn" href="/reports">Evidence records</a>{(f'<a class="btn" href="/diagnostics">Diagnostics</a>' if show_technical_nav else '')}</div>
 </section>
-{body_html}
+<main id="csf-workspace" class="csf-workspace" tabindex="-1">
+  <div class="workspace-scroll">{workspace_html}</div>
+</main>
+</div>
+<!-- csf-app:end -->
 """
-    return html_page("Codex Monitor UI", body)
+    body = body.replace("Codex Monitor", FRAMEWORK_DISPLAY_NAME, 1)
+    return html_page(PRODUCT_DISPLAY_NAME, body)
 
+
+
+def extract_csf_app_fragment(document: str) -> str:
+    match = re.search(r"<!-- csf-app:start -->(.*?)<!-- csf-app:end -->", document, flags=re.DOTALL)
+    if not match:
+        raise ValueError("The requested page does not provide a CSF workspace fragment.")
+    return match.group(1).strip()
+
+
+def render_record_modal(title: str, content_html: str, detail_href: str) -> str:
+    return f"""
+<div class="modal-backdrop" data-modal-close>
+  <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="record-detail-title">
+    <div class="modal-head">
+      <div><div class="kicker">Evidence detail</div><h2 id="record-detail-title">{esc(title)}</h2></div>
+      <button class="btn" type="button" data-modal-close aria-label="Close detail">Close</button>
+    </div>
+    <div class="modal-body">{content_html}<div class="task-actions" style="margin-top:14px"><a class="btn" href="{esc(detail_href)}">Open full page</a></div></div>
+  </section>
+</div>
+"""
+
+
+def render_record_payload(title: str, subtitle: str, payload_text: str) -> str:
+    return f'<section class="panel stack"><div class="kicker">{esc(subtitle)}</div><h2>{esc(title)}</h2><pre>{esc(payload_text)}</pre></section>'
 
 
 def build_detection_snapshot_detail(config: AppConfig, snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -2791,7 +3198,7 @@ def render_govern_page(config: AppConfig, snapshot: Dict[str, Any], message: str
   {task_markup}
 </section>
 """
-    return render_page_shell(model, "/govern", "Govern", simplify_for_home(persona_id, "Choose how this PC care plan runs and review whether the local protection jobs are succeeding.", "Choose how hands-on this care plan should be and confirm the monitor is running well."), body, show_technical_nav=True)
+    return render_page_shell(model, "/govern", "Govern", simplify_for_home(persona_id, "Review task health and the operating decisions that determine how this PC is monitored.", "Check that monitoring is running well and review the choices that guide it."), body, show_technical_nav=True)
 
 
 def render_identify_page(config: AppConfig, snapshot: Dict[str, Any], message: str = "") -> str:
@@ -2823,7 +3230,7 @@ def render_identify_page(config: AppConfig, snapshot: Dict[str, Any], message: s
   <div class="cards">{''.join(render_metric_card(metric) for metric in model["this_pc"]["evidence_metrics"])}</div>
 </section>
 """
-    return render_page_shell(model, "/identify", "Identify", simplify_for_home(persona_id, "See the known environment of this PC, its baseline scope, and the parts of the system that are being watched.", "See what makes up this PC and what the app is watching."), body, show_technical_nav=True)
+    return render_page_shell(model, "/identify", "Identify", simplify_for_home(persona_id, "Confirm the baseline scope, watched assets, and local environment reflected in the evidence below.", "Check what this PC includes and what the app is watching."), body, show_technical_nav=True)
 
 
 def render_protect_page(config: AppConfig, snapshot: Dict[str, Any], message: str = "") -> str:
@@ -2865,7 +3272,7 @@ def render_protect_page(config: AppConfig, snapshot: Dict[str, Any], message: st
   </div>
 </section>
 """
-    return render_page_shell(model, "/protect", "Protect", simplify_for_home(persona_id, "Review the protections that keep this PC guarded and the care items that still need planning, without changing Windows settings from this page.", "Review the protections this PC should have and what still needs care."), body, show_technical_nav=True)
+    return render_page_shell(model, "/protect", "Protect", simplify_for_home(persona_id, "Review protection controls needing attention and the profile they are evaluated against.", "Review the protections this PC should have and what needs care."), body, show_technical_nav=True)
 
 
 def render_detect_page(config: AppConfig, snapshot: Dict[str, Any], message: str = "") -> str:
@@ -2896,7 +3303,7 @@ def render_detect_page(config: AppConfig, snapshot: Dict[str, Any], message: str
   <table><thead><tr><th>Report</th><th>Type</th><th>Collected</th><th>Summary</th></tr></thead><tbody>{report_rows}</tbody></table>
 </section>
 """
-    return render_page_shell(model, "/detect", "Detect", simplify_for_home(persona_id, "See what the app is watching, whether anything changed, and how current your threat checks are.", "See what the app is watching and whether anything needs a closer look."), body, show_technical_nav=True)
+    return render_page_shell(model, "/detect", "Detect", simplify_for_home(persona_id, "Review current intelligence, host evidence, and monitoring health to decide what merits investigation.", "Review what the app found and whether anything needs a closer look."), body, show_technical_nav=True)
 
 
 def render_detect_evidence_snapshot_page(config: AppConfig, snapshot: Dict[str, Any], message: str = "") -> str:
@@ -3041,11 +3448,11 @@ def render_respond_page(config: AppConfig, snapshot: Dict[str, Any], message: st
     if respond.get("latest_report_name"):
         latest_report_line = f'<div class="mini">Latest posture report: <a href="{esc(respond.get("latest_report_href") or "/reports")}">{esc(respond.get("latest_report_name"))}</a> | {esc(pretty_time(respond.get("latest_report_time") or ""))}</div>'
     if persona_id == "user":
-        lede = "Review items that need your attention and choose what to do next."
+        lede = "Review the response queue and decide whether any current finding needs follow-through."
     elif persona_id == "csf_native":
-        lede = "Detect records observed configuration drift. Respond handles findings. Recover confirms trusted operation after response."
+        lede = "Review the current response queue, document any required decision, and retain the linked evidence."
     else:
-        lede = "Respond is where you review observed configuration drift, decide what it means, and choose the next action. Recovery validates trusted operation after response."
+        lede = "Review current findings, determine their significance, and document any required response action."
     if respond.get("queue_state") == "missing_report":
         queue_markup = '<div class="finding">No posture check report is available yet. Run a posture check from Detect.</div><div class="task-actions"><a class="btn" href="/detect">Open Detect</a></div>'
     elif respond.get("queue_state") == "report_error":
@@ -3108,7 +3515,7 @@ def render_recover_page(config: AppConfig, snapshot: Dict[str, Any], message: st
     recovery = model["recovery_readiness"]
     recovery_rows = "".join(f"<tr><td>{esc(label)}</td><td>{esc(entry['Status'])}</td><td>{esc(pretty_time(entry['Value']) if 'Baseline' in label else entry['Value'])}</td><td>{esc(entry['Message'])}</td></tr>" for label, entry in [("Last known-good baseline", recovery["LastKnownGoodBaseline"]), ("Rollback records status", recovery["RollbackRecords"]), ("Restore point status", recovery["RestorePointStatus"]), ("Backup status", recovery["BackupStatus"]), ("Post-remediation validation", recovery["PostRemediationValidation"])])
     recovery_recommendations = "".join(f"<li>{esc(item)}</li>" for item in recovery["Recommendations"])
-    return render_page_shell(model, "/recover", "Recover", simplify_for_home(persona_id, "Review whether this PC has enough baseline, rollback, and validation context to recover safely after cleanup or planned changes.", "Review the tools and records that help this PC get back to steady."), render_recovery_card(recovery, recovery_rows, recovery_recommendations), show_technical_nav=True)
+    return render_page_shell(model, "/recover", "Recover", simplify_for_home(persona_id, "Review baseline, rollback, backup, and validation readiness before closing a change or recovery action.", "Check that this PC has what it needs to return to steady."), render_recovery_card(recovery, recovery_rows, recovery_recommendations), show_technical_nav=True)
 
 
 def render_reports_page(config: AppConfig, snapshot: Dict[str, Any], message: str = "") -> str:
@@ -3165,76 +3572,115 @@ def render_file_detail(title: str, subtitle: str, payload_text: str) -> str:
 
 
 class CodexUiHandler(BaseHTTPRequestHandler):
-    server_version = "CodexMonitorUI/1.0"
+    server_version = f"CodexMonitorUI/{UI_DISPLAY_VERSION}"
 
     @property
     def app_config(self) -> AppConfig:
         return self.server.app_config  # type: ignore[attr-defined]
 
+    def respond_ui_page(self, document: str, fragment: str) -> None:
+        self.respond_html(extract_csf_app_fragment(document) if fragment == "app" else document)
+
+    def get_ui_snapshot(
+        self,
+        route: str,
+        *,
+        force_live: bool = False,
+        explorer_selection: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        lock = getattr(self.server, "snapshot_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self.server.snapshot_lock = lock  # type: ignore[attr-defined]
+        with lock:
+            cached = getattr(self.server, "ui_snapshot_cache", None)
+            if force_live or cached is None:
+                cached = build_snapshot(self.app_config)
+                self.server.ui_snapshot_cache = cached  # type: ignore[attr-defined]
+        if route in {"/", "/detect", "/detect/evidence-snapshot", "/respond", "/recover", "/reports"}:
+            snapshot = refresh_sqlite_backed_snapshot(self.app_config, cached)
+        else:
+            snapshot = copy.deepcopy(cached)
+        snapshot["csf_subcategory_guidance"] = list_sqlite_csf_guidance(self.app_config.state_db_path)
+        snapshot["csf_subcategory_profile_metadata"] = list_sqlite_csf_profile_metadata(self.app_config.state_db_path)
+        snapshot["csf_explorer_selection"] = dict(explorer_selection or {})
+        return snapshot
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
+        fragment = params.get("fragment", [""])[0].strip().lower()
+        force_live = params.get("refresh", [""])[0].strip().lower() == "live"
+        explorer_selection = {
+            "category_id": params.get("csf_category", [""])[0],
+            "subcategory_id": params.get("csf_subcategory", [""])[0],
+        }
 
         try:
             if parsed.path == "/":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_dashboard(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_dashboard(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/govern":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_govern_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_govern_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/identify":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_identify_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_identify_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/protect":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_protect_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_protect_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/detect":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_detect_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_detect_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/detect/evidence-snapshot":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_detect_evidence_snapshot_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_detect_evidence_snapshot_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/respond":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_respond_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_respond_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/recover":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_recover_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live, explorer_selection=explorer_selection)
+                return self.respond_ui_page(render_recover_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/reports":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_reports_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live)
+                return self.respond_ui_page(render_reports_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/diagnostics":
                 message = params.get("message", [""])[0]
-                snapshot = build_snapshot(self.app_config)
-                return self.respond_html(render_diagnostics_page(self.app_config, snapshot, message))
+                snapshot = self.get_ui_snapshot(parsed.path, force_live=force_live)
+                return self.respond_ui_page(render_diagnostics_page(self.app_config, snapshot, message), fragment)
 
             if parsed.path == "/alert":
                 alert_id = params.get("id", [""])[0]
                 detail = get_sqlite_alert_detail(self.app_config.state_db_path, alert_id)
                 if not detail.get("found"):
                     return self.respond_error(HTTPStatus.NOT_FOUND, "SQLite alert not found.")
+                alert_title = str(detail["alert"].get("alert_id") or "SQLite alert")
+                alert_subtitle = "SQLite alert record; use export-alert with this immutable ID for a JSON export."
+                alert_payload = json.dumps(detail, indent=2)
+                if fragment == "modal":
+                    return self.respond_html(render_record_modal(alert_title, render_record_payload(alert_title, alert_subtitle, alert_payload), parsed.path + ("?" + parsed.query.replace("fragment=modal", "").strip("&") if parsed.query else "")))
                 return self.respond_html(render_file_detail(
-                    str(detail["alert"].get("alert_id") or "SQLite alert"),
-                    "SQLite alert record; use export-alert with this immutable ID for a JSON export.",
-                    json.dumps(detail, indent=2),
+                    alert_title,
+                    alert_subtitle,
+                    alert_payload,
                 ))
 
             if parsed.path == "/report":
@@ -3243,6 +3689,9 @@ class CodexUiHandler(BaseHTTPRequestHandler):
                     detail = resolve_inactive_sqlite_report_route(self.app_config.state_db_path, report_id)
                     if not detail.get("found"):
                         return self.respond_error(HTTPStatus.NOT_FOUND, "SQLite report not found.")
+                    if fragment == "modal":
+                        report_title = str((detail.get("report") or {}).get("report_id") or "SQLite report")
+                        return self.respond_html(render_record_modal(report_title, render_sqlite_report_detail_preview(detail), build_sqlite_report_href(report_id)))
                     return self.respond_html(render_sqlite_report_detail_preview(detail))
                 requested = params.get("path", [""])[0]
                 roots = [self.app_config.runtime_root, self.app_config.data_root, self.app_config.repo_root]
@@ -3253,10 +3702,13 @@ class CodexUiHandler(BaseHTTPRequestHandler):
                     payload_text = json.dumps(parse_json(report_path), indent=2)
                 else:
                     payload_text = read_text(report_path)
+                if fragment == "modal":
+                    detail_href = "/report?path=" + urllib.parse.quote(requested, safe="")
+                    return self.respond_html(render_record_modal(report_path.name, render_record_payload(report_path.name, str(report_path), payload_text), detail_href))
                 return self.respond_html(render_file_detail(report_path.name, str(report_path), payload_text))
 
             if parsed.path == "/api/snapshot":
-                return self.respond_json(build_snapshot(self.app_config))
+                return self.respond_json(self.get_ui_snapshot(parsed.path, force_live=force_live))
 
             return self.respond_error(HTTPStatus.NOT_FOUND, "Route not found.")
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
@@ -3291,7 +3743,7 @@ class CodexUiHandler(BaseHTTPRequestHandler):
                 if task_name not in TASK_NAMES:
                     raise RuntimeError("Unknown task requested.")
                 result = run_task(task_name, self.app_config)
-                return self.redirect("/?message=" + urllib.parse.quote(result))
+                return self.redirect(return_to + "?message=" + urllib.parse.quote(result))
 
             if parsed.path == "/run-tripwire-baseline":
                 result = run_tripwire_baseline(self.app_config)
@@ -3369,6 +3821,8 @@ def main() -> int:
     config = load_settings(Path(args.settings))
     server = ThreadingHTTPServer((args.host, args.port), CodexUiHandler)
     server.app_config = config  # type: ignore[attr-defined]
+    server.snapshot_lock = threading.Lock()  # type: ignore[attr-defined]
+    server.ui_snapshot_cache = build_snapshot(config)  # type: ignore[attr-defined]
     open_path = str(args.open_path or "/")
     if not open_path.startswith("/") or open_path.startswith("//"):
         open_path = "/"

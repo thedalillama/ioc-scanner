@@ -64,8 +64,8 @@
     },
     {
       "persona_id": "analyst",
-      "display_name": "Analyst",
-      "description": "Analysis-oriented local-PC view for security practitioners who want findings, posture review, evidence interpretation, threat context, and reports without full repair diagnostics by default.",
+      "display_name": "CSF Analyst",
+      "description": "Single guided CSF experience for interpreting evidence, reviewing risk, and preserving decisions without changing a user's authority.",
       "default_skin": "lifestyle",
       "report_language": "technical",
       "show_csf_codes": true,

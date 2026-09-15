@@ -34,6 +34,10 @@ class IocStoreTests(unittest.TestCase):
             "findings",
             "alerts",
             "alert_deliveries",
+            "local_csf_categories",
+            "local_csf_outcomes",
+            "csf_subcategory_guidance",
+            "csf_subcategory_profile_metadata",
         }
         rows = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({0})".format(
@@ -46,7 +50,19 @@ class IocStoreTests(unittest.TestCase):
         migrations = self.conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        self.assertEqual([1, 2], [row["version"] for row in migrations])
+        self.assertEqual([1, 2, 3, 4, 5], [row["version"] for row in migrations])
+
+        guidance = ioc_store.get_csf_subcategory_guidance(self.conn, "PR.AA-05")
+        self.assertEqual("PR.AA-05", guidance["subcategory_id"])
+        self.assertEqual("en-US", guidance["language_code"])
+        self.assertIn("Limit each account", guidance["plain_english_text"])
+        self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_guidance WHERE language_code = 'en-US'").fetchone()[0])
+
+        profile_metadata = ioc_store.get_csf_subcategory_profile_metadata(self.conn, "PR.AA-05")
+        self.assertEqual("hybrid", profile_metadata["assessment_method"])
+        self.assertEqual(1, profile_metadata["supporting_note_required"])
+        self.assertIn("local Windows evidence", profile_metadata["research_guidance"])
+        self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_profile_metadata WHERE language_code = 'en-US'").fetchone()[0])
 
         indexes = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
@@ -62,6 +78,32 @@ class IocStoreTests(unittest.TestCase):
             },
             {row["name"] for row in indexes},
         )
+
+    def test_local_csf_extensions_are_scoped_and_advisory_only(self) -> None:
+        category = ioc_store.create_local_csf_category(
+            self.conn,
+            "DE",
+            "Local monitoring practice",
+            "Document the monitoring practice used in this environment.",
+            "Review the documented local evidence.",
+            "Discuss the next human step with the system owner.",
+        )
+        outcome = ioc_store.create_local_csf_outcome(
+            self.conn,
+            category["local_category_id"],
+            "Review cadence",
+            "Keep the documented review cadence current.",
+        )
+        self.assertEqual("LOCAL.DE.01", category["local_category_id"])
+        self.assertEqual("LOCAL.DE.01.01", outcome["local_outcome_id"])
+        self.assertEqual(["LOCAL.DE.01"], [item["local_category_id"] for item in ioc_store.list_local_csf_categories(self.conn, "DE")])
+        self.assertEqual(["LOCAL.DE.01.01"], [item["local_outcome_id"] for item in ioc_store.list_local_csf_outcomes(self.conn, "LOCAL.DE.01")])
+        self.assertNotIn("command", category)
+        self.assertNotIn("script", outcome)
+        with self.assertRaisesRegex(ValueError, "official CSF Function"):
+            ioc_store.create_local_csf_category(self.conn, "LOCAL", "Title", "Objective")
+        with self.assertRaisesRegex(ValueError, "existing local Category"):
+            ioc_store.create_local_csf_outcome(self.conn, "LOCAL.DE.99", "Title", "Objective")
 
     def test_persist_collector_run_report_findings_is_atomic_and_normalized(self) -> None:
         saved = ioc_store.persist_collector_run_report_findings(

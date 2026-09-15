@@ -34,6 +34,20 @@ class CodexMonitorUiTests(unittest.TestCase):
             self.assertEqual([], ui.list_sqlite_reports_preview(Path(temp_dir) / "missing.db"))
             self.assertEqual({"found": False, "report": None, "findings": []}, ui.get_sqlite_report_detail_preview(db_path, "missing"))
 
+    def test_sqlite_profile_metadata_adapter_reads_generated_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "ioc-store.db"
+            connection = ioc_store.connect_db(db_path)
+            try:
+                ioc_store.init_db(connection)
+            finally:
+                connection.close()
+            metadata = ui.list_sqlite_csf_profile_metadata(db_path)
+            self.assertEqual(106, len(metadata))
+            self.assertEqual("hybrid", metadata["PR.AA-05"]["assessment_method"])
+            self.assertTrue(metadata["PR.AA-05"]["supporting_note_required"])
+            self.assertEqual({}, ui.list_sqlite_csf_profile_metadata(Path(temp_dir) / "missing.db"))
+
     def test_inactive_sqlite_ui_helpers_require_stable_ids_without_live_acceptance(self) -> None:
         self.assertEqual("/report?id=report-1", ui.build_sqlite_report_href("report-1"))
         row = ui.render_sqlite_report_preview_row({"report_id": "report-1", "name": "report-1", "report_type": "ioc", "collection_time": "2026-09-09T03:00:00Z", "summary": {"MatchCount": 1}})
@@ -42,6 +56,23 @@ class CodexMonitorUiTests(unittest.TestCase):
         self.assertEqual({"finding_id": "finding-1", "requires_exact_finding_id": True, "live_action_enabled": False}, ui.build_sqlite_finding_acceptance_preview("finding-1"))
         self.assertTrue(ui.build_sqlite_finding_acceptance_command_preview({"finding_id": "active", "response_state": "open"})["eligible"])
         self.assertTrue(ui.build_sqlite_finding_acceptance_command_preview({"finding_id": "accepted", "response_state": "accepted"})["eligible"])
+
+    def test_sqlite_snapshot_refresh_does_not_mutate_startup_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = self.make_config(root)
+            startup_snapshot = {
+                "indicators": {"indicator_count": 999},
+                "pending_alerts": [{"alert_id": "startup-alert"}],
+                "archive_alerts": [],
+                "recent_reports": [{"report_id": "startup-report"}],
+            }
+            refreshed = ui.refresh_sqlite_backed_snapshot(config, startup_snapshot)
+        self.assertEqual(999, startup_snapshot["indicators"]["indicator_count"])
+        self.assertEqual("startup-alert", startup_snapshot["pending_alerts"][0]["alert_id"])
+        self.assertEqual(0, refreshed["indicators"]["indicator_count"])
+        self.assertEqual([], refreshed["pending_alerts"])
+        self.assertEqual([], refreshed["recent_reports"])
 
     def make_config(self, root: Path, ui_persona: str = "user") -> ui.AppConfig:
         return ui.AppConfig(
@@ -407,9 +438,10 @@ class CodexMonitorUiTests(unittest.TestCase):
 
             page = ui.render_respond_page(config, snapshot)
 
-            self.assertIn("Respond to findings", page)
-            self.assertIn("No posture check report is available yet", page)
-            self.assertIn("Detect records observed configuration drift. Respond handles findings. Recover confirms trusted operation after response.", page)
+            self.assertIn("RESPOND", page)
+            self.assertIn("RESPOND", page)
+            self.assertIn("Evidence and actions", page)
+            self.assertNotIn("Suggested triage", page)
 
     def test_render_routes_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -419,49 +451,116 @@ class CodexMonitorUiTests(unittest.TestCase):
             snapshot = self.make_snapshot(root, report_path)
 
             self.assertIn("Today", ui.render_dashboard(config, snapshot))
-            self.assertIn("What the app is watching", ui.render_detect_page(config, snapshot))
-            self.assertIn("Respond to findings", ui.render_respond_page(config, snapshot))
-            self.assertIn("Recover", ui.render_recover_page(config, snapshot))
+            detect_page = ui.render_detect_page(config, snapshot)
+            respond_page = ui.render_respond_page(config, snapshot)
+            self.assertIn("DETECT", detect_page)
+            self.assertIn("Subcategories", detect_page)
+            explorer = ui.render_csf_explorer("/govern", {"category_id": "GV.OC"})
+            self.assertIn('id="csf-subcategories-title" class="kicker">GV.OC', explorer)
+            self.assertIn("Organizational Context", explorer)
+            self.assertNotIn("Selected Category Â· Subcategories", explorer)
+            self.assertIn("Evidence and actions", detect_page)
+            self.assertNotIn("What the app is watching", detect_page)
+            self.assertIn("RESPOND", respond_page)
+            self.assertIn("Evidence and actions", respond_page)
+            self.assertNotIn("Respond to findings", respond_page)
+            self.assertIn("RECOVER", ui.render_recover_page(config, snapshot))
             self.assertIn("Records of care", ui.render_reports_page(config, snapshot))
 
 
 class PersonaConsistencyTests(unittest.TestCase):
-    def test_persona_catalog_order_and_labels(self) -> None:
-        personas = [ui.coerce_persona_profile(pid) for pid in ["user", "advanced_user", "csf_native", "analyst", "tech"]]
-        self.assertEqual([p["persona_id"] for p in personas], ["user", "advanced_user", "csf_native", "analyst", "tech"])
-        self.assertEqual([p["display_name"] for p in personas], ["Home User", "Advanced User", "NIST CSF Native", "Analyst", "Technician"])
+    def test_effective_persona_is_single_csf_analyst_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = ui.AppConfig(
+                settings_path=root / "codex-monitor.settings.json",
+                runtime_root=root,
+                data_root=root,
+                state_db_path=root / "state" / "ioc-store.db",
+                indicator_export_path=root / "indicators" / "feed-indicators-latest.json",
+                protection_profile="microsoft_baseline",
+                ui_persona="user",
+                repo_root=root,
+            )
+            profile = ui.get_effective_persona(config, {"analyst": ui.coerce_persona_profile("analyst")})
+        self.assertEqual("analyst", profile["persona_id"])
+        self.assertEqual("CSF Analyst", profile["display_name"])
 
-    def test_primary_nav_hides_diagnostics_for_home_user(self) -> None:
-        home = ui.coerce_persona_profile("user")
-        nav = ui.render_primary_nav("/", persona_profile=home, show_technical=True)
-        self.assertNotIn("Diagnostics", nav)
-        self.assertNotIn("Reports", nav)
+    def test_primary_nav_is_ordered_csf_action_map(self) -> None:
+        nav = ui.render_primary_nav("/detect", persona_profile=ui.coerce_persona_profile("analyst"), show_technical=True)
+        self.assertLess(nav.index('href="/govern"'), nav.index('href="/identify"'))
+        self.assertLess(nav.index('href="/identify"'), nav.index('href="/protect"'))
+        self.assertLess(nav.index('href="/protect"'), nav.index('href="/detect"'))
+        self.assertLess(nav.index('href="/detect"'), nav.index('href="/respond"'))
+        self.assertLess(nav.index('href="/respond"'), nav.index('href="/recover"'))
+        self.assertIn('class="csf-action active" data-csf-route href="/detect" aria-current="page"', nav)
+        self.assertIn('data-csf-purpose="Find and analyze possible adverse events."', nav)
+        self.assertIn('data-csf-use="Use this space for observed changes, IOC matches, and evidence that needs classification."', nav)
+        self.assertNotIn("<small>", nav)
+        self.assertIn('.csf-action:not(:last-child)::after', ui.html_page("test", "").replace("{{", "{").replace("}}", "}"))
 
-    def test_primary_nav_shows_diagnostics_for_technician(self) -> None:
-        tech = ui.coerce_persona_profile("tech")
-        nav = ui.render_primary_nav("/", persona_profile=tech, show_technical=True)
-        self.assertIn("Diagnostics", nav)
-
-    def test_persona_selector_and_csf_language(self) -> None:
-        persona_ids = ["user", "advanced_user", "csf_native", "analyst", "tech"]
-        personas = [ui.coerce_persona_profile(pid) for pid in persona_ids]
+    def test_page_shell_has_no_persona_selector_and_includes_guidance(self) -> None:
         model = {
             "app": {
                 "message": "",
-                "ui_persona": "csf_native",
-                "persona_profile": ui.coerce_persona_profile("csf_native"),
-                "available_personas": personas,
+                "ui_persona": "analyst",
+                "persona_profile": ui.coerce_persona_profile("analyst"),
+                "available_personas": [ui.coerce_persona_profile("analyst")],
             },
             "alerts": {"pending": [], "archived": []},
             "protection_controls": {"score": 90},
             "task_job_health": {"attention_tasks": 0},
             "recommended_responses": [{"title": "Review what changed", "summary": "Open the latest summary for this PC."}],
         }
-        page = ui.render_page_shell(model, "/", "Dashboard", "lede", "<div>body</div>")
-        labels = __import__("re").findall(r'<option value="[^"]*"[^>]*>([^<]+)</option>', page)
-        self.assertEqual(labels[:5], ["Home User", "Advanced User", "NIST CSF Native", "Analyst", "Technician"])
-        self.assertIn("GV / Govern", ui.friendly_function_label("govern", "csf_native"))
-        self.assertIn("DE / Detect", ui.friendly_function_label("detect", "csf_native"))
+        page = ui.render_page_shell(model, "/detect", "Detect", "lede", "<div>body</div>")
+        self.assertIn("CSF Analyst", page)
+        self.assertIn("CSF action map", page)
+        self.assertIn(f'class="app-title">{ui.FRAMEWORK_DISPLAY_NAME}</div>', page)
+        self.assertIn(f"<title>{ui.PRODUCT_DISPLAY_NAME}</title>", page)
+        self.assertIn(f"CSF Analyst · UI v{ui.UI_DISPLAY_VERSION}", page)
+        self.assertIn("Find and analyze possible adverse events.", page)
+        self.assertIn('id="csf-app"', page)
+        self.assertIn('data-csf-guidance-purpose="Find and analyze possible adverse events."', page)
+        self.assertIn('id="csf-guidance-purpose"', page)
+        self.assertIn('id="csf-guidance-use"', page)
+        self.assertNotIn('Next lens:', page)
+        self.assertIn('id="csf-workspace"', page)
+        self.assertIn("X-Codex-Fragment", page)
+        self.assertIn("@media (min-width:1000px) and (min-height:1000px)", page)
+        self.assertIn("grid-auto-rows:minmax(0,1fr)", page)
+        self.assertIn('".csf-explorer-list .csf-explorer-row.active"', page)
+        self.assertIn('scrollIntoView({ block: "nearest", inline: "nearest" })', page)
+        self.assertIn('document.addEventListener("wheel"', page)
+        self.assertIn('const explorerScrollStep', page)
+        self.assertIn('scrollTo({ top: nextRow * step, behavior: "auto" })', page)
+        self.assertIn('event.key === "ArrowDown" || event.key === "ArrowUp"', page)
+        self.assertIn('.csf-explorer-list:focus', page)
+        self.assertIn('grid-auto-rows:104px', page)
+        self.assertIn('height:104px; max-height:104px', page)
+        self.assertIn('height:104px; overflow:hidden', page)
+        self.assertIn('-webkit-line-clamp:3', page)
+        self.assertIn('focusExplorerList = ""', page)
+        self.assertIn('data-explorer-list="categories"', page)
+        self.assertIn('focus({ preventScroll: true })', page)
+        self.assertIn('.workspace-scroll > .csf-selection-list', page)
+        self.assertNotIn('action="/set-ui-persona"', page)
+
+    def test_workspace_fragment_and_record_modal_contracts(self) -> None:
+        model = {
+            "app": {"message": "", "ui_persona": "analyst", "persona_profile": ui.coerce_persona_profile("analyst")},
+            "alerts": {"pending": [], "archived": []},
+            "protection_controls": {"score": 90},
+            "task_job_health": {"attention_tasks": 0},
+            "recommended_responses": [{"title": "Review what changed", "summary": "Open the latest summary for this PC."}],
+        }
+        page = ui.render_page_shell(model, "/protect", "Protect", "lede", "<section>workspace</section>")
+        fragment = ui.extract_csf_app_fragment(page)
+        modal = ui.render_record_modal("Example report", "<section>detail</section>", "/report?id=example")
+        self.assertTrue(fragment.startswith('<div id="csf-app"'))
+        self.assertIn('data-csf-route="/protect"', fragment)
+        self.assertNotIn("<!doctype html>", fragment.lower())
+        self.assertIn('role="dialog"', modal)
+        self.assertIn('data-modal-close', modal)
 
 
 if __name__ == "__main__":
