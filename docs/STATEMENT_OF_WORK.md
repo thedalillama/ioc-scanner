@@ -90,11 +90,11 @@ Assessment method is not itself a CSF implementation result. Every subcategory a
 - **Not implemented** (No)
 - **Not applicable**, with rationale
 
-Tile 4 shall first explain the outcome for a novice CSF learner. The learner then researches the outcome and records the Profile response state. Review and hybrid assessments require a short supporting-evidence or decision note; evidence and attestation assessments may also retain a note when helpful. A radio response is not a substitute for evidence.
+The outcome workspace shall first provide brief, product-authored, outcome-specific assessment guidance for a novice CSF learner. It must translate the official outcome into the concrete questions and considerations a single-PC analyst should research, without presenting it as NIST-required Windows evidence. Each product-authored example must directly support the selected official Subcategory, be conditional where applicability depends on business context or obligations, and identify any material narrowing caused by the single-PC scope. The learner then researches the outcome and records the Profile response state. Review and hybrid assessments require a short supporting-evidence or decision note; evidence and attestation assessments may also retain a note when helpful. A radio response is not a substitute for evidence.
 
 ### Generated subcategory foundation
 
-The shipped SQLite Profile foundation shall contain one language-tagged product record for each active official CSF 2.0 Subcategory. It shall contain the product-authored plain-English explanation, assessment method, learner research guidance, and whether a supporting note is required. The current foundation covers all 106 active Subcategories in `en-US`.
+The shipped SQLite Profile foundation shall contain one language-tagged product record for each active official CSF 2.0 Subcategory. It shall contain the product-authored, outcome-specific plain-English assessment guidance, assessment method, learner research guidance, and whether a supporting note is required. The current foundation covers all 106 active Subcategories in `en-US`.
 
 Official outcome statements and implementation examples remain read-only content from the vendored NIST catalog. The product may display them with clear source attribution, but shall keep them separate from product-authored guidance. SP 800-53 references and executable Windows-evidence mappings are separate, source-verified mappings; an absent mapping must display as unavailable rather than inferred.
 

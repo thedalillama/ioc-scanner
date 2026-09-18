@@ -6,8 +6,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from csf_guidance import PLAIN_ENGLISH_GUIDANCE_EN_US
+from csf_guidance import PLAIN_ENGLISH_GUIDANCE_EN_US, PRODUCT_EXAMPLES_EN_US, SINGLE_PC_SCOPE_NOTES_EN_US
 from csf_profile import SUBCATEGORY_PROFILE_METADATA_EN_US
+
 
 
 def utc_now() -> str:
@@ -463,6 +464,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             subcategory_id TEXT NOT NULL,
             language_code TEXT NOT NULL,
             plain_english_text TEXT NOT NULL CHECK(length(trim(plain_english_text)) > 0),
+            examples_json TEXT NOT NULL DEFAULT '[]',
+            single_pc_scope_note TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(subcategory_id, language_code)
         );
 
@@ -474,6 +477,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             supporting_note_required INTEGER NOT NULL CHECK(supporting_note_required IN (0, 1)),
             PRIMARY KEY(subcategory_id, language_code)
         );
+
         """
     )
     connection.executemany(
@@ -487,34 +491,16 @@ def init_db(connection: sqlite3.Connection) -> None:
         ],
     )
     connection.executemany(
-        """
-        INSERT INTO csf_subcategory_guidance(subcategory_id, language_code, plain_english_text)
-        VALUES (?, 'en-US', ?)
-        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET
-            plain_english_text = excluded.plain_english_text
-        """,
-        [(subcategory_id, text) for subcategory_id, text in PLAIN_ENGLISH_GUIDANCE_EN_US.items()],
+        """INSERT INTO csf_subcategory_guidance(subcategory_id, language_code, plain_english_text, examples_json, single_pc_scope_note)
+        VALUES (?, 'en-US', ?, ?, ?)
+        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET plain_english_text=excluded.plain_english_text, examples_json=excluded.examples_json, single_pc_scope_note=excluded.single_pc_scope_note""",
+        [(identifier, text, json.dumps(PRODUCT_EXAMPLES_EN_US[identifier]), SINGLE_PC_SCOPE_NOTES_EN_US[identifier]) for identifier, text in PLAIN_ENGLISH_GUIDANCE_EN_US.items()],
     )
     connection.executemany(
-        """
-        INSERT INTO csf_subcategory_profile_metadata(
-            subcategory_id, language_code, assessment_method, research_guidance, supporting_note_required
-        )
+        """INSERT INTO csf_subcategory_profile_metadata(subcategory_id, language_code, assessment_method, research_guidance, supporting_note_required)
         VALUES (?, 'en-US', ?, ?, ?)
-        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET
-            assessment_method = excluded.assessment_method,
-            research_guidance = excluded.research_guidance,
-            supporting_note_required = excluded.supporting_note_required
-        """,
-        [
-            (
-                subcategory_id,
-                metadata["assessment_method"],
-                metadata["research_guidance"],
-                int(metadata["supporting_note_required"]),
-            )
-            for subcategory_id, metadata in SUBCATEGORY_PROFILE_METADATA_EN_US.items()
-        ],
+        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET assessment_method=excluded.assessment_method, research_guidance=excluded.research_guidance, supporting_note_required=excluded.supporting_note_required""",
+        [(identifier, value["assessment_method"], value["research_guidance"], int(value["supporting_note_required"])) for identifier, value in SUBCATEGORY_PROFILE_METADATA_EN_US.items()],
     )
     connection.commit()
 
@@ -522,36 +508,6 @@ def init_db(connection: sqlite3.Connection) -> None:
 LOCAL_CSF_FUNCTION_IDS = {"GV", "ID", "PR", "DE", "RS", "RC"}
 LOCAL_CSF_CATEGORY_ID_RE = re.compile(r"^LOCAL\.(GV|ID|PR|DE|RS|RC)\.(\d{2,})$")
 LOCAL_CSF_OUTCOME_ID_RE = re.compile(r"^LOCAL\.(GV|ID|PR|DE|RS|RC)\.(\d{2,})\.(\d{2,})$")
-
-
-def get_csf_subcategory_guidance(
-    connection: sqlite3.Connection, subcategory_id: str, language_code: str = "en-US"
-) -> Dict[str, str]:
-    """Return centrally maintained product guidance for one official CSF Subcategory."""
-    row = connection.execute(
-        """
-        SELECT subcategory_id, language_code, plain_english_text
-        FROM csf_subcategory_guidance
-        WHERE subcategory_id = ? AND language_code = ?
-        """,
-        (str(subcategory_id or "").strip().upper(), str(language_code or "").strip()),
-    ).fetchone()
-    return dict(row) if row else {}
-
-
-def get_csf_subcategory_profile_metadata(
-    connection: sqlite3.Connection, subcategory_id: str, language_code: str = "en-US"
-) -> Dict[str, Any]:
-    """Return product assessment metadata for one official CSF Subcategory."""
-    row = connection.execute(
-        """
-        SELECT subcategory_id, language_code, assessment_method, research_guidance, supporting_note_required
-        FROM csf_subcategory_profile_metadata
-        WHERE subcategory_id = ? AND language_code = ?
-        """,
-        (str(subcategory_id or "").strip().upper(), str(language_code or "").strip()),
-    ).fetchone()
-    return dict(row) if row else {}
 
 
 def _local_csf_text(value: Any, field_name: str, *, required: bool, maximum: int) -> str:
@@ -2698,7 +2654,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local SQLite IOC store manager.")
     parser.add_argument(
         "--db",
-        default=str(Path("state") / "ioc-store.db"),
+        default=str(Path("state") / "codex-monitor.db"),
         help="Path to the SQLite database file.",
     )
 
@@ -2801,7 +2757,10 @@ def main() -> int:
     init_db(connection)
 
     if args.command == "init":
-        print(f"Initialized IOC store: {db_path}")
+        print(
+            "Initialized application state store and seeded CSF profile content "
+            f"(existing operational records retained): {db_path}"
+        )
         return 0
 
     if args.command == "import-json":

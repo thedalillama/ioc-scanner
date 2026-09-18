@@ -17,7 +17,7 @@ $files = @(
     'start-codex-alert-helper.ps1',
     'import-threat-feeds.ps1',
     'get-codex-monitor-status.ps1',
-    'ioc_store.py',
+    'codex_monitor_store.py',
     'run-hidden.vbs',
     'accept-posture-drift.ps1',
     'posture-drift-rules.ps1',
@@ -35,7 +35,7 @@ $aliases = @{
     'start-codex-alert-helper.ps1' = 'alert-helper.ps1'
     'import-threat-feeds.ps1' = 'feed-import.ps1'
     'get-codex-monitor-status.ps1' = 'status.ps1'
-    'ioc_store.py' = 'store.py'
+    'codex_monitor_store.py' = 'store.py'
     'run-hidden.vbs' = 'hidden.vbs'
     'host-tripwire-config.json' = 'tripwire-config.json'
     'ioc-monitor-locations.json' = 'ioc-locations.json'

@@ -107,7 +107,7 @@ The app can run from any local runtime folder. Wrapper scripts resolve paths rel
 |-- install-codex-monitor.ps1
 |-- invoke-host-ioc.ps1
 |-- invoke-host-tripwire.ps1
-|-- ioc_store.py
+|-- codex_monitor_store.py
 |-- monitor-threat-rss.ps1
 |-- run-hidden.vbs
 |-- start-codex-alert-helper.ps1
@@ -122,7 +122,7 @@ The app can run from any local runtime folder. Wrapper scripts resolve paths rel
   - collects local evidence and checks it against normalized threat indicators
 - `import-threat-feeds.ps1`
   - imports public threat intelligence and updates the local SQLite store
-- `ioc_store.py`
+- `codex_monitor_store.py`
   - manages the local SQLite state and indicator store
 - `monitor-threat-rss.ps1`
   - monitors relevant threat and advisory feeds

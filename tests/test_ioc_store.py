@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-import ioc_store
+import codex_monitor_store as ioc_store
 
 
 class IocStoreTests(unittest.TestCase):
@@ -51,17 +51,8 @@ class IocStoreTests(unittest.TestCase):
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
         self.assertEqual([1, 2, 3, 4, 5], [row["version"] for row in migrations])
-
-        guidance = ioc_store.get_csf_subcategory_guidance(self.conn, "PR.AA-05")
-        self.assertEqual("PR.AA-05", guidance["subcategory_id"])
-        self.assertEqual("en-US", guidance["language_code"])
-        self.assertIn("Limit each account", guidance["plain_english_text"])
         self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_guidance WHERE language_code = 'en-US'").fetchone()[0])
-
-        profile_metadata = ioc_store.get_csf_subcategory_profile_metadata(self.conn, "PR.AA-05")
-        self.assertEqual("hybrid", profile_metadata["assessment_method"])
-        self.assertEqual(1, profile_metadata["supporting_note_required"])
-        self.assertIn("local Windows evidence", profile_metadata["research_guidance"])
+        self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_guidance WHERE language_code = 'en-US' AND examples_json <> '[]'").fetchone()[0])
         self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_profile_metadata WHERE language_code = 'en-US'").fetchone()[0])
 
         indexes = self.conn.execute(

@@ -270,7 +270,7 @@ function Show-EligibleFindings {
 
 function Get-PersistedReportAsLegacyShape {
     param([Parameter(Mandatory = $true)][string]$Id)
-    $iocStore = Join-Path $PSScriptRoot 'ioc_store.py'
+    $iocStore = Join-Path $PSScriptRoot 'codex_monitor_store.py'
     $raw = & 'C:\Windows\py.exe' -3 $iocStore --db ([IO.Path]::GetFullPath($StateDbPath)) get-persisted-report --report-id $Id
     if ($LASTEXITCODE -ne 0) { throw "Unable to read persisted report: $Id" }
     $detail = $raw | ConvertFrom-Json -ErrorAction Stop
@@ -384,7 +384,7 @@ try {
     } | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText($tempJson, $payloadJson, (New-Object System.Text.UTF8Encoding($false)))
 
-    $iocStore = Join-Path $PSScriptRoot 'ioc_store.py'
+    $iocStore = Join-Path $PSScriptRoot 'codex_monitor_store.py'
     $dbPath = [IO.Path]::GetFullPath($StateDbPath)
     $stateDir = Split-Path -Parent $dbPath
     if (-not [string]::IsNullOrWhiteSpace($stateDir) -and -not (Test-Path -LiteralPath $stateDir)) {

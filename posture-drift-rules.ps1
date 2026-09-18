@@ -172,7 +172,7 @@ function Invoke-PostureDriftStateStore {
         if (Get-Command -Name $candidate -ErrorAction SilentlyContinue) { $pythonCommand = $candidate; break }
     }
     if ($null -eq $pythonCommand) { throw 'Python command not available for accepted drift registry access.' }
-    $scriptPath = Join-Path $PSScriptRoot 'ioc_store.py'
+    $scriptPath = Join-Path $PSScriptRoot 'codex_monitor_store.py'
     $output = & $pythonCommand $scriptPath --db $DbPath @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw ("Accepted drift registry command failed: {0} {1} --db {2} {3}`n{4}" -f $pythonCommand, $scriptPath, $DbPath, ($Arguments -join ' '), (@($output) -join [Environment]::NewLine))

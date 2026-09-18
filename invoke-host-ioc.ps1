@@ -181,7 +181,7 @@ function Get-PythonCommand {
 }
 
 function Get-StateStoreScriptPath {
-    $path = Join-Path $PSScriptRoot "ioc_store.py"
+    $path = Join-Path $PSScriptRoot "codex_monitor_store.py"
     if (-not (Test-Path -LiteralPath $path)) {
         throw "SQLite state helper not found: $path"
     }
@@ -1189,7 +1189,7 @@ function New-FindingFromBaselineHashJoin {
             source = @("SQLiteBaselineHashIndex")
         }
         evidence = "Tripwire baseline file hash matched an indexed SHA-256 indicator through SQLite."
-        collection_command = "ioc_store.py baseline-hash-match"
+        collection_command = "codex_monitor_store.py baseline-hash-match"
         recommended_action = "investigate"
         references = @()
     }
@@ -1239,7 +1239,7 @@ function New-FindingFromSqliteEvidenceMatch {
             source = @([string]$Match.match_source)
         }
         evidence = $interpretation
-        collection_command = "ioc_store.py evidence-snapshot-match"
+        collection_command = "codex_monitor_store.py evidence-snapshot-match"
         recommended_action = if ($isTest) { "document_test_result" } elseif (@("sha256", "service_name", "scheduled_task") -contains ([string]$Match.indicator_type).ToLowerInvariant()) { "investigate" } else { "review_context" }
         references = @()
     }

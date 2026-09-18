@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File .\invoke-host-ioc.ps1 -Mode IOC
 ### Inspect the SQLite IOC store
 
 ```powershell
-python .\ioc_store.py stats
+python .\codex_monitor_store.py stats
 ```
 
 ### Explicit SQLite exports
@@ -34,9 +34,9 @@ Operational collectors and the UI use SQLite directly. Create a JSON artifact on
 when an operator explicitly requests one, and always choose its destination:
 
 ```powershell
-python .\ioc_store.py export-indicators --output <destination>\indicators.json
-python .\ioc_store.py export-report --report-id <immutable-report-id> --output <destination>\report.json
-python .\ioc_store.py export-alert --alert-id <immutable-alert-id> --output <destination>\alert.json
+python .\codex_monitor_store.py export-indicators --output <destination>\indicators.json
+python .\codex_monitor_store.py export-report --report-id <immutable-report-id> --output <destination>\report.json
+python .\codex_monitor_store.py export-alert --alert-id <immutable-alert-id> --output <destination>\alert.json
 ```
 
 `export-json` remains a compatibility alias for `export-indicators`. These commands
@@ -117,8 +117,6 @@ When a pending alert is processed, the helper shows a desktop popup window with:
 
 - `Open Alert`
   - opens the immutable SQLite-backed alert detail in the local UI
-- `Open Folder`
-  - opens the configured data root for operator-requested exports and retained migration evidence
 - `Dismiss`
   - closes the popup
 

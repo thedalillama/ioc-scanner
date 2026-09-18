@@ -194,6 +194,116 @@ _ALL_DRAFT_GUIDANCE_EN_US = {
 }
 
 
+_ACTIVE_ASSESSMENT_GUIDANCE_EN_US = {
+    "GV.OC-01": "Make sure the organization’s mission is documented, shared, and understood by the people responsible for cybersecurity risk management.",
+    "GV.OC-02": "Identify the people who rely on this PC and the security expectations they have for its data, availability, and support.",
+    "GV.OC-03": "Identify, track, and meet the privacy, legal, contract, and industry obligations that apply to the work and data handled on this PC.",
+    "GV.OC-04": "Identify the important services or business activities this PC supports, the impact if they are disrupted, who expects them, and how quickly they need to be restored.",
+    "GV.OC-05": "Identify and communicate the accounts, software, services, connections, and suppliers this PC depends on, including failures that could interrupt its work.",
+    "GV.OV-01": "Review whether security decisions for this PC still match its work, data, threats, and acceptable level of risk.",
+    "GV.OV-02": "Periodically review and adjust this PC's security approach so it continues to cover its work, requirements, suppliers, and changing risks.",
+    "GV.OV-03": "Evaluate whether this PC's protections, monitoring, and recovery arrangements achieve their intended results, then record needed improvements.",
+    "GV.PO-01": "Maintain practical security rules for using, changing, maintaining, and protecting this PC; communicate them to responsible people and apply them consistently.",
+    "GV.PO-02": "Review, update, communicate, and apply this PC's security rules when its use, threats, requirements, or technology changes.",
+    "GV.RM-01": "Agree with the people responsible for this PC on the security outcomes that matter most, why they matter, and how success will be recognized.",
+    "GV.RM-02": "Define, communicate, and maintain which risks to this PC are acceptable, which require action, and who can make that decision.",
+    "GV.RM-03": "Consider this PC's cybersecurity risks alongside its operational, financial, privacy, compliance, and recovery risks when making business decisions.",
+    "GV.RM-04": "For each important PC risk, document and communicate whether it will be reduced, avoided, transferred, or knowingly accepted.",
+    "GV.RM-05": "Define who needs cybersecurity-risk information about this PC, what they need to know, and how they will be contacted, including suppliers and support providers.",
+    "GV.RM-06": "Use and document a consistent way to describe likelihood, impact, category, owner, and priority when comparing risks to this PC.",
+    "GV.RM-07": "Consider security improvements that also make this PC's important work more reliable and recoverable.",
+    "GV.RR-01": "Identify who is accountable for cybersecurity decisions affecting this PC and ensure they promote responsible, ethical, and continually improving security practices.",
+    "GV.RR-02": "Define, communicate, and enforce who may use, administer, support, approve changes to, and make risk decisions for this PC.",
+    "GV.RR-03": "Confirm that the responsible people have enough time, tools, access, and support to maintain this PC safely.",
+    "GV.RR-04": "Include secure setup, access changes, role changes, and offboarding in the practices used for people who affect this PC.",
+    "GV.SC-01": "Define how risks from software, cloud services, hardware, and support providers used by this PC will be managed.",
+    "GV.SC-02": "Identify each vendor or provider that can affect this PC or its data, and document its responsibilities.",
+    "GV.SC-03": "Consider supplier and service-provider risks when assessing the overall cybersecurity risk of this PC.",
+    "GV.SC-04": "Identify which suppliers and services are most important to this PC's work and recovery.",
+    "GV.SC-05": "Set and document security expectations before purchasing or renewing software, hardware, support, or cloud services used by this PC.",
+    "GV.SC-06": "Review a supplier, product, or service before trusting it with this PC, its access, or its data.",
+    "GV.SC-07": "Record, prioritize, respond to, and monitor security risks from important suppliers and services throughout their use by this PC.",
+    "GV.SC-08": "Include important vendors, service contacts, and access dependencies in this PC's incident and recovery planning.",
+    "GV.SC-09": "Periodically review whether important suppliers still meet the security expectations this PC depends on.",
+    "GV.SC-10": "Plan how access, data, and dependencies will be handled when a supplier or service relationship ends.",
+    "ID.AM-01": "Maintain an accurate inventory of this PC, attached devices, and hardware that must be protected or recovered.",
+    "ID.AM-02": "Maintain an accurate inventory of software, services, and accounts installed on or used by this PC.",
+    "ID.AM-03": "Maintain a simple map of the authorized network connections and data flows between this PC, local networks, remote services, and external systems.",
+    "ID.AM-04": "Identify the outside services this PC depends on, such as backup, email, identity, cloud storage, or remote support.",
+    "ID.AM-05": "Identify the data, software, and PC functions that would cause the most harm if unavailable, lost, or changed.",
+    "ID.AM-07": "Maintain an inventory of important data and its key details, including where it is kept, its sensitivity, owner, and who needs access.",
+    "ID.AM-08": "Plan how this PC, its software, and its data will be securely set up, maintained, replaced, and disposed of.",
+    "ID.IM-01": "Use reviews of this PC's security posture to identify and prioritize practical improvements.",
+    "ID.IM-02": "Use tests, exercises, or recovery practice to discover where this PC's security arrangements need improvement.",
+    "ID.IM-03": "Capture lessons from problems, changes, alerts, and maintenance work that should improve this PC's security.",
+    "ID.IM-04": "Keep this PC's incident and recovery plans current, understandable, and usable by the people who need them.",
+    "ID.RA-01": "Identify, validate, and record weaknesses in this PC's hardware, software, settings, accounts, and dependencies before acting on their risks.",
+    "ID.RA-02": "Use trustworthy threat information to identify threats that are relevant to this PC's software, data, and exposure.",
+    "ID.RA-03": "Identify realistic threats to this PC from attackers, mistakes, failures, physical loss, and outside services.",
+    "ID.RA-04": "Estimate how likely each important risk is and what it could affect on this PC and in the work it supports.",
+    "ID.RA-05": "Use known weaknesses, threats, and business impact to decide which PC risks need attention first.",
+    "ID.RA-06": "Choose, prioritize, track, and communicate the response for each important PC risk, including who will carry it out and when.",
+    "ID.RA-07": "Assess, record, and track the security impact of important PC changes, exceptions, and newly accepted risks.",
+    "ID.RA-08": "Maintain a way to receive, assess, and act on reports of weaknesses in software or services used by this PC.",
+    "ID.RA-09": "Check the authenticity and integrity of new hardware and software before acquiring, installing, or allowing it to affect this PC.",
+    "ID.RA-10": "Assess important technology suppliers before relying on their products or services for this PC.",
+    "PR.AA-01": "Manage the identities and credentials of people, services, and devices authorized to use or affect this PC throughout their lifecycle.",
+    "PR.AA-02": "Confirm that each identity is appropriately verified and bound to the credential used to access this PC or its services.",
+    "PR.AA-03": "Verify that sign-in protections are appropriate for users, services, remote access, and devices that use this PC.",
+    "PR.AA-04": "If this PC relies on another identity service, verify that the identity information it accepts is trustworthy and appropriately managed.",
+    "PR.AA-05": "Define, enforce, and periodically review permissions so each account, service, and remote-access path has only the access needed for its intended role.",
+    "PR.AA-06": "Review whether screen locking, encryption, and physical safeguards fit the location, use, and risk of this PC.",
+    "PR.AT-01": "Confirm that people who use this PC understand the safe computing practices relevant to their work.",
+    "PR.AT-02": "Confirm that people who administer or secure this PC have the training needed for their responsibilities.",
+    "PR.DS-01": "Verify that important files on this PC are protected from unauthorized access, change, loss, and damage.",
+    "PR.DS-02": "Verify that important data is protected while this PC sends or receives it over networks or external services.",
+    "PR.DS-10": "Verify that sensitive data is protected while it is open and being used by this PC or its applications.",
+    "PR.DS-11": "Verify that important PC data is backed up, the backups are protected, and restoration has been tested.",
+    "PR.IR-01": "Verify that this PC and its network access are protected from unauthorized use and avoidable exposure.",
+    "PR.IR-02": "Verify that this PC is protected from relevant power, temperature, water, fire, and other environmental problems.",
+    "PR.IR-03": "Identify how this PC can continue or quickly restore essential work during a failure, attack, or disruption.",
+    "PR.IR-04": "Verify that this PC has enough computing, storage, and connection capacity for its important work.",
+    "PR.PS-01": "Use a controlled, repeatable process when changing this PC's settings, software, or security configuration.",
+    "PR.PS-02": "Keep this PC's software supported and updated, and remove software that is no longer needed or supported.",
+    "PR.PS-03": "Maintain, replace, and dispose of this PC's hardware in a way that reflects its importance and risk.",
+    "PR.PS-04": "Generate and retain useful records of important PC activity, and make them available for continuous monitoring and security review.",
+    "PR.PS-05": "Prevent unapproved software from being installed or run on this PC, and review exceptions deliberately.",
+    "PR.PS-06": "If this PC is used for development or testing, apply secure practices that protect code, tools, and test data.",
+    "DE.AE-02": "Review suspicious activity to determine what happened, whether it is meaningful, and whether it could be a cybersecurity incident.",
+    "DE.AE-03": "Compare relevant evidence from more than one source before deciding what a suspicious PC event means.",
+    "DE.AE-04": "Determine which accounts, files, software, devices, services, or business work a suspicious event could affect.",
+    "DE.AE-06": "Ensure that important event information reaches the people and tools that need it for timely review or response.",
+    "DE.AE-07": "Use relevant threat information to understand whether suspicious activity on this PC matches a known risk or attack pattern.",
+    "DE.AE-08": "Use clear criteria to decide when evidence is serious enough to treat a PC event as a cybersecurity incident.",
+    "DE.CM-01": "Monitor this PC's network connections and network services for activity that could indicate a security problem.",
+    "DE.CM-02": "Use physical checks appropriate to this PC's location to identify signs of tampering, loss, or unsafe conditions.",
+    "DE.CM-03": "Monitor relevant use of this PC for activity that may be unauthorized, unsafe, or inconsistent with its intended role.",
+    "DE.CM-06": "Monitor important external services used by this PC for security issues, outages, or changes that could affect it.",
+    "DE.CM-09": "Monitor this PC's hardware, software, runtime environment, and data for changes that could signal a security problem.",
+    "RS.AN-03": "Determine what happened during an incident, how it happened, and what caused it before deciding on further action.",
+    "RS.AN-06": "Record investigation evidence, decisions, and actions in a way that preserves when they were made, where they came from, and whether they were changed.",
+    "RS.AN-07": "Collect and preserve incident data and metadata so another person can verify when and where it came from and trust that it was not altered.",
+    "RS.AN-08": "Determine how serious an incident is, what it affects, and whether its impact may extend beyond this PC.",
+    "RS.CO-02": "Identify who must be notified when a PC incident affects them, and record how and when they will be contacted.",
+    "RS.CO-03": "Share accurate, timely incident information with the people who need it to make response decisions or take action.",
+    "RS.MA-01": "Follow the documented response approach for this PC and involve the needed owners, support providers, or specialists.",
+    "RS.MA-02": "Review reported events to determine whether they are credible incidents that require a managed response.",
+    "RS.MA-03": "Classify incidents by type, urgency, and potential impact so the most important response work happens first.",
+    "RS.MA-04": "Escalate an incident when it exceeds the authority, skills, tools, or time available to manage it locally.",
+    "RS.MA-05": "Use clear criteria to decide when incident response can move into recovery and restoration work.",
+    "RS.MI-01": "Take documented steps to contain an incident and prevent it from causing further harm to this PC or connected work.",
+    "RS.MI-02": "Remove the cause of an incident and address the weakness that allowed it before returning this PC to normal use.",
+    "RC.CO-03": "Keep affected people informed about the progress, limits, and expected timing of restoring this PC's important work.",
+    "RC.CO-04": "Use approved, accurate messages for any public or external recovery updates that are required for this PC's work.",
+    "RC.RP-01": "Begin the documented recovery approach when incident response determines that this PC is ready for restoration.",
+    "RC.RP-02": "Prioritize recovery steps so the most important PC services, data, and business work are restored first.",
+    "RC.RP-03": "Check backups and recovery media for compromise, corruption, and other integrity problems before using them to restore this PC.",
+    "RC.RP-04": "Use business needs and acceptable risk to define what safe, normal operation means after this PC is restored.",
+    "RC.RP-05": "Verify that restored files, software, accounts, and services are trustworthy before normal use resumes.",
+    "RC.RP-06": "Close recovery only after this PC is stable, required work is restored, and the incident record is complete.",
+}
+
+
 def _active_official_subcategory_ids() -> set[str]:
     from csf_catalog import load_official_catalog
 
@@ -206,12 +316,150 @@ def _active_official_subcategory_ids() -> set[str]:
 
 
 _ACTIVE_OFFICIAL_SUBCATEGORY_IDS = _active_official_subcategory_ids()
-_MISSING_ACTIVE_GUIDANCE = _ACTIVE_OFFICIAL_SUBCATEGORY_IDS.difference(_ALL_DRAFT_GUIDANCE_EN_US)
+_MISSING_ACTIVE_GUIDANCE = _ACTIVE_OFFICIAL_SUBCATEGORY_IDS.difference(_ACTIVE_ASSESSMENT_GUIDANCE_EN_US)
 if _MISSING_ACTIVE_GUIDANCE:
     raise ValueError(f"Plain-English guidance is missing active CSF Subcategories: {sorted(_MISSING_ACTIVE_GUIDANCE)}")
 
+_UNEXPECTED_ACTIVE_GUIDANCE = set(_ACTIVE_ASSESSMENT_GUIDANCE_EN_US).difference(_ACTIVE_OFFICIAL_SUBCATEGORY_IDS)
+if _UNEXPECTED_ACTIVE_GUIDANCE:
+    raise ValueError(f"Plain-English guidance contains non-active CSF Subcategories: {sorted(_UNEXPECTED_ACTIVE_GUIDANCE)}")
+
 # The shipped set intentionally excludes withdrawn historical OSCAL controls.
 PLAIN_ENGLISH_GUIDANCE_EN_US = {
-    identifier: _ALL_DRAFT_GUIDANCE_EN_US[identifier]
+    identifier: _ACTIVE_ASSESSMENT_GUIDANCE_EN_US[identifier]
     for identifier in sorted(_ACTIVE_OFFICIAL_SUBCATEGORY_IDS)
 }
+
+# Product-authored prompts are deliberately distinct from the official NIST
+# implementation examples shown elsewhere in the UI.  They ask the learner
+# what to investigate on one Windows PC; they do not assert compliance.
+PRODUCT_EXAMPLES_EN_US = {
+    identifier: () for identifier in PLAIN_ENGLISH_GUIDANCE_EN_US
+}
+PRODUCT_EXAMPLES_EN_US["GV.OC-01"] = (
+    "Example: A bookkeeping firm states that its mission is to provide accurate, confidential financial services to clients. The owner shares that statement with the person responsible for cybersecurity decisions affecting this PC.",
+)
+PRODUCT_EXAMPLES_EN_US.update({
+    "GV.OC-02": ("Example: The owner records that clients expect this PC to keep their records private and available during business hours.",),
+    "GV.OC-03": ("Example: A business records that a customer contract requires protection of customer files handled on this PC.",),
+    "GV.OC-04": ("Example: A firm identifies payroll preparation as a critical service and records when stakeholders need it restored after an interruption.",),
+    "GV.OC-05": ("Example: The analyst records that this PC depends on its internet connection, accounting service, email provider, and backup service.",),
+    "GV.OV-01": ("Example: The owner reviews whether the PC's current cybersecurity approach still fits the business work it supports.",),
+    "GV.OV-02": ("Example: After the business begins handling a new type of customer record, the owner reviews whether its cybersecurity approach still covers that requirement.",),
+    "GV.OV-03": ("Example: The owner reviews whether the cybersecurity arrangements for this PC are achieving their intended results.",),
+    "GV.PO-01": ("Example: The business publishes a short rule describing who may approve changes to this PC and makes it available to the people who use it.",),
+    "GV.PO-02": ("Example: When remote-access software is introduced, the business updates and communicates its related cybersecurity rule.",),
+    "GV.RM-01": ("Example: The owner and support provider agree that protecting client records is a cybersecurity objective for this PC.",),
+    "GV.RM-02": ("Example: The owner documents that an unpatched internet-facing service is not an acceptable risk for this PC.",),
+    "GV.RM-03": ("Example: When considering a cybersecurity issue, the owner considers its operational and contractual consequences alongside the technical concern.",),
+    "GV.RM-04": ("Example: The owner documents whether a known PC risk will be reduced, accepted, transferred, or avoided.",),
+    "GV.RM-05": ("Example: The business records who must receive information when a cybersecurity risk could affect a customer or support provider.",),
+    "GV.RM-06": ("Example: The owner uses the same likelihood and impact scale when comparing two cybersecurity risks affecting this PC.",),
+    "GV.RM-07": ("Example: The owner records an opportunity to improve both the security and reliability of this PC.",),
+    "GV.RR-01": ("Example: The business identifies the owner as accountable for cybersecurity decisions affecting this PC.",),
+    "GV.RR-02": ("Example: The business records who may administer this PC and who may approve changes to it.",),
+    "GV.RR-03": ("Example: The owner confirms that the person responsible for the PC has the time and access needed for assigned cybersecurity responsibilities.",),
+    "GV.RR-04": ("Example: When a support worker leaves, the business includes removal of their PC access in the offboarding process.",),
+    "GV.SC-01": ("Example: The owner records how software and cloud-service supplier risks affecting this PC will be handled.",),
+    "GV.SC-02": ("Example: A support agreement identifies which security responsibilities belong to the business and which belong to the provider.",),
+    "GV.SC-03": ("Example: The owner includes a cloud provider's cybersecurity risk when reviewing the PC's overall cybersecurity risk.",),
+    "GV.SC-04": ("Example: The analyst identifies the backup provider as more critical to this PC than an optional productivity tool.",),
+    "GV.SC-05": ("Example: Before renewing a remote-support service, the owner records the cybersecurity expectations it must meet.",),
+    "GV.SC-06": ("Example: Before engaging a remote-support provider, the owner reviews the provider's access and security practices.",),
+    "GV.SC-07": ("Example: The owner records and periodically reviews a security issue reported by a software supplier used on this PC.",),
+    "GV.SC-08": ("Example: The incident plan includes contact information for the provider that manages this PC's backup service.",),
+    "GV.SC-09": ("Example: The owner periodically reviews whether a critical provider continues to meet the agreed cybersecurity expectations.",),
+    "GV.SC-10": ("Example: Before ending a cloud-service relationship, the owner plans how the PC's access and data will be handled.",),
+    "ID.AM-01": ("Example: The analyst maintains a list of this PC, its external drive, and its attached printer.",),
+    "ID.AM-02": ("Example: The analyst maintains a list of the operating system, key applications, cloud services, and accounts used by this PC.",),
+    "ID.AM-03": ("Example: The analyst records the approved connection between this PC and its cloud-storage service.",),
+    "ID.AM-04": ("Example: The analyst lists the backup, email, and remote-support services provided by outside suppliers.",),
+    "ID.AM-05": ("Example: The owner identifies the customer-record application as more critical than a nonessential productivity application.",),
+    "ID.AM-07": ("Example: The analyst records where customer records are stored and which person is responsible for them.",),
+    "ID.AM-08": ("Example: The owner records how this PC will be securely disposed of when it is replaced.",),
+    "ID.IM-01": ("Example: A security review identifies an improvement that should be made to this PC's cybersecurity arrangements.",),
+    "ID.IM-02": ("Example: A recovery exercise identifies an improvement needed in the PC's cybersecurity arrangements.",),
+    "ID.IM-03": ("Example: After an alert is investigated, the analyst records a lesson that can improve a recurring procedure.",),
+    "ID.IM-04": ("Example: The owner updates the PC's incident plan and shares the revised version with the people who need it.",),
+    "ID.RA-01": ("Example: The analyst validates and records a reported software weakness affecting this PC.",),
+    "ID.RA-02": ("Example: The analyst receives a supplier security advisory relevant to software used on this PC.",),
+    "ID.RA-03": ("Example: The analyst records a phishing attempt as an external threat relevant to this PC.",),
+    "ID.RA-04": ("Example: The analyst records the likely impact and likelihood of a threat exploiting a known PC weakness.",),
+    "ID.RA-05": ("Example: The owner uses a weakness, relevant threat, likelihood, and impact to prioritize a PC risk.",),
+    "ID.RA-06": ("Example: The owner records the selected response, owner, and target date for an important PC risk.",),
+    "ID.RA-07": ("Example: Before approving an exception to a PC security rule, the owner records and tracks its cybersecurity impact.",),
+    "ID.RA-08": ("Example: The analyst records where software vulnerability notices for this PC will be received and reviewed.",),
+    "ID.RA-09": ("Example: Before installing software, the analyst verifies that it came from its legitimate publisher and has not been altered.",),
+    "ID.RA-10": ("Example: Before selecting a critical backup provider, the owner assesses the provider's cybersecurity risk.",),
+    "PR.AA-01": ("Example: The analyst maintains records for the named user account and service account authorized to use this PC.",),
+    "PR.AA-02": ("Example: Before issuing a credential, the administrator verifies the identity of the person who will use it.",),
+    "PR.AA-03": ("Example: The PC requires a user to authenticate before accessing its desktop.",),
+    "PR.AA-04": ("Example: When this PC uses an external identity provider, it verifies the identity assertion received from that provider.",),
+    "PR.AA-05": ("Example: A standard user account is granted only the permissions needed for its assigned work.",),
+    "PR.AA-06": ("Example: The owner uses access controls appropriate to the PC's location to manage physical access to it.",),
+    "PR.AT-01": ("Example: A PC user receives awareness instruction on recognizing phishing messages.",),
+    "PR.AT-02": ("Example: The person responsible for administering this PC receives training relevant to that specialized responsibility.",),
+    "PR.DS-01": ("Example: Files stored on this PC are protected from unauthorized reading, change, and loss.",),
+    "PR.DS-02": ("Example: A file sent from this PC to an external service is protected while in transit.",),
+    "PR.DS-10": ("Example: Sensitive information displayed by an application is protected while the application is using it.",),
+    "PR.DS-11": ("Example: The owner maintains protected backups of important PC data and periodically tests restoration.",),
+    "PR.IR-01": ("Example: The PC requires authorized users to authenticate before using its network-accessible services.",),
+    "PR.IR-02": ("Example: The PC is protected from a relevant environmental threat, such as power loss or water exposure.",),
+    "PR.IR-03": ("Example: The business identifies a mechanism that supports essential work when the PC is unavailable.",),
+    "PR.IR-04": ("Example: The owner maintains sufficient storage capacity for the PC's intended work.",),
+    "PR.PS-01": ("Example: A planned PC configuration change is recorded and approved before it is applied.",),
+    "PR.PS-02": ("Example: Unsupported software is removed or replaced based on the risk it presents to this PC.",),
+    "PR.PS-03": ("Example: The owner securely removes data from a PC drive before the hardware is disposed of.",),
+    "PR.PS-04": ("Example: This PC generates log records that are available to the person monitoring cybersecurity events.",),
+    "PR.PS-05": ("Example: The PC prevents an unauthorized application from being installed or executed.",),
+    "PR.PS-06": ("Example: A developer using this PC follows the organization's secure software-development practices.",),
+    "DE.AE-02": ("Example: An analyst reviews a suspicious sign-in event to understand the associated activity.",),
+    "DE.AE-03": ("Example: An analyst compares a sign-in log with a network record when examining an adverse event.",),
+    "DE.AE-04": ("Example: An analyst estimates which accounts and services could be affected by an adverse event.",),
+    "DE.AE-06": ("Example: An authorized analyst can access information about an adverse event when it is needed.",),
+    "DE.AE-07": ("Example: An analyst uses a relevant threat advisory as context while analyzing an adverse event.",),
+    "DE.AE-08": ("Example: An analyst applies the documented incident criteria before declaring an adverse event to be an incident.",),
+    "DE.CM-01": ("Example: The organization monitors this PC's network service activity for potentially adverse events.",),
+    "DE.CM-02": ("Example: The organization checks the PC's physical environment for signs of tampering.",),
+    "DE.CM-03": ("Example: The organization monitors relevant technology usage to find potentially adverse events.",),
+    "DE.CM-06": ("Example: The organization monitors an external service provider's activity for potentially adverse events.",),
+    "DE.CM-09": ("Example: The organization monitors this PC's software configuration for deviations that could indicate an adverse event.",),
+    "RS.AN-03": ("Example: During an incident, the analyst reconstructs what happened and identifies its root cause.",),
+    "RS.AN-06": ("Example: An incident responder records an investigation action with its source and time so the record's provenance can be preserved.",),
+    "RS.AN-07": ("Example: The analyst collects incident data with its collection date and source so its integrity and provenance can be preserved.",),
+    "RS.AN-08": ("Example: The analyst estimates and validates the magnitude of an incident affecting this PC.",),
+    "RS.CO-02": ("Example: The incident plan identifies internal and external stakeholders who must be notified of an incident.",),
+    "RS.CO-03": ("Example: The organization shares incident information with its designated stakeholders.",),
+    "RS.MA-01": ("Example: Once an incident is declared, the organization executes its response plan with the relevant support provider.",),
+    "RS.MA-02": ("Example: An analyst triages a report and validates whether it is an incident.",),
+    "RS.MA-03": ("Example: The organization categorizes an incident and assigns its response priority.",),
+    "RS.MA-04": ("Example: The organization escalates an incident to a designated stakeholder when needed.",),
+    "RS.MA-05": ("Example: The organization applies its recovery-initiation criteria to an active incident.",),
+    "RS.MI-01": ("Example: An authorized responder contains an incident affecting this PC.",),
+    "RS.MI-02": ("Example: An authorized responder eradicates the incident from this PC.",),
+    "RC.CO-03": ("Example: The organization communicates recovery progress to its designated stakeholders.",),
+    "RC.CO-04": ("Example: The organization uses approved messaging for a required public recovery update.",),
+    "RC.RP-01": ("Example: After incident response initiates recovery, the organization executes the recovery portion of its response plan.",),
+    "RC.RP-02": ("Example: The organization selects and prioritizes recovery actions for an affected PC.",),
+    "RC.RP-03": ("Example: Before restoration, the organization verifies that a backup has not been compromised or corrupted.",),
+    "RC.RP-04": ("Example: The organization uses its critical mission functions to establish normal operation after an incident.",),
+    "RC.RP-05": ("Example: Before returning a restored PC to normal use, the organization verifies the integrity of the restored assets.",),
+    "RC.RP-06": ("Example: The organization declares recovery complete only after its criteria are met and incident documentation is completed.",),
+})
+
+# A blank note means the outcome has no additional material narrowing beyond
+# the product's stated single-PC scope.  Entries may be added only when a
+# specific scope clarification is necessary.
+SINGLE_PC_SCOPE_NOTES_EN_US = {
+    identifier: "" for identifier in PLAIN_ENGLISH_GUIDANCE_EN_US
+}
+SINGLE_PC_SCOPE_NOTES_EN_US["GV.OC-01"] = (
+    "This outcome establishes organizational context. It does not itself require risk analysis or prescribe specific PC controls, backups, or recovery actions."
+)
+
+_MISSING_PRODUCT_EXAMPLES = {
+    identifier for identifier in _ACTIVE_OFFICIAL_SUBCATEGORY_IDS
+    if not PRODUCT_EXAMPLES_EN_US.get(identifier)
+}
+if _MISSING_PRODUCT_EXAMPLES:
+    raise ValueError(f"Product examples are missing active CSF Subcategories: {sorted(_MISSING_PRODUCT_EXAMPLES)}")

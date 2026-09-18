@@ -4,6 +4,8 @@
 
 This product is a local Windows NIST CSF posture/control audit module.
 
+> Current UI direction: the management interface uses one **CSF Analyst** workflow with persistent Govern, Identify, Protect, Detect, Respond, and Recover navigation. Earlier persona-ladder material in this document is retained as historical design context and is superseded for the active interface by `PC_Care_UI_Design_Document.md`.
+
 It is designed to make an individual Windows PC governable, observable, explainable, and auditable using the language and structure of the NIST Cybersecurity Framework.
 
 The application is not a replacement for Microsoft Defender, Windows Firewall, Windows Update, BitLocker, Family Safety, or other Windows-native protections. It is also not an antivirus replacement, an EDR, a SIEM, a fleet-management tool, a cloud security service, or an enterprise GPO or Intune replacement.

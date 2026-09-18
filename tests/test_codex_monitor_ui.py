@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 import codex_monitor_ui as ui
-import ioc_store
+import codex_monitor_store as ioc_store
 
 
 class CodexMonitorUiTests(unittest.TestCase):

@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-import ioc_store
+import codex_monitor_store as ioc_store
 import csf_catalog
 
 
@@ -399,6 +399,8 @@ def html_page(title: str, body: str) -> str:
     .csf-workspace {{ display:grid; gap:18px; }} .workspace-scroll {{ min-width:0; }} .workspace-scroll > * + * {{ margin-top:18px; }} .workspace-scroll .grid.two,.workspace-scroll .grid.three {{ grid-template-columns:minmax(0,1fr); }} .csf-explorer {{ display:grid; gap:10px; }} .csf-explorer-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }} .csf-explorer-list-panel {{ display:grid; grid-template-rows:auto minmax(0,1fr); gap:6px; min-height:0; }} .csf-explorer-list-panel h3 {{ margin:0; }} .csf-explorer-list {{ display:grid; grid-auto-rows:104px; gap:8px; height:104px; max-height:104px; overflow:auto; padding-right:4px; overscroll-behavior:contain; }} .csf-explorer-list:focus {{ outline:2px solid rgba(135,169,194,.72); outline-offset:3px; border-radius:14px; }} .csf-explorer-row {{ display:grid; grid-template-columns:106px minmax(180px,.6fr) minmax(0,1.8fr); align-items:center; gap:12px; height:104px; overflow:hidden; padding:11px 13px; border:1px solid rgba(34,50,59,.10); border-radius:14px; background:rgba(255,255,255,.72); color:var(--ink); text-align:left; }} .csf-explorer-row:hover {{ background:var(--blue-soft); border-color:rgba(135,169,194,.42); }} .csf-explorer-row.active {{ background:var(--sage-soft); border-color:rgba(125,163,143,.48); box-shadow:inset 4px 0 0 #7da38f; }} .csf-explorer-id {{ font-size:12px; font-weight:750; letter-spacing:.05em; color:#4f6c7e; }} .csf-explorer-title {{ font-weight:700; }} .csf-explorer-copy {{ display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3; color:var(--muted); font-size:13px; }} .csf-explorer-placeholder {{ padding:18px; border:1px dashed rgba(34,50,59,.20); border-radius:16px; color:var(--muted); background:rgba(248,245,239,.70); }} .csf-outcome {{ display:grid; gap:12px; padding:18px; border-radius:18px; background:rgba(232,239,245,.55); border:1px solid rgba(135,169,194,.28); }} .csf-outcome .focus-title {{ font-size:20px; }} .csf-outcome h3 {{ margin:0; }} .csf-outcome p {{ margin:0; color:#475861; }} .csf-outcome-state {{ padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.76); border:1px solid rgba(34,50,59,.10); }} .modal-backdrop {{ position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:24px; background:rgba(26,39,47,.42); }} .modal-dialog {{ width:min(860px,100%); max-height:min(860px,calc(100vh - 48px)); display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border:1px solid rgba(34,50,59,.18); border-radius:24px; background:var(--panel); box-shadow:0 28px 80px rgba(20,32,38,.32); }} .modal-head {{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 22px; border-bottom:1px solid var(--line); }} .modal-body {{ min-height:0; overflow:auto; padding:20px 22px; }} .modal-body .panel {{ box-shadow:none; }}
     @media (min-width:1000px) and (min-height:1000px) {{ html,body {{ height:100%; overflow:hidden; }} .shell {{ height:100vh; max-width:none; padding:14px 18px; }} .page-stack,#csf-app {{ height:100%; min-height:0; }} .page-stack > * + * {{ margin-top:0; }} #csf-app {{ display:grid; grid-template-rows:auto minmax(0,1fr); gap:12px; }} .csf-map {{ width:100%; max-width:none; padding:14px 18px; }} .app-masthead {{ margin-bottom:8px; }} .app-title {{ font-size:17px; }} .csf-map .kicker {{ display:none; }} .csf-action-bar {{ gap:32px; grid-template-columns:repeat(6,minmax(0,1fr)) !important; }} .csf-action {{ min-height:72px; padding:10px 12px; }} .csf-action:not(:last-child)::after {{ right:-25px; font-size:15px; }} .csf-guidance {{ grid-template-columns:auto 1fr; align-items:center; gap:10px; margin-top:10px; padding:9px 12px; }} .csf-utilities {{ display:none; }} .csf-workspace {{ min-height:0; grid-template-rows:minmax(0,1fr); gap:12px; overflow:hidden; }} .workspace-scroll {{ min-height:0; display:grid; grid-template-columns:minmax(0,1fr); grid-auto-rows:minmax(0,1fr); gap:12px; overflow:hidden; }} .workspace-scroll > .grid {{ display:contents; }} .workspace-scroll > .panel,.workspace-scroll > .grid > .panel {{ min-height:0; max-height:none; margin:0 !important; overflow:auto; overscroll-behavior:contain; }} .workspace-scroll > .csf-explorer {{ grid-column:1; }} .workspace-scroll > .csf-selection-list {{ grid-template-rows:auto minmax(0,1fr); overflow:hidden; }} .workspace-scroll > .csf-selection-list .csf-explorer-list-panel {{ min-height:0; }} .workspace-scroll > .csf-selection-list .csf-explorer-list {{ min-height:0; height:104px; max-height:104px; overflow:auto; }} .workspace-scroll > .panel:only-child {{ grid-column:1; }} .workspace-scroll .panel {{ padding:14px 18px; }} .workspace-scroll .grid {{ gap:12px; }} .workspace-scroll .task + .task {{ margin-top:10px; }} .workspace-scroll .metric {{ min-height:78px; padding:12px; }} .workspace-scroll .care-tile,.workspace-scroll .focus-card {{ padding:13px; }} }}
     @media (max-width:1100px) {{ .hero,.grid.two,.grid.three {{ grid-template-columns:1fr; }} .csf-action-bar {{ grid-template-columns:repeat(3,minmax(0,1fr)); }} .csf-action:not(:last-child)::after {{ display:none; }} h1 {{ max-width:none; font-size:38px; }} }} @media (max-width:760px) {{ .shell {{ padding:18px 14px 40px; }} .panel,.hero-main {{ padding:20px; }} .csf-action-bar {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .csf-action {{ min-height:104px; }} .task-head,.page-topbar,.csf-explorer-head {{ flex-direction:column; align-items:flex-start; }} .csf-explorer-list {{ grid-auto-rows:auto; }} .csf-explorer-row {{ grid-template-columns:1fr; height:auto; min-height:104px; gap:4px; }} .kv {{ grid-template-columns:1fr; }} }}
+    .csf-explorer-composite {{ grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; }} .csf-explorer-section {{ min-height:0; }} .csf-explorer-section + .csf-explorer-section {{ padding-top:10px; border-top:1px solid rgba(34,50,59,.10); }} .csf-explorer-composite .csf-selection-list {{ display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; }} .csf-example-region {{ overflow:auto; overscroll-behavior:contain; }} @media (min-width:1000px) and (min-height:1000px) {{ .workspace-scroll.csf-explorer-workspace {{ grid-template-rows:auto minmax(0,1fr); grid-auto-rows:unset; }} .workspace-scroll.csf-explorer-workspace > .csf-explorer-composite {{ grid-row:auto; grid-template-rows:auto auto 148px; align-self:start; overflow:hidden !important; }} }}
+    .csf-assessment-prototype {{ display:grid; gap:10px; }} .csf-assessment-prototype > .kicker {{ margin:0; }} .csf-assessment-prototype > .mini {{ margin:0; }} .csf-assessment-block {{ padding:11px 13px; border:1px solid rgba(34,50,59,.10); border-radius:12px; background:rgba(255,255,255,.76); }} .csf-assessment-block strong {{ display:block; margin-bottom:4px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#475861; }} .csf-assessment-block p {{ margin:0; color:var(--muted); font-size:13px; }} .csf-response-options {{ display:flex; flex-wrap:wrap; gap:7px; margin:7px 0; }} .csf-response-options span {{ padding:4px 8px; border:1px solid rgba(34,50,59,.14); border-radius:999px; color:#53636b; font-size:12px; background:rgba(255,255,255,.82); }}
   </style>
 </head>
 <body>
@@ -707,7 +709,7 @@ def load_settings(settings_path: Path) -> AppConfig:
     settings_dir = settings_path.resolve().parent
     runtime_root = resolve_settings_path(settings_dir, settings.get("RuntimeRoot"), settings_dir)
     data_root = resolve_settings_path(settings_dir, settings.get("DataRoot"), runtime_root)
-    state_db_path = resolve_settings_path(settings_dir, settings.get("StateDbPath"), data_root / "state" / "ioc-store.db")
+    state_db_path = resolve_settings_path(settings_dir, settings.get("StateDbPath"), data_root / "state" / "codex-monitor.db")
     indicator_export_path = resolve_settings_path(settings_dir, settings.get("IndicatorExportPath"), data_root / "indicators" / "feed-indicators-latest.json")
     protection_profile = str(settings.get("ProtectionProfile") or "microsoft_baseline")
     persona_profiles = load_persona_profiles(repo_root)
@@ -966,27 +968,24 @@ def list_sqlite_alerts(state_db_path: Path, limit: int = 50) -> List[Dict[str, A
 
 
 def list_sqlite_csf_guidance(state_db_path: Path, language_code: str = "en-US") -> Dict[str, str]:
-    """Read centrally maintained Tile 4 explanations without changing the state store."""
-    if not state_db_path.is_file():
-        return {}
+    if not state_db_path.is_file(): return {}
     try:
-        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
-        connection.row_factory = sqlite3.Row
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True); connection.row_factory = sqlite3.Row
         try:
-            rows = connection.execute(
-                """
-                SELECT subcategory_id, plain_english_text
-                FROM csf_subcategory_guidance
-                WHERE language_code = ?
-                ORDER BY subcategory_id
-                """,
-                (language_code,),
-            ).fetchall()
+            rows = connection.execute("SELECT subcategory_id, plain_english_text FROM csf_subcategory_guidance WHERE language_code = ?", (language_code,)).fetchall()
             return {str(row["subcategory_id"]): str(row["plain_english_text"]) for row in rows}
-        finally:
-            connection.close()
-    except (OSError, sqlite3.Error, ValueError):
-        return {}
+        finally: connection.close()
+    except (OSError, sqlite3.Error, ValueError): return {}
+
+def list_sqlite_csf_product_examples(state_db_path: Path, language_code: str = "en-US") -> Dict[str, Dict[str, Any]]:
+    if not state_db_path.is_file(): return {}
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True); connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute("SELECT subcategory_id, examples_json, single_pc_scope_note FROM csf_subcategory_guidance WHERE language_code = ?", (language_code,)).fetchall()
+            return {str(row["subcategory_id"]): {"examples": json.loads(row["examples_json"] or "[]"), "scope_note": str(row["single_pc_scope_note"] or "")} for row in rows}
+        finally: connection.close()
+    except (OSError, sqlite3.Error, ValueError, json.JSONDecodeError): return {}
 
 
 def list_sqlite_csf_profile_metadata(state_db_path: Path, language_code: str = "en-US") -> Dict[str, Dict[str, Any]]:
@@ -1199,7 +1198,7 @@ def is_safe_acceptance_candidate(change: Dict[str, Any]) -> bool:
     path = lower_text(change.get("Path"))
     safe_markers = (
         "codex_monitor_ui.py",
-        "ioc_store.py",
+        "codex_monitor_store.py",
         "invoke-host-tripwire.ps1",
         "tripwire-posture-baseline.ps1",
         "posture-drift-rules.json",
@@ -1947,7 +1946,7 @@ def render_respond_action_links(alert: Dict[str, Any], lifecycle_state: str) -> 
         f'<details class="inline-detail mini" id="alert-{esc(anchor)}-ack"><summary>Acknowledge</summary><div class="detail-body">Lifecycle state is currently {esc(lifecycle_state)}. Use this step to note that the alert has been seen and is awaiting human review. No backend state is changed yet.</div></details>'
         f'<details class="inline-detail mini" id="alert-{esc(anchor)}-investigate"><summary>Investigate</summary><div class="detail-body">Open the alert evidence, review the related report, and compare the alert against recent expected maintenance or software changes on this PC.</div></details>'
         f'<details class="inline-detail mini" id="alert-{esc(anchor)}-expected"><summary>Mark expected</summary><div class="detail-body">{esc(mark_expected_detail)}</div></details>'
-        f'<details class="inline-detail mini" id="alert-{esc(anchor)}-export"><summary>Export alert</summary><div class="detail-body">Use `ioc_store.py export-alert --alert-id {esc(alert_id)}` with an operator-selected output path.</div></details>'
+        f'<details class="inline-detail mini" id="alert-{esc(anchor)}-export"><summary>Export alert</summary><div class="detail-body">Use `codex_monitor_store.py export-alert --alert-id {esc(alert_id)}` with an operator-selected output path.</div></details>'
     )
 
 
@@ -2696,6 +2695,8 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
     ]
     model["csf_explorer_selection"] = dict(snapshot.get("csf_explorer_selection") or {})
     model["csf_subcategory_guidance"] = dict(snapshot.get("csf_subcategory_guidance") or {})
+    model["csf_subcategory_profile_metadata"] = dict(snapshot.get("csf_subcategory_profile_metadata") or {})
+    model["csf_subcategory_product_examples"] = dict(snapshot.get("csf_subcategory_product_examples") or {})
     return model
 
 
@@ -2834,6 +2835,35 @@ def render_nist_implementation_examples(subcategory: Dict[str, Any]) -> str:
     return f'<div class="csf-outcome-state"><ul>{rows}</ul></div>'
 
 
+def render_csf_assessment_prototype(metadata: Dict[str, Any], plain_english_text: str = "") -> str:
+    """Render a non-persistent preview of the method-specific assessment workspace."""
+    method = str(metadata.get("assessment_method") or "").strip().lower()
+    guidance = str(metadata.get("research_guidance") or "").strip()
+    plain_text = str(plain_english_text or "").strip()
+    note_required = bool(metadata.get("supporting_note_required"))
+    response = '''<div class="csf-assessment-block"><strong>Profile assessment</strong><div class="csf-response-options"><span>Fully implemented</span><span>Partly implemented</span><span>Not implemented</span><span>Not applicable</span></div><p>No response is recorded in this preview.</p></div>'''
+    actions = '<div class="csf-assessment-block"><strong>Reviewed actions</strong><p>No reviewed action is mapped for this outcome yet.</p></div>'
+    if method == "evidence":
+        body = '''<div class="csf-assessment-block"><strong>Local evidence</strong><p>No reviewed local-evidence mapping is available yet. This is not a passing result.</p></div>''' + response
+    elif method == "attestation":
+        body = '''<div class="csf-assessment-block"><strong>Confirmation</strong><p>Ask the person responsible for this PC to confirm the outcome and its basis.</p></div>''' + response
+    elif method == "review":
+        body = response
+    elif method == "hybrid":
+        body = '''<div class="csf-assessment-block"><strong>Local evidence</strong><p>No reviewed local-evidence mapping is available yet. This is not a passing result.</p></div><div class="csf-assessment-block"><strong>Human confirmation</strong><p>Confirm the context and outcome with the person responsible for this PC.</p></div>''' + response
+    else:
+        body = '<div class="csf-assessment-block"><p>Assessment metadata is not available for this outcome.</p></div>'
+    note = (
+        '<div class="csf-assessment-block"><strong>Supporting basis</strong><p>A supporting-evidence or decision note will be required when this assessment is recorded.</p></div>'
+        if note_required
+        else ""
+    )
+    return f'''<div class="csf-assessment-prototype">
+  <p class="mini">{esc(plain_text or guidance or "Product explanation is not available for this outcome.")}</p>
+  {body}{note}{actions}
+</div>'''
+
+
 def render_csf_explorer(
     current_path: str,
     selection: Optional[Dict[str, str]] = None,
@@ -2853,6 +2883,7 @@ def render_csf_explorer(
     selected_category = next((item for item in function["categories"] if item["id"] == selected_category_id), None)
     selected_subcategory_id = str(selection.get("subcategory_id") or "").strip().upper()
     selected_subcategory = None
+    assessment_heading = "Evidence and actions"
     if selected_category is not None:
         selected_subcategory = next(
             (item for item in selected_category["subcategories"] if item["id"] == selected_subcategory_id),
@@ -2902,21 +2933,36 @@ def render_csf_explorer(
   <div id="csf-outcome-title" class="focus-title">{esc(selected_subcategory["outcome"] or "Official outcome text is not available in the catalog source.")}</div>
 </section>'''
             outcome_content = render_nist_implementation_examples(selected_subcategory)
-            evidence_content = '<div class="csf-outcome-state"><h3>Local evidence and actions</h3><p>No Codex Monitor mapping is implemented for this outcome yet. This is not evidence that the outcome is satisfied; it means the product has no reviewed local evidence or action to present here.</p></div>'
+            metadata = dict(((model or {}).get("csf_subcategory_profile_metadata") or {}).get(selected_subcategory["id"]) or {})
+            assessment_method = str(metadata.get("assessment_method") or "").strip().lower()
+            if assessment_method in {"evidence", "attestation", "review", "hybrid"}:
+                assessment_heading = assessment_method.title()
+            plain_english_text = str(((model or {}).get("csf_subcategory_guidance") or {}).get(selected_subcategory["id"]) or "").strip()
+            evidence_content = render_csf_assessment_prototype(metadata, plain_english_text)
+            product_record = dict(((model or {}).get("csf_subcategory_product_examples") or {}).get(selected_subcategory["id"]) or {})
+            product_examples = [str(item).strip() for item in (product_record.get("examples") or []) if str(item).strip()]
+            product_scope_note = str(product_record.get("scope_note") or "").strip()
+            if product_examples:
+                evidence_content += '<div class="csf-product-examples"><div class="kicker">Examples to consider</div><ul>' + ''.join(f'<li>{esc(item)}</li>' for item in product_examples) + '</ul>'
+                if product_scope_note:
+                    evidence_content += f'<p class="mini">Scope note: {esc(product_scope_note)}</p>'
+                evidence_content += '</div>'
 
-    return f'''<section class="panel csf-explorer csf-selection-list" aria-labelledby="csf-explorer-title">
-  <div class="csf-explorer-head"><div><div id="csf-explorer-title" class="kicker">{esc(function["title"])} · Categories</div><div class="mini">Select an official Category. Official content is read-only; product evidence and actions are shown only when a reviewed mapping exists.</div></div></div>
+    return f'''<section class="panel csf-explorer csf-explorer-composite" aria-label="CSF Category, Subcategory, and NIST implementation examples">
+  <div class="csf-explorer-section csf-selection-list" aria-labelledby="csf-explorer-title">
+  <div class="csf-explorer-head"><div><div id="csf-explorer-title" class="kicker">{esc(function["title"])} · Categories</div></div></div>
   <div class="csf-explorer-list-panel"><div class="csf-explorer-list" tabindex="0" data-explorer-list="categories" aria-label="{esc(function["title"])} Categories">{category_rows}</div></div>
-</section>
-<section class="panel csf-explorer csf-selection-list" aria-labelledby="csf-subcategories-title">
+</div>
+  <div class="csf-explorer-section csf-selection-list" aria-labelledby="csf-subcategories-title">
   <div id="csf-subcategories-title" class="kicker">{esc(subcategory_heading)}</div>
   <div class="csf-explorer-list-panel"><div class="csf-explorer-list" tabindex="0" data-explorer-list="subcategories" aria-label="Selected Category Subcategories">{subcategory_content}</div></div>
-</section>
-<section class="panel csf-explorer" aria-label="NIST Implementation examples">
+</div>
+  <div class="csf-explorer-section csf-example-region" aria-label="NIST Implementation examples">
   {outcome_content}
+</div>
 </section>
 <section class="panel csf-explorer" aria-labelledby="csf-evidence-workspace-title">
-  <div class="kicker">Local-PC evidence</div><h2 id="csf-evidence-workspace-title">Evidence and actions</h2>{evidence_content}
+  <div id="csf-evidence-workspace-title" class="kicker">{esc(assessment_heading)}</div>{evidence_content}
 </section>'''
 
 
@@ -2937,11 +2983,13 @@ def render_page_shell(model: Dict[str, Any], current_path: str, title: str, lede
     mood = dashboard_mood(model)
     tone = "ok" if mood["tone"] == "calm" else ("medium" if mood["tone"] == "warning" else "high")
     guidance_purpose, guidance_use = csf_guidance_values(current_path)
+    is_csf_explorer_route = current_path in CSF_FUNCTION_ID_BY_ROUTE
     workspace_html = (
         render_csf_explorer(current_path, model.get("csf_explorer_selection"), model)
-        if current_path in CSF_FUNCTION_ID_BY_ROUTE
+        if is_csf_explorer_route
         else body_html
     )
+    workspace_class = "workspace-scroll csf-explorer-workspace" if is_csf_explorer_route else "workspace-scroll"
     body = f"""
 <!-- csf-app:start -->
 <div id="csf-app" data-csf-route="{esc(current_path)}" data-csf-guidance-purpose="{esc(guidance_purpose)}" data-csf-guidance-use="{esc(guidance_use)}">
@@ -2954,7 +3002,7 @@ def render_page_shell(model: Dict[str, Any], current_path: str, title: str, lede
   <div class="task-actions csf-utilities"><a class="btn" href="/">Overview</a><a class="btn" href="/reports">Evidence records</a>{(f'<a class="btn" href="/diagnostics">Diagnostics</a>' if show_technical_nav else '')}</div>
 </section>
 <main id="csf-workspace" class="csf-workspace" tabindex="-1">
-  <div class="workspace-scroll">{workspace_html}</div>
+  <div class="{workspace_class}">{workspace_html}</div>
 </main>
 </div>
 <!-- csf-app:end -->
@@ -3602,6 +3650,7 @@ class CodexUiHandler(BaseHTTPRequestHandler):
         else:
             snapshot = copy.deepcopy(cached)
         snapshot["csf_subcategory_guidance"] = list_sqlite_csf_guidance(self.app_config.state_db_path)
+        snapshot["csf_subcategory_product_examples"] = list_sqlite_csf_product_examples(self.app_config.state_db_path)
         snapshot["csf_subcategory_profile_metadata"] = list_sqlite_csf_profile_metadata(self.app_config.state_db_path)
         snapshot["csf_explorer_selection"] = dict(explorer_selection or {})
         return snapshot

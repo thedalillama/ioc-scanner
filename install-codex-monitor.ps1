@@ -322,7 +322,7 @@ $runtimeFiles = @(
     @{ Target = "start-codex-alert-helper.ps1"; Candidates = @("start-codex-alert-helper.ps1", "alert-helper.ps1") },
     @{ Target = "import-threat-feeds.ps1"; Candidates = @("import-threat-feeds.ps1", "feed-import.ps1") },
     @{ Target = "get-codex-monitor-status.ps1"; Candidates = @("get-codex-monitor-status.ps1", "status.ps1") },
-    @{ Target = "ioc_store.py"; Candidates = @("ioc_store.py", "store.py") },
+    @{ Target = "codex_monitor_store.py"; Candidates = @("codex_monitor_store.py", "store.py") },
     @{ Target = "host-tripwire-config.json"; Candidates = @("host-tripwire-config.json", "tripwire-config.json") },
     @{ Target = "ioc-monitor-locations.json"; Candidates = @("ioc-monitor-locations.json", "ioc-locations.json") },
     @{ Target = "accept-posture-drift.ps1"; Candidates = @("accept-posture-drift.ps1") },
@@ -352,7 +352,7 @@ if ($missingRuntimeFiles.Count -gt 0) {
 $settings = [PSCustomObject]@{
     RuntimeRoot = $RuntimeRoot
     DataRoot = $DataRoot
-    StateDbPath = (Join-Path $DataRoot "state\ioc-store.db")
+    StateDbPath = (Join-Path $DataRoot "state\codex-monitor.db")
     IndicatorExportPath = (Join-Path $DataRoot "indicators\feed-indicators-latest.json")
     PythonCommand = $pythonRuntime
     AlertWatchPath = (Join-Path $DataRoot "alerts\pending")
@@ -372,9 +372,10 @@ $settings | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $settingsPath -En
 $runtimeRootTaskPath = $RuntimeRoot
 $dataRootTaskPath = $DataRoot
 
-$iocStoreRuntimePath = Join-Path $RuntimeRoot "ioc_store.py"
+$applicationStateDbPath = Join-Path $DataRoot "state\codex-monitor.db"
+$iocStoreRuntimePath = Join-Path $RuntimeRoot "codex_monitor_store.py"
 if (Test-Path -LiteralPath $iocStoreRuntimePath) {
-    & $pythonRuntime $iocStoreRuntimePath --db (Join-Path $DataRoot "state\ioc-store.db") init | Out-Null
+    & $pythonRuntime $iocStoreRuntimePath --db $applicationStateDbPath init | Out-Null
 }
 
 if ($CreateSystemTasks) {
@@ -384,8 +385,8 @@ if ($CreateSystemTasks) {
     $feedImportLauncher = Join-Path $RuntimeRoot "codex-feed-import.cmd"
     $iocScanLauncher = Join-Path $RuntimeRoot "codex-ioc-scan.cmd"
 
-    Write-LauncherScript -Path $tripwireLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\invoke-host-tripwire.ps1"" -Mode Check -StateDbPath ""{1}\state\ioc-store.db""" -f $RuntimeRoot, $DataRoot)
-    Write-LauncherScript -Path $rssLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\monitor-threat-rss.ps1"" -StateDbPath ""{1}\state\ioc-store.db"" -RunTripwireCheckOnMatch" -f $RuntimeRoot, $DataRoot)
+    Write-LauncherScript -Path $tripwireLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\invoke-host-tripwire.ps1"" -Mode Check -StateDbPath ""{1}\state\codex-monitor.db""" -f $RuntimeRoot, $DataRoot)
+    Write-LauncherScript -Path $rssLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\monitor-threat-rss.ps1"" -StateDbPath ""{1}\state\codex-monitor.db"" -RunTripwireCheckOnMatch" -f $RuntimeRoot, $DataRoot)
     Write-LauncherScript -Path $feedImportLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\import-threat-feeds.ps1""" -f $RuntimeRoot)
     Write-LauncherScript -Path $iocScanLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}\invoke-host-ioc.ps1"" -Mode IOC" -f $RuntimeRoot)
 
@@ -403,9 +404,9 @@ if ($CreateUserNotifierTask) {
         $notifierRuntimePath = $notifierRuntimePath -replace '^C:\\Program Files', 'C:\Progra~1'
     }
     $vbsRuntimePath = (Join-Path $runtimeRootTaskPath "run-hidden.vbs")
-    $notifierStateDbTaskPath = Join-Path $dataRootTaskPath "state\ioc-store.db"
+    $notifierStateDbTaskPath = Join-Path $dataRootTaskPath "state\codex-monitor.db"
     $notifierLauncher = Join-Path $RuntimeRoot "codex-alert-notifier.cmd"
-    Write-LauncherScript -Path $notifierLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}"" -StateDbPath ""{1}""" -f $NotifierScriptPath, (Join-Path $DataRoot "state\ioc-store.db"))
+    Write-LauncherScript -Path $notifierLauncher -PowerShellCommand ("powershell.exe -ExecutionPolicy Bypass -File ""{0}"" -StateDbPath ""{1}""" -f $NotifierScriptPath, $applicationStateDbPath)
     $notifierLauncherTaskPath = $notifierLauncher -replace '\\', '\'
     $xmlPath = Join-Path $env:TEMP "CodexAlertNotifierTask.generated.xml"
     $startBoundary = (Get-Date).AddMinutes(1).ToString("s")
@@ -468,8 +469,8 @@ if ($CreateUserNotifierTask) {
 
 if ($InitializeProtection) {
     & (Join-Path $RuntimeRoot "import-threat-feeds.ps1")
-    & (Join-Path $RuntimeRoot "invoke-host-tripwire.ps1") -Mode Baseline -StateDbPath (Join-Path $DataRoot "state\ioc-store.db")
-    & (Join-Path $RuntimeRoot "monitor-threat-rss.ps1") -StateDbPath (Join-Path $DataRoot "state\ioc-store.db")
+    & (Join-Path $RuntimeRoot "invoke-host-tripwire.ps1") -Mode Baseline -StateDbPath $applicationStateDbPath
+    & (Join-Path $RuntimeRoot "monitor-threat-rss.ps1") -StateDbPath $applicationStateDbPath
 }
 
 Write-Host ("Runtime root: {0}" -f $RuntimeRoot)

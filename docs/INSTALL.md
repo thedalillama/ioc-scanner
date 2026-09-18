@@ -19,7 +19,7 @@
 - `get-codex-monitor-status.ps1`
 - `codex_monitor_ui.py`
 - `start-codex-monitor-ui.ps1`
-- `ioc_store.py`
+- `codex_monitor_store.py`
 - `ioc-monitor-locations.json`
 - `accept-posture-drift.ps1`
 - `posture-drift-rules.ps1`
@@ -147,7 +147,6 @@ The notifier runs from the protected runtime path and atomically claims pending 
 It shows an interactive popup with:
 
 - `Open Alert`
-- `Open Folder`
 - `Dismiss`
 
 ## First-run sequence

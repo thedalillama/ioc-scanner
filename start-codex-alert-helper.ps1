@@ -73,7 +73,7 @@ function Get-HelperWatchPath {
 }
 
 function Get-StateStoreScriptPath {
-    $path = Join-Path $PSScriptRoot "ioc_store.py"
+    $path = Join-Path $PSScriptRoot "codex_monitor_store.py"
     if (-not (Test-Path -LiteralPath $path)) {
         throw "SQLite state helper not found: $path"
     }
@@ -168,31 +168,6 @@ function Get-HelperStateDbPath {
     }
 
     return (Join-Path $PSScriptRoot "state\ioc-store.db")
-}
-
-function Get-HelperDataRoot {
-    param([string]$DbPath)
-
-    $settingsPath = Get-SettingsPath
-    if (Test-Path -LiteralPath $settingsPath) {
-        try {
-            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-            if (-not [string]::IsNullOrWhiteSpace([string]$settings.DataRoot)) {
-                return (Resolve-SettingsPathValue -Value ([string]$settings.DataRoot) -SettingsPath $settingsPath)
-            }
-        } catch {
-        }
-    }
-
-    $stateDirectory = Split-Path -Path $DbPath -Parent
-    if (-not [string]::IsNullOrWhiteSpace($stateDirectory)) {
-        $dataRoot = Split-Path -Path $stateDirectory -Parent
-        if (-not [string]::IsNullOrWhiteSpace($dataRoot)) {
-            return $dataRoot
-        }
-    }
-
-    return $PSScriptRoot
 }
 
 function Open-AlertInUi {
@@ -392,8 +367,7 @@ function Show-AlertPopup {
         [string]$Title,
         [string]$Message,
         [string[]]$DetailLines = @(),
-        [string]$AlertId = "",
-        [string]$AlertFolderPath = ""
+        [string]$AlertId = ""
     )
 
     try {
@@ -476,18 +450,6 @@ function Show-AlertPopup {
             Open-AlertInUi -AlertId $AlertId
         })
         [void]$buttonPanel.Children.Add($openAlertButton)
-
-        $openFolderButton = New-Object System.Windows.Controls.Button
-        $openFolderButton.Content = 'Open Folder'
-        $openFolderButton.MinWidth = 90
-        $openFolderButton.Margin = '0,0,8,0'
-        $openFolderButton.IsEnabled = -not [string]::IsNullOrWhiteSpace($AlertFolderPath)
-        $openFolderButton.Add_Click({
-            if (-not [string]::IsNullOrWhiteSpace($AlertFolderPath) -and (Test-Path -LiteralPath $AlertFolderPath)) {
-                Start-Process explorer.exe -ArgumentList $AlertFolderPath | Out-Null
-            }
-        })
-        [void]$buttonPanel.Children.Add($openFolderButton)
 
         $dismissButton = New-Object System.Windows.Controls.Button
         $dismissButton.Content = 'Dismiss'
@@ -648,8 +610,7 @@ function Convert-ToArchivedAlertRecord {
 
 function Show-QueuedAlerts {
     param(
-        [object[]]$QueuedAlerts,
-        [string]$AlertFolderPath
+        [object[]]$QueuedAlerts
     )
 
     if (@($QueuedAlerts).Count -le 0) {
@@ -658,7 +619,7 @@ function Show-QueuedAlerts {
 
     if (@($QueuedAlerts).Count -eq 1) {
         $item = $QueuedAlerts[0]
-        return Show-AlertPopup -Title $item.Title -Message $item.Message -DetailLines $item.DetailLines -AlertId $item.AlertId -AlertFolderPath $AlertFolderPath
+        return Show-AlertPopup -Title $item.Title -Message $item.Message -DetailLines $item.DetailLines -AlertId $item.AlertId
     }
 
     $latest = $QueuedAlerts[-1]
@@ -674,12 +635,10 @@ function Show-QueuedAlerts {
         -Title ('Codex monitor alerts ({0})' -f @($QueuedAlerts).Count) `
         -Message ('{0} new alerts queued while you were away. Dismiss once to archive this batch.' -f @($QueuedAlerts).Count) `
         -DetailLines $detailLines `
-        -AlertId $latest.AlertId `
-        -AlertFolderPath $AlertFolderPath
+        -AlertId $latest.AlertId
 }
 
 $StateDbPath = Get-HelperStateDbPath -ConfiguredStateDbPath $StateDbPath -ConfiguredStatePath $StatePath
-$dataRoot = Get-HelperDataRoot -DbPath $StateDbPath
 $deliveryChannel = "interactive_popup"
 $recipient = "interactive-user"
 
@@ -730,7 +689,7 @@ do {
         })
         $popupPresented = $false
         try {
-            $shown = Show-QueuedAlerts -QueuedAlerts $popupAlerts -AlertFolderPath $dataRoot
+            $shown = Show-QueuedAlerts -QueuedAlerts $popupAlerts
             if (-not $shown) { throw "The interactive alert popup could not be shown." }
             $popupPresented = $true
             foreach ($claim in $displayClaims) {

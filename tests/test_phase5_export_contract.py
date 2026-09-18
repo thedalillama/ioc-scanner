@@ -50,15 +50,15 @@ class PhaseFiveExportContractTests(unittest.TestCase):
         self.assertNotIn("alert_inbox_path", ui_source)
         self.assertNotIn("alert_archive_path", ui_source)
 
-    def test_notifier_opens_sqlite_alert_detail_and_data_root(self) -> None:
+    def test_notifier_opens_sqlite_alert_detail_without_file_navigation(self) -> None:
         notifier_source = self.read_script("start-codex-alert-helper.ps1")
         ui_launcher_source = self.read_script("start-codex-monitor-ui.ps1")
-        self.assertIn("function Get-HelperDataRoot", notifier_source)
         self.assertIn("function Open-AlertInUi", notifier_source)
         self.assertIn("$launchArguments = '-NoProfile -ExecutionPolicy Bypass -File", notifier_source)
         self.assertIn('Start-Process -FilePath "powershell.exe" -ArgumentList $launchArguments -WindowStyle Hidden', notifier_source)
         self.assertIn("AlertId = [string]$_.alert_id", notifier_source)
-        self.assertIn("Show-QueuedAlerts -QueuedAlerts $popupAlerts -AlertFolderPath $dataRoot", notifier_source)
+        self.assertIn("Show-QueuedAlerts -QueuedAlerts $popupAlerts", notifier_source)
+        self.assertNotIn("Open Folder", notifier_source)
         self.assertNotIn("MarkdownPath = [string]$_.export_markdown_path", notifier_source)
         self.assertIn('[string]$OpenPath = "/"', ui_launcher_source)
         self.assertIn('@("--open-browser", "--open-path", $OpenPath)', ui_launcher_source)
@@ -88,7 +88,7 @@ class PhaseFiveExportContractTests(unittest.TestCase):
     def test_runtime_powershell_scripts_carry_the_self_event_marker(self) -> None:
         for script_name in (
             "accept-posture-drift.ps1",
-            "collect-security-baseline.ps1",
+            "collect-host-security-inventory.ps1",
             "get-codex-monitor-status.ps1",
             "import-threat-feeds.ps1",
             "install-codex-monitor.ps1",

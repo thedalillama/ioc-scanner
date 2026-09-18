@@ -102,13 +102,11 @@ The notifier is a one-shot user-session popup helper, not a Notification Center 
 When a pending alert is processed, the helper shows a desktop popup window with:
 
 - `Open Alert`
-  - opens the paired alert Markdown report
-- `Open Folder`
-  - opens the current alert folder in Explorer
+  - opens the immutable SQLite-backed alert detail in the local UI
 - `Dismiss`
   - closes the popup
 
-After the popup is handled, the alert JSON and matching Markdown file are moved from `alerts\pending` to `alerts\archive`.
+After the popup is handled, the notifier records acknowledgement or a retryable delivery failure in SQLite. It does not move alert files because alert files are not part of the operational delivery path.
 
 ## Severity model
 
@@ -366,4 +364,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\invoke-host-tripwire.ps1 -
 ```
 
 A new baseline means the current state is now trusted. Do not use baseline mode to hide unreviewed or suspicious findings.
-

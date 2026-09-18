@@ -69,7 +69,7 @@ function Get-PythonCommand {
 }
 
 function Get-StateStoreScriptPath {
-    $path = Join-Path $PSScriptRoot "ioc_store.py"
+    $path = Join-Path $PSScriptRoot "codex_monitor_store.py"
     if (-not (Test-Path -LiteralPath $path)) {
         throw "SQLite state helper not found: $path"
     }

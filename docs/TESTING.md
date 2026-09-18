@@ -20,7 +20,7 @@ tests/
 
 ### Python unit tests
 
-These tests focus on the SQLite-backed IOC store and persistent app-state layer.
+These tests focus on the SQLite-backed Codex Monitor state store and persistent app-state layer.
 
 They verify:
 
@@ -30,6 +30,10 @@ They verify:
 - SQLite `app_state` round-trips
 - stats output including `app_state_count`
 - UI settings resolution, alert parsing, and safe-path enforcement
+- CSF workspace fragment rendering, active-action state, and modal markup contracts
+- official NIST CSF catalog integrity (six Functions, 22 current Categories, and 106 current Subcategories)
+- CSF Explorer direct-URL selection, explicit unmapped-outcome state, and the centrally mapped `DE.CM` monitoring-task action contract
+- advisory-only local CSF SQLite storage, `LOCAL.*` identifier generation, Function scoping, and rejection of orphaned local outcomes
 
 Run them directly:
 
@@ -43,7 +47,7 @@ The smoke runner checks:
 
 - PowerShell scripts still parse
 - required fixture files exist
-- `ioc_store.py` compiles
+- `codex_monitor_store.py` compiles
 - Python unit tests pass
 
 Run:
@@ -54,6 +58,16 @@ powershell -ExecutionPolicy Bypass -File .\tests\run-smoke-tests.ps1
 
 ## Manual verification procedure
 
+### Fixed-workspace UI verification
+
+At a 1024x1280 display baseline (with at least a 1000x1000 browser content viewport), open each CSF Function and confirm that the browser document has no vertical scroll bar. Confirm that long evidence and findings scroll within the workspace, the selected CSF action is dark blue, and direct URLs still render when JavaScript is disabled.
+
+In DETECT, select `DE.CM` and confirm that the Category-level workspace lists only the reviewed monitoring tasks, each task's last/next run and health state, and its **Run now** control. Select `DE.CM-09` and confirm that it shows the official outcome text plus the explicit no-mapping state; it must not claim that the outcome is satisfied. Confirm that the direct URL preserves both selections: `/detect?csf_category=DE.CM&csf_subcategory=DE.CM-09`.
+
+Open a SQLite report or alert from a list. Confirm that it opens in a centered modal, Escape and Close dismiss it, and Open full page preserves the direct record route.
+
+Confirm that switching between CSF actions reuses the startup snapshot and is responsive. The visible **Refresh live PC snapshot** action is the only ordinary UI action that should trigger the slower full Windows inventory.
+
 Run this sequence in the dev workspace before cutting a release or testing a fresh deployment.
 
 ### 1. Clean prerequisites
@@ -62,15 +76,15 @@ Confirm these paths exist:
 
 - `alerts\pending`
 - `alerts\archive`
-- `state\ioc-store.db`
+- `state\codex-monitor.db`
 
-If `state\ioc-store.db` does not exist yet:
+If `state\codex-monitor.db` does not exist yet:
 
 ```powershell
-python .\ioc_store.py init
+python .\codex_monitor_store.py init  # initializes schema/profile content; retains operational records
 ```
 
-### 2. IOC store verification
+### 2. Application state-store verification
 
 Import feeds:
 
@@ -81,21 +95,21 @@ powershell -ExecutionPolicy Bypass -File .\import-threat-feeds.ps1
 Validate:
 
 ```powershell
-python .\ioc_store.py stats
-python .\ioc_store.py export-indicators --output .\evidence\ioc-store-export.json
+python .\codex_monitor_store.py stats
+python .\codex_monitor_store.py export-indicators --output .\evidence\codex-monitor-export.json
 ```
 
 Expected:
 
 - `indicator_count` is greater than `0`
 - `ingest_run_count` increases
-- `evidence\ioc-store-export.json` is created only because it was explicitly requested
+- `evidence\codex-monitor-export.json` is created only because it was explicitly requested
 
 To validate the record-specific exports after a collection produces immutable IDs:
 
 ```powershell
-python .\ioc_store.py export-report --report-id <report-id> --output .\evidence\report.json
-python .\ioc_store.py export-alert --alert-id <alert-id> --output .\evidence\alert.json
+python .\codex_monitor_store.py export-report --report-id <report-id> --output .\evidence\report.json
+python .\codex_monitor_store.py export-alert --alert-id <alert-id> --output .\evidence\alert.json
 ```
 
 Expected:
@@ -152,7 +166,7 @@ powershell -ExecutionPolicy Bypass -File .\invoke-host-tripwire.ps1 -Mode Baseli
 Confirm the baseline moved into SQLite:
 
 ```powershell
-python .\ioc_store.py --db .\state\ioc-store.db state-get --namespace host_tripwire --key baseline
+python .\codex_monitor_store.py --db .\state\codex-monitor.db state-get --namespace host_tripwire --key baseline
 ```
 
 Expected:
@@ -193,7 +207,7 @@ powershell -ExecutionPolicy Bypass -File .\monitor-threat-rss.ps1
 Confirm RSS state moved into SQLite:
 
 ```powershell
-python .\ioc_store.py --db .\state\ioc-store.db state-get --namespace threat_rss --key feed_state
+python .\codex_monitor_store.py --db .\state\codex-monitor.db state-get --namespace threat_rss --key feed_state
 ```
 
 Expected:
@@ -206,7 +220,7 @@ Expected:
 Use a pending SQLite alert/delivery record created by a supported collector test fixture, then run the helper against that disposable state database:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\start-codex-alert-helper.ps1 -StateDbPath .\state\ioc-store.db
+powershell -ExecutionPolicy Bypass -File .\start-codex-alert-helper.ps1 -StateDbPath .\state\codex-monitor.db
 ```
 
 Expected:
@@ -215,15 +229,13 @@ Expected:
 - popup offers:
   - `Open Alert`
     - opens the immutable SQLite alert-detail route in the local UI
-  - `Open Folder`
-    - opens the configured data root
   - `Dismiss`
 - dismissal records acknowledgement for the claimed delivery in SQLite
 - no alert JSON or Markdown file is required or created
 - alert/delivery state is visible in SQLite:
 
 ```powershell
-python .\ioc_store.py --db .\state\ioc-store.db stats
+python .\codex_monitor_store.py --db .\state\codex-monitor.db stats
 ```
 
 ### 6a. Management UI verification
@@ -259,7 +271,7 @@ powershell -ExecutionPolicy Bypass -File .\install-codex-monitor.ps1 -RuntimeRoo
 Validate:
 
 - runtime scripts copied to `deploy-runtime`
-- `ioc_store.py` copied to `deploy-runtime`
+- `codex_monitor_store.py` copied to `deploy-runtime`
 - `get-codex-monitor-status.ps1` copied to `deploy-runtime`
 - `codex-monitor.settings.json` created
 - `deploy-data\alerts\pending`

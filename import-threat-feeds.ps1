@@ -552,7 +552,7 @@ if ($emitExport) {
     [IO.File]::WriteAllText($temporaryBundlePath, (ConvertTo-Json $bundle -Depth 12), (New-Object Text.UTF8Encoding($false)))
 }
 
-$iocStoreToolPath = Join-Path $PSScriptRoot "ioc_store.py"
+$iocStoreToolPath = Join-Path $PSScriptRoot "codex_monitor_store.py"
 try {
     if (Test-Path -LiteralPath $iocStoreToolPath) {
         $pythonCommand = Get-PythonCommand
