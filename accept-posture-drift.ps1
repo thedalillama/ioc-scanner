@@ -17,7 +17,7 @@ param(
 
     [string]$ExpiresUtc,
 
-    [string]$StateDbPath = (Join-Path $PSScriptRoot 'state\ioc-store.db')
+    [string]$StateDbPath = (Join-Path $PSScriptRoot 'state\codex-monitor.db')
 )
 
 Set-StrictMode -Version Latest

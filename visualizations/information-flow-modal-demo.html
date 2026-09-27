@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Information flow modal demo</title>
+  <style>
+    :root {
+      --background: #f1efe9;
+      --foreground: #1f2e38;
+      --muted: #e8edf0;
+      --muted-foreground: #5f6f79;
+      --blue: #547b95;
+      --green: #588a73;
+      --orange: #ae7d42;
+      --border: #cfd8dd;
+      --card: #fffdf9;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--background); color: var(--foreground); font-family: "Segoe UI", system-ui, sans-serif; }
+    .page { min-height: 100vh; padding: 44px; }
+    .background-card { max-width: 1000px; margin: 0 auto; padding: 28px; border: 1px solid var(--border); border-radius: 18px; background: var(--card); opacity: .45; }
+    .background-card h1 { margin: 0 0 10px; font-size: 22px; }
+    .background-card p { margin: 0; color: var(--muted-foreground); }
+    .shade { position: fixed; inset: 0; background: rgba(25, 38, 47, .34); display: grid; place-items: center; padding: 28px; }
+    .modal { width: min(940px, 100%); max-height: calc(100vh - 56px); overflow: auto; border: 1px solid var(--border); border-radius: 18px; background: var(--card); box-shadow: 0 18px 60px rgba(25, 38, 47, .24); }
+    .modal-header { display: flex; justify-content: space-between; align-items: start; padding: 24px 28px 18px; border-bottom: 1px solid var(--border); }
+    .kicker { margin: 0 0 6px; color: var(--green); font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    h2 { margin: 0; font-size: 24px; }
+    .close { border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--foreground); padding: 9px 15px; font-size: 14px; }
+    .body { padding: 24px 28px 28px; }
+    .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 22px; color: var(--muted-foreground); font-size: 13px; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+    .blue { background: var(--blue); }.green { background: var(--green); }.orange { background: var(--orange); }
+    .flow { display: grid; grid-template-columns: 1fr 74px 1.25fr 74px 1.25fr; gap: 0; align-items: center; }
+    .node { min-height: 108px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+    .node h3 { margin: 0 0 8px; font-size: 16px; }.node p { margin: 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.45; }
+    .outcome { border-left: 5px solid var(--blue); }.information { border-left: 5px solid var(--green); }.consumer { border-left: 5px solid var(--orange); }
+    .arrow { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted-foreground); font-size: 26px; }.arrow small { font-size: 11px; white-space: nowrap; }
+    .consumer-list { display: grid; gap: 9px; }
+    .consumer-list .node { min-height: 0; padding: 11px 13px; }.consumer-list h3 { margin-bottom: 3px; font-size: 14px; }.consumer-list p { font-size: 12px; }
+    .detail { margin-top: 24px; padding: 16px; border-radius: 12px; background: var(--muted); }
+    .detail strong { color: var(--orange); }.detail p { margin: 6px 0 0; line-height: 1.45; }
+    .note { margin: 18px 0 0; color: var(--muted-foreground); font-size: 13px; }
+    @media (max-width: 760px) { .page { padding: 16px; }.shade { padding: 14px; }.flow { grid-template-columns: 1fr; gap: 12px; }.arrow { height: 36px; }.arrow::before { content: "↓"; font-size: 26px; }.arrow { font-size: 0; }.arrow small { font-size: 11px; }.modal-header, .body { padding-left: 18px; padding-right: 18px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="background-card" aria-hidden="true">
+      <h1>CSF Analyst</h1>
+      <p>GV.OC-02 — Internal and external stakeholders are understood.</p>
+    </section>
+  </main>
+  <section class="shade" aria-label="Information flow modal demonstration">
+    <article class="modal" role="dialog" aria-modal="true" aria-labelledby="flow-title">
+      <header class="modal-header">
+        <div>
+          <p class="kicker">Information flow</p>
+          <h2 id="flow-title">GV.OC-02 — Stakeholders and needs</h2>
+        </div>
+        <button class="close" type="button">Close</button>
+      </header>
+      <div class="body">
+        <div class="legend">
+          <span><i class="dot blue"></i>CSF outcome</span>
+          <span><i class="dot green"></i>Information item</span>
+          <span><i class="dot orange"></i>Downstream use</span>
+        </div>
+        <div class="flow">
+          <section class="node outcome">
+            <h3>GV.OC-02</h3>
+            <p>Stakeholders are identified. Their cybersecurity needs and expectations are understood and considered.</p>
+          </section>
+          <div class="arrow" aria-hidden="true">→<small>produces</small></div>
+          <section class="node information">
+            <h3>Stakeholder cybersecurity and privacy needs</h3>
+            <p>A record of affected people, their needs, the source of those needs, and the decisions that should consider them.</p>
+          </section>
+          <div class="arrow" aria-hidden="true">→<small>used by</small></div>
+          <section class="consumer-list" aria-label="Downstream uses">
+            <div class="node consumer"><h3>GV.SC-05</h3><p><strong>Required input.</strong> Supplier and purchasing requirements.</p></div>
+            <div class="node consumer"><h3>GV.RM-01 and GV.RM-05</h3><p>Planning input for risk objectives and communication.</p></div>
+            <div class="node consumer"><h3>RS.CO-02, RS.CO-03, and RC.CO-03</h3><p>Planning input for incident and recovery communication.</p></div>
+          </section>
+        </div>
+        <section class="detail">
+          <strong>Selected relationship: GV.OC-02 → GV.SC-05</strong>
+          <p>Known stakeholder security and privacy needs are required before they can be translated into supplier and purchasing requirements.</p>
+        </section>
+        <p class="note">A later version could let the user select a node or edge to see the complete reason, sources, evidence, and related controls.</p>
+      </div>
+    </article>
+  </section>
+</body>
+</html>

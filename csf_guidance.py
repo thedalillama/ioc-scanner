@@ -447,16 +447,6 @@ PRODUCT_EXAMPLES_EN_US.update({
     "RC.RP-06": ("Example: The organization declares recovery complete only after its criteria are met and incident documentation is completed.",),
 })
 
-# A blank note means the outcome has no additional material narrowing beyond
-# the product's stated single-PC scope.  Entries may be added only when a
-# specific scope clarification is necessary.
-SINGLE_PC_SCOPE_NOTES_EN_US = {
-    identifier: "" for identifier in PLAIN_ENGLISH_GUIDANCE_EN_US
-}
-SINGLE_PC_SCOPE_NOTES_EN_US["GV.OC-01"] = (
-    "This outcome establishes organizational context. It does not itself require risk analysis or prescribe specific PC controls, backups, or recovery actions."
-)
-
 _MISSING_PRODUCT_EXAMPLES = {
     identifier for identifier in _ACTIVE_OFFICIAL_SUBCATEGORY_IDS
     if not PRODUCT_EXAMPLES_EN_US.get(identifier)

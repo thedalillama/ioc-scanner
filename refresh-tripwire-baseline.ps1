@@ -40,7 +40,7 @@ function Resolve-StateDbPath {
         }
     }
 
-    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+    return (Join-Path $PSScriptRoot "state\codex-monitor.db")
 }
 
 if (-not (Test-IsAdministrator)) {

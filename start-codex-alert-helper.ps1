@@ -163,11 +163,11 @@ function Get-HelperStateDbPath {
     if (-not [string]::IsNullOrWhiteSpace($ConfiguredStatePath)) {
         $legacyParent = Split-Path -Path $ConfiguredStatePath -Parent
         if (-not [string]::IsNullOrWhiteSpace($legacyParent)) {
-            return (Join-Path $legacyParent "ioc-store.db")
+            return (Join-Path $legacyParent "codex-monitor.db")
         }
     }
 
-    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+    return (Join-Path $PSScriptRoot "state\codex-monitor.db")
 }
 
 function Open-AlertInUi {

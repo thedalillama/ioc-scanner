@@ -102,10 +102,10 @@ function Get-ResolvedStateDbPath {
     }
 
     if (-not [string]::IsNullOrWhiteSpace([string]$Settings.StateDbPath)) {
-        return (Resolve-ValueOrDefault -ConfiguredValue ([string]$Settings.StateDbPath) -DefaultValue (Join-Path $PSScriptRoot "state\ioc-store.db"))
+        return (Resolve-ValueOrDefault -ConfiguredValue ([string]$Settings.StateDbPath) -DefaultValue (Join-Path $PSScriptRoot "state\codex-monitor.db"))
     }
 
-    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+    return (Join-Path $PSScriptRoot "state\codex-monitor.db")
 }
 
 function Get-SqliteState {

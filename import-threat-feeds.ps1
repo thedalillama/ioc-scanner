@@ -490,7 +490,7 @@ if ([string]::IsNullOrWhiteSpace($IocStorePath)) {
     if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
         $IocStorePath = Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath)
     } else {
-        $IocStorePath = (Join-Path $PSScriptRoot "state\ioc-store.db")
+        $IocStorePath = (Join-Path $PSScriptRoot "state\codex-monitor.db")
     }
 }
 

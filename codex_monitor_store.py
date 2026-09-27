@@ -1,12 +1,18 @@
 import argparse
+import hashlib
 import json
 import re
 import sqlite3
+import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from xml.etree import ElementTree
 
-from csf_guidance import PLAIN_ENGLISH_GUIDANCE_EN_US, PRODUCT_EXAMPLES_EN_US, SINGLE_PC_SCOPE_NOTES_EN_US
+from csf_guidance import PLAIN_ENGLISH_GUIDANCE_EN_US, PRODUCT_EXAMPLES_EN_US
+from csf_capability_dependencies import CAPABILITY_DEPENDENCIES
+from csf_information_flows import INFORMATION_ITEMS, INFORMATION_SOURCES, INFORMATION_USES
 from csf_profile import SUBCATEGORY_PROFILE_METADATA_EN_US
 
 
@@ -465,7 +471,6 @@ def init_db(connection: sqlite3.Connection) -> None:
             language_code TEXT NOT NULL,
             plain_english_text TEXT NOT NULL CHECK(length(trim(plain_english_text)) > 0),
             examples_json TEXT NOT NULL DEFAULT '[]',
-            single_pc_scope_note TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(subcategory_id, language_code)
         );
 
@@ -478,8 +483,294 @@ def init_db(connection: sqlite3.Connection) -> None:
             PRIMARY KEY(subcategory_id, language_code)
         );
 
+        CREATE TABLE IF NOT EXISTS csf_outcome_audit_events (
+            audit_event_id TEXT PRIMARY KEY,
+            subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
+            event_type TEXT NOT NULL CHECK(event_type IN (
+                'evidence_linked', 'evidence_unlinked', 'note_recorded',
+                'action_linked', 'action_unlinked', 'assessment_drafted',
+                'assessment_recorded', 'assessment_superseded'
+            )),
+            assessment_method TEXT CHECK(assessment_method IS NULL OR assessment_method IN ('evidence', 'attestation', 'review', 'hybrid')),
+            profile_id TEXT,
+            profile_version TEXT,
+            target_assessment_level TEXT CHECK(target_assessment_level IS NULL OR target_assessment_level IN ('fully_implemented', 'partly_implemented', 'not_implemented', 'not_applicable')),
+            current_assessment_level TEXT CHECK(current_assessment_level IS NULL OR current_assessment_level IN ('fully_implemented', 'partly_implemented', 'not_implemented', 'not_applicable')),
+            related_record_type TEXT,
+            related_record_id TEXT,
+            rationale_note TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            recorded_by TEXT,
+            recorded_at TEXT NOT NULL,
+            supersedes_audit_event_id TEXT,
+            FOREIGN KEY(supersedes_audit_event_id) REFERENCES csf_outcome_audit_events(audit_event_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_outcome_audit_events_timeline
+            ON csf_outcome_audit_events(subcategory_id, recorded_at, audit_event_id);
+        CREATE INDEX IF NOT EXISTS idx_csf_outcome_audit_events_type
+            ON csf_outcome_audit_events(event_type, recorded_at);
+        CREATE INDEX IF NOT EXISTS idx_csf_outcome_audit_events_supersedes
+            ON csf_outcome_audit_events(supersedes_audit_event_id);
+
+        CREATE TRIGGER IF NOT EXISTS prevent_csf_outcome_audit_event_update
+        BEFORE UPDATE ON csf_outcome_audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'CSF outcome audit events are append-only.');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS prevent_csf_outcome_audit_event_delete
+        BEFORE DELETE ON csf_outcome_audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'CSF outcome audit events are append-only.');
+        END;
+
+        CREATE TABLE IF NOT EXISTS csf_current_assessments (
+            subcategory_id TEXT PRIMARY KEY CHECK(length(trim(subcategory_id)) > 0),
+            assessment_level TEXT NOT NULL CHECK(assessment_level IN ('fully_implemented', 'partly_implemented', 'not_implemented', 'not_applicable')),
+            updated_by TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_current_assessments_level
+            ON csf_current_assessments(assessment_level, updated_at);
+
+        CREATE TABLE IF NOT EXISTS csf_supporting_basis (
+            basis_id TEXT PRIMARY KEY,
+            subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
+            basis_type TEXT NOT NULL CHECK(basis_type IN ('local_evidence', 'document', 'attestation', 'decision_note', 'other')),
+            title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+            details TEXT,
+            reference_location TEXT,
+            recorded_on TEXT,
+            review_on TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_supporting_basis_subcategory
+            ON csf_supporting_basis(subcategory_id, updated_at, basis_id);
+
+        CREATE TABLE IF NOT EXISTS csf_reviewed_actions (
+            action_id TEXT PRIMARY KEY,
+            subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
+            title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+            details TEXT,
+            rationale TEXT,
+            action_status TEXT NOT NULL CHECK(action_status IN ('planned', 'in_progress', 'completed', 'not_proceeding')),
+            completed_at TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_reviewed_actions_subcategory
+            ON csf_reviewed_actions(subcategory_id, action_status, updated_at, action_id);
+
+        CREATE TABLE IF NOT EXISTS csf_reviewed_action_updates (
+            action_update_id TEXT PRIMARY KEY,
+            action_id TEXT NOT NULL,
+            action_status TEXT NOT NULL CHECK(action_status IN ('planned', 'in_progress', 'completed', 'not_proceeding')),
+            progress_note TEXT,
+            recorded_by TEXT,
+            recorded_at TEXT NOT NULL,
+            FOREIGN KEY(action_id) REFERENCES csf_reviewed_actions(action_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_reviewed_action_updates_timeline
+            ON csf_reviewed_action_updates(action_id, recorded_at, action_update_id);
+
+        CREATE TRIGGER IF NOT EXISTS prevent_csf_reviewed_action_update_change
+        BEFORE UPDATE ON csf_reviewed_action_updates
+        BEGIN
+            SELECT RAISE(ABORT, 'CSF reviewed-action updates are append-only.');
+        END;
+
+        CREATE TABLE IF NOT EXISTS csf_reviewed_action_basis_links (
+            action_id TEXT NOT NULL,
+            basis_id TEXT NOT NULL,
+            linked_at TEXT NOT NULL,
+            PRIMARY KEY(action_id, basis_id),
+            FOREIGN KEY(action_id) REFERENCES csf_reviewed_actions(action_id) ON DELETE CASCADE,
+            FOREIGN KEY(basis_id) REFERENCES csf_supporting_basis(basis_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_reviewed_action_basis_links_basis
+            ON csf_reviewed_action_basis_links(basis_id, action_id);
+
+        CREATE TABLE IF NOT EXISTS csf_reference_frameworks (
+            framework_id TEXT PRIMARY KEY,
+            framework_name TEXT NOT NULL,
+            publisher TEXT NOT NULL,
+            version TEXT NOT NULL,
+            mapping_name TEXT NOT NULL,
+            mapping_reference_id TEXT,
+            mapping_status TEXT NOT NULL,
+            mapping_source_path TEXT NOT NULL,
+            mapping_source_sha256 TEXT NOT NULL,
+            catalog_source_path TEXT NOT NULL,
+            catalog_source_sha256 TEXT NOT NULL,
+            imported_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_reference_controls (
+            framework_id TEXT NOT NULL,
+            control_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            statement_text TEXT,
+            catalog_control_id TEXT NOT NULL,
+            source_catalog_uuid TEXT,
+            PRIMARY KEY(framework_id, control_id),
+            FOREIGN KEY(framework_id) REFERENCES csf_reference_frameworks(framework_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_reference_controls_title
+            ON csf_reference_controls(framework_id, title, control_id);
+
+        CREATE TABLE IF NOT EXISTS csf_subcategory_control_mappings (
+            framework_id TEXT NOT NULL,
+            control_id TEXT NOT NULL,
+            subcategory_id TEXT NOT NULL,
+            interpretation_text TEXT NOT NULL DEFAULT '',
+            suggested_action_text TEXT NOT NULL DEFAULT '',
+            action_title_example TEXT NOT NULL DEFAULT '',
+            action_details_example TEXT NOT NULL DEFAULT '',
+            action_rationale_example TEXT NOT NULL DEFAULT '',
+            confidence_note TEXT NOT NULL DEFAULT '',
+            interpretation_source TEXT NOT NULL DEFAULT 'product-generated-v1',
+            interpretation_updated_at TEXT,
+            PRIMARY KEY(framework_id, control_id, subcategory_id),
+            FOREIGN KEY(framework_id, control_id)
+                REFERENCES csf_reference_controls(framework_id, control_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_subcategory_control_mappings_subcategory
+            ON csf_subcategory_control_mappings(subcategory_id, framework_id, control_id);
+
+        CREATE TABLE IF NOT EXISTS csf_reviewed_action_control_links (
+            action_id TEXT PRIMARY KEY,
+            framework_id TEXT NOT NULL,
+            control_id TEXT NOT NULL,
+            subcategory_id TEXT NOT NULL,
+            linked_at TEXT NOT NULL,
+            FOREIGN KEY(action_id) REFERENCES csf_reviewed_actions(action_id) ON DELETE CASCADE,
+            FOREIGN KEY(framework_id, control_id, subcategory_id)
+                REFERENCES csf_subcategory_control_mappings(framework_id, control_id, subcategory_id) ON DELETE RESTRICT,
+            UNIQUE(framework_id, control_id, subcategory_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_reviewed_action_control_links_subcategory
+            ON csf_reviewed_action_control_links(subcategory_id, framework_id, control_id);
+
+        CREATE TABLE IF NOT EXISTS csf_information_items (
+            information_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+            description TEXT NOT NULL CHECK(length(trim(description)) > 0),
+            source_label TEXT NOT NULL DEFAULT 'product-authored-v1',
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_subcategory_information_sources (
+            information_id TEXT NOT NULL,
+            source_subcategory_id TEXT NOT NULL CHECK(length(trim(source_subcategory_id)) > 0),
+            source_guidance TEXT NOT NULL CHECK(length(trim(source_guidance)) > 0),
+            PRIMARY KEY(information_id, source_subcategory_id),
+            FOREIGN KEY(information_id) REFERENCES csf_information_items(information_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_information_sources_subcategory
+            ON csf_subcategory_information_sources(source_subcategory_id, information_id);
+
+        CREATE TABLE IF NOT EXISTS csf_subcategory_information_uses (
+            information_id TEXT NOT NULL,
+            consumer_subcategory_id TEXT NOT NULL CHECK(length(trim(consumer_subcategory_id)) > 0),
+            dependency_kind TEXT NOT NULL CHECK(dependency_kind IN ('required_input', 'planning_input', 'event_input')),
+            use_reason TEXT NOT NULL CHECK(length(trim(use_reason)) > 0),
+            PRIMARY KEY(information_id, consumer_subcategory_id),
+            FOREIGN KEY(information_id) REFERENCES csf_information_items(information_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_information_uses_subcategory
+            ON csf_subcategory_information_uses(consumer_subcategory_id, dependency_kind, information_id);
+
+        CREATE TABLE IF NOT EXISTS csf_subcategory_capability_dependencies (
+            prerequisite_subcategory_id TEXT NOT NULL CHECK(length(trim(prerequisite_subcategory_id)) > 0),
+            dependent_subcategory_id TEXT NOT NULL CHECK(length(trim(dependent_subcategory_id)) > 0),
+            dependency_strength TEXT NOT NULL CHECK(dependency_strength IN ('hard_gate', 'partial_gate', 'supporting_capability')),
+            rationale TEXT NOT NULL CHECK(length(trim(rationale)) > 0),
+            source_label TEXT NOT NULL DEFAULT 'product-authored-v1',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(prerequisite_subcategory_id, dependent_subcategory_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_capability_dependencies_dependent
+            ON csf_subcategory_capability_dependencies(dependent_subcategory_id, dependency_strength, prerequisite_subcategory_id);
+
         """
     )
+    guidance_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(csf_subcategory_guidance)").fetchall()
+    }
+    if "single_pc_scope_note" in guidance_columns:
+        with connection:
+            connection.execute(
+                """
+                CREATE TABLE csf_subcategory_guidance_without_scope_note (
+                    subcategory_id TEXT NOT NULL,
+                    language_code TEXT NOT NULL,
+                    plain_english_text TEXT NOT NULL CHECK(length(trim(plain_english_text)) > 0),
+                    examples_json TEXT NOT NULL DEFAULT '[]',
+                    PRIMARY KEY(subcategory_id, language_code)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO csf_subcategory_guidance_without_scope_note (
+                    subcategory_id, language_code, plain_english_text, examples_json
+                )
+                SELECT subcategory_id, language_code, plain_english_text, examples_json
+                FROM csf_subcategory_guidance
+                """
+            )
+            connection.execute("DROP TABLE csf_subcategory_guidance")
+            connection.execute(
+                "ALTER TABLE csf_subcategory_guidance_without_scope_note RENAME TO csf_subcategory_guidance"
+            )
+    basis_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_supporting_basis)").fetchall()}
+    action_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_reviewed_actions)").fetchall()}
+    reference_control_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_reference_controls)").fetchall()}
+    mapping_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_subcategory_control_mappings)").fetchall()}
+    with connection:
+        if "recorded_on" not in basis_columns:
+            connection.execute("ALTER TABLE csf_supporting_basis ADD COLUMN recorded_on TEXT")
+        if "review_on" not in basis_columns:
+            connection.execute("ALTER TABLE csf_supporting_basis ADD COLUMN review_on TEXT")
+        if "rationale" not in action_columns:
+            connection.execute("ALTER TABLE csf_reviewed_actions ADD COLUMN rationale TEXT")
+        if "statement_text" not in reference_control_columns:
+            connection.execute("ALTER TABLE csf_reference_controls ADD COLUMN statement_text TEXT")
+        if "interpretation_text" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN interpretation_text TEXT NOT NULL DEFAULT ''")
+        if "suggested_action_text" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN suggested_action_text TEXT NOT NULL DEFAULT ''")
+        if "action_title_example" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN action_title_example TEXT NOT NULL DEFAULT ''")
+        if "action_details_example" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN action_details_example TEXT NOT NULL DEFAULT ''")
+        if "action_rationale_example" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN action_rationale_example TEXT NOT NULL DEFAULT ''")
+        if "confidence_note" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN confidence_note TEXT NOT NULL DEFAULT ''")
+        if "interpretation_source" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN interpretation_source TEXT NOT NULL DEFAULT 'product-generated-v1'")
+        if "interpretation_updated_at" not in mapping_columns:
+            connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN interpretation_updated_at TEXT")
+        # Action progress entries are immutable while their parent action exists.
+        # Removing a parent action must still be able to cascade its history.
+        connection.execute("DROP TRIGGER IF EXISTS prevent_csf_reviewed_action_update_delete")
     connection.executemany(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at, description) VALUES (?, ?, ?)",
         [
@@ -488,13 +779,28 @@ def init_db(connection: sqlite3.Connection) -> None:
             (3, utc_now(), "Add advisory-only local CSF Category and outcome storage."),
             (4, utc_now(), "Add product-authored plain-English guidance for official CSF Subcategories."),
             (5, utc_now(), "Add Single-PC CSF Profile assessment metadata for official CSF Subcategories."),
+            (6, utc_now(), "Add append-only CSF outcome assessment audit events."),
+            (7, utc_now(), "Remove product scope notes from CSF Subcategory guidance."),
+            (8, utc_now(), "Add current CSF Subcategory assessment storage outside the audit ledger."),
+            (9, utc_now(), "Add supporting-basis and reviewed-action records linked to CSF Subcategories."),
+            (10, utc_now(), "Add action rationale and supporting-basis review dates."),
+            (11, utc_now(), "Add append-only progress updates for reviewed actions."),
+            (12, utc_now(), "Permit parent-action deletion to cascade its progress history."),
+            (13, utc_now(), "Add NIST SP 800-53 reference controls and CSF informative-reference mappings."),
+            (14, utc_now(), "Link one reviewed action to an optional mapped reference control."),
+            (15, utc_now(), "Store official NIST SP 800-53 control statements for contextual action selection."),
+            (16, utc_now(), "Add product-authored, per-mapping applicability and action-direction descriptions."),
+            (17, utc_now(), "Add per-mapping action-field examples for the Tile 3 action form."),
+            (18, utc_now(), "Store batch-generated action-detail examples and mapping review notes."),
+            (19, utc_now(), "Add product-authored CSF outcome information-flow planning relationships."),
+            (20, utc_now(), "Add product-authored CSF capability prerequisite relationships."),
         ],
     )
     connection.executemany(
-        """INSERT INTO csf_subcategory_guidance(subcategory_id, language_code, plain_english_text, examples_json, single_pc_scope_note)
-        VALUES (?, 'en-US', ?, ?, ?)
-        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET plain_english_text=excluded.plain_english_text, examples_json=excluded.examples_json, single_pc_scope_note=excluded.single_pc_scope_note""",
-        [(identifier, text, json.dumps(PRODUCT_EXAMPLES_EN_US[identifier]), SINGLE_PC_SCOPE_NOTES_EN_US[identifier]) for identifier, text in PLAIN_ENGLISH_GUIDANCE_EN_US.items()],
+        """INSERT INTO csf_subcategory_guidance(subcategory_id, language_code, plain_english_text, examples_json)
+        VALUES (?, 'en-US', ?, ?)
+        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET plain_english_text=excluded.plain_english_text, examples_json=excluded.examples_json""",
+        [(identifier, text, json.dumps(PRODUCT_EXAMPLES_EN_US[identifier])) for identifier, text in PLAIN_ENGLISH_GUIDANCE_EN_US.items()],
     )
     connection.executemany(
         """INSERT INTO csf_subcategory_profile_metadata(subcategory_id, language_code, assessment_method, research_guidance, supporting_note_required)
@@ -502,12 +808,79 @@ def init_db(connection: sqlite3.Connection) -> None:
         ON CONFLICT(subcategory_id, language_code) DO UPDATE SET assessment_method=excluded.assessment_method, research_guidance=excluded.research_guidance, supporting_note_required=excluded.supporting_note_required""",
         [(identifier, value["assessment_method"], value["research_guidance"], int(value["supporting_note_required"])) for identifier, value in SUBCATEGORY_PROFILE_METADATA_EN_US.items()],
     )
+    flow_updated_at = utc_now()
+    connection.executemany(
+        """INSERT INTO csf_information_items(information_id, title, description, source_label, updated_at)
+        VALUES (?, ?, ?, 'product-authored-v1', ?)
+        ON CONFLICT(information_id) DO UPDATE SET title=excluded.title, description=excluded.description,
+            source_label=excluded.source_label, updated_at=excluded.updated_at""",
+        [(item["information_id"], item["title"], item["description"], flow_updated_at) for item in INFORMATION_ITEMS],
+    )
+    connection.executemany(
+        """INSERT INTO csf_subcategory_information_sources(information_id, source_subcategory_id, source_guidance)
+        VALUES (?, ?, ?)
+        ON CONFLICT(information_id, source_subcategory_id) DO UPDATE SET source_guidance=excluded.source_guidance""",
+        [(item["information_id"], item["source_subcategory_id"], item["source_guidance"]) for item in INFORMATION_SOURCES],
+    )
+    connection.executemany(
+        """INSERT INTO csf_subcategory_information_uses(information_id, consumer_subcategory_id, dependency_kind, use_reason)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(information_id, consumer_subcategory_id) DO UPDATE SET dependency_kind=excluded.dependency_kind,
+            use_reason=excluded.use_reason""",
+        [(item["information_id"], item["consumer_subcategory_id"], item["dependency_kind"], item["use_reason"]) for item in INFORMATION_USES],
+    )
+    capability_updated_at = utc_now()
+    connection.executemany(
+        """INSERT INTO csf_subcategory_capability_dependencies(
+            prerequisite_subcategory_id, dependent_subcategory_id, dependency_strength, rationale, source_label, updated_at
+        ) VALUES (?, ?, ?, ?, 'product-authored-v1', ?)
+        ON CONFLICT(prerequisite_subcategory_id, dependent_subcategory_id) DO UPDATE SET
+            dependency_strength=excluded.dependency_strength, rationale=excluded.rationale,
+            source_label=excluded.source_label, updated_at=excluded.updated_at""",
+        [
+            (
+                item["prerequisite_subcategory_id"], item["dependent_subcategory_id"],
+                item["dependency_strength"], item["rationale"], capability_updated_at,
+            )
+            for item in CAPABILITY_DEPENDENCIES
+        ],
+    )
     connection.commit()
 
 
 LOCAL_CSF_FUNCTION_IDS = {"GV", "ID", "PR", "DE", "RS", "RC"}
 LOCAL_CSF_CATEGORY_ID_RE = re.compile(r"^LOCAL\.(GV|ID|PR|DE|RS|RC)\.(\d{2,})$")
 LOCAL_CSF_OUTCOME_ID_RE = re.compile(r"^LOCAL\.(GV|ID|PR|DE|RS|RC)\.(\d{2,})\.(\d{2,})$")
+CSF_AUDIT_EVENT_TYPES = {
+    "evidence_linked",
+    "evidence_unlinked",
+    "note_recorded",
+    "action_linked",
+    "action_unlinked",
+    "assessment_drafted",
+    "assessment_recorded",
+    "assessment_superseded",
+}
+CSF_ASSESSMENT_METHODS = {"evidence", "attestation", "review", "hybrid"}
+CSF_ASSESSMENT_LEVELS = {
+    "fully_implemented",
+    "partly_implemented",
+    "not_implemented",
+    "not_applicable",
+}
+CSF_SUPPORTING_BASIS_TYPES = {
+    "local_evidence",
+    "document",
+    "attestation",
+    "decision_note",
+    "other",
+}
+CSF_REVIEWED_ACTION_STATUSES = {
+    "planned",
+    "in_progress",
+    "completed",
+    "not_proceeding",
+}
 
 
 def _local_csf_text(value: Any, field_name: str, *, required: bool, maximum: int) -> str:
@@ -517,6 +890,526 @@ def _local_csf_text(value: Any, field_name: str, *, required: bool, maximum: int
     if len(text) > maximum:
         raise ValueError(f"{field_name} must be {maximum} characters or fewer.")
     return text
+
+
+def _optional_csf_audit_value(value: Any, field_name: str, allowed_values: set[str]) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized not in allowed_values:
+        allowed = ", ".join(sorted(allowed_values))
+        raise ValueError(f"{field_name} must be one of: {allowed}.")
+    return normalized
+
+
+def record_csf_outcome_audit_event(
+    connection: sqlite3.Connection,
+    *,
+    subcategory_id: Any,
+    event_type: Any,
+    assessment_method: Any = "",
+    profile_id: Any = "",
+    profile_version: Any = "",
+    target_assessment_level: Any = "",
+    current_assessment_level: Any = "",
+    related_record_type: Any = "",
+    related_record_id: Any = "",
+    rationale_note: Any = "",
+    payload: Any = None,
+    recorded_by: Any = "",
+    recorded_at: Optional[str] = None,
+    supersedes_audit_event_id: Any = "",
+    audit_event_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Append a durable, immutable event for one official CSF Subcategory outcome."""
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    event = _optional_csf_audit_value(event_type, "event_type", CSF_AUDIT_EVENT_TYPES)
+    if event is None:
+        raise ValueError("event_type is required.")
+    event_id = str(audit_event_id or uuid.uuid4()).strip()
+    if not event_id:
+        raise ValueError("audit_event_id must not be blank.")
+    try:
+        payload_json = json.dumps({} if payload is None else payload, ensure_ascii=True, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("payload must be JSON-serializable.") from exc
+
+    values = {
+        "audit_event_id": event_id,
+        "subcategory_id": subcategory,
+        "event_type": event,
+        "assessment_method": _optional_csf_audit_value(assessment_method, "assessment_method", CSF_ASSESSMENT_METHODS),
+        "profile_id": str(profile_id or "").strip() or None,
+        "profile_version": str(profile_version or "").strip() or None,
+        "target_assessment_level": _optional_csf_audit_value(target_assessment_level, "target_assessment_level", CSF_ASSESSMENT_LEVELS),
+        "current_assessment_level": _optional_csf_audit_value(current_assessment_level, "current_assessment_level", CSF_ASSESSMENT_LEVELS),
+        "related_record_type": str(related_record_type or "").strip() or None,
+        "related_record_id": str(related_record_id or "").strip() or None,
+        "rationale_note": str(rationale_note or "").strip() or None,
+        "payload_json": payload_json,
+        "recorded_by": str(recorded_by or "").strip() or None,
+        "recorded_at": str(recorded_at or utc_now()).strip(),
+        "supersedes_audit_event_id": str(supersedes_audit_event_id or "").strip() or None,
+    }
+    if not values["recorded_at"]:
+        raise ValueError("recorded_at must not be blank.")
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO csf_outcome_audit_events (
+                audit_event_id, subcategory_id, event_type, assessment_method, profile_id,
+                profile_version, target_assessment_level, current_assessment_level,
+                related_record_type, related_record_id, rationale_note, payload_json,
+                recorded_by, recorded_at, supersedes_audit_event_id
+            ) VALUES (
+                :audit_event_id, :subcategory_id, :event_type, :assessment_method, :profile_id,
+                :profile_version, :target_assessment_level, :current_assessment_level,
+                :related_record_type, :related_record_id, :rationale_note, :payload_json,
+                :recorded_by, :recorded_at, :supersedes_audit_event_id
+            )
+            """,
+            values,
+        )
+    row = connection.execute(
+        "SELECT * FROM csf_outcome_audit_events WHERE audit_event_id = ?", (event_id,)
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def list_csf_outcome_audit_events(
+    connection: sqlite3.Connection, subcategory_id: Any, limit: int = 200
+) -> List[Dict[str, Any]]:
+    """Return a Subcategory's audit ledger in stable chronological order."""
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    try:
+        row_limit = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be a positive integer.") from exc
+    if row_limit < 1:
+        raise ValueError("limit must be a positive integer.")
+    return [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT * FROM csf_outcome_audit_events
+            WHERE subcategory_id = ?
+            ORDER BY recorded_at, audit_event_id
+            LIMIT ?
+            """,
+            (subcategory, row_limit),
+        ).fetchall()
+    ]
+
+
+def set_current_csf_assessment(
+    connection: sqlite3.Connection,
+    subcategory_id: Any,
+    assessment_level: Any,
+    updated_by: Any = "",
+) -> Dict[str, Any]:
+    """Store the current working assessment separately from the immutable audit ledger."""
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    level = _optional_csf_audit_value(
+        assessment_level, "assessment_level", CSF_ASSESSMENT_LEVELS
+    )
+    if level is None:
+        raise ValueError("assessment_level is required.")
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO csf_current_assessments (
+                subcategory_id, assessment_level, updated_by, updated_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(subcategory_id) DO UPDATE SET
+                assessment_level=excluded.assessment_level,
+                updated_by=excluded.updated_by,
+                updated_at=excluded.updated_at
+            """,
+            (subcategory, level, str(updated_by or "").strip() or None, utc_now()),
+        )
+    row = connection.execute(
+        "SELECT * FROM csf_current_assessments WHERE subcategory_id = ?", (subcategory,)
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def list_current_csf_assessments(connection: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    """Return the latest working assessment by official CSF Subcategory."""
+    return {
+        str(row["subcategory_id"]): dict(row)
+        for row in connection.execute(
+            "SELECT * FROM csf_current_assessments ORDER BY subcategory_id"
+        ).fetchall()
+    }
+
+
+def _csf_record_text(value: Any, field_name: str, *, required: bool, maximum: int) -> str:
+    return _local_csf_text(value, field_name, required=required, maximum=maximum)
+
+
+def create_csf_supporting_basis(
+    connection: sqlite3.Connection,
+    *,
+    subcategory_id: Any,
+    basis_type: Any,
+    title: Any,
+    details: Any = "",
+    reference_location: Any = "",
+    recorded_on: Any = "",
+    review_on: Any = "",
+    created_by: Any = "",
+    basis_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create one mutable supporting-basis record for an official CSF Subcategory."""
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    normalized_type = _optional_csf_audit_value(
+        basis_type, "basis_type", CSF_SUPPORTING_BASIS_TYPES
+    )
+    if normalized_type is None:
+        raise ValueError("basis_type is required.")
+    record_id = str(basis_id or uuid.uuid4()).strip()
+    if not record_id:
+        raise ValueError("basis_id must not be blank.")
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO csf_supporting_basis (
+                basis_id, subcategory_id, basis_type, title, details, reference_location, recorded_on, review_on,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                subcategory,
+                normalized_type,
+                _csf_record_text(title, "Title", required=True, maximum=240),
+                _csf_record_text(details, "Details", required=False, maximum=8000) or None,
+                _csf_record_text(reference_location, "Reference location", required=False, maximum=2000) or None,
+                _csf_record_text(recorded_on, "Recorded on", required=False, maximum=64) or None,
+                _csf_record_text(review_on, "Review on", required=False, maximum=64) or None,
+                _csf_record_text(created_by, "Created by", required=False, maximum=240) or None,
+                now,
+                now,
+            ),
+        )
+    row = connection.execute("SELECT * FROM csf_supporting_basis WHERE basis_id = ?", (record_id,)).fetchone()
+    return dict(row) if row else {}
+
+
+def list_csf_supporting_basis(
+    connection: sqlite3.Connection, subcategory_id: Any, limit: int = 200
+) -> List[Dict[str, Any]]:
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer.")
+    return [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT * FROM csf_supporting_basis
+            WHERE subcategory_id = ?
+            ORDER BY updated_at DESC, basis_id
+            LIMIT ?
+            """,
+            (subcategory, limit),
+        ).fetchall()
+    ]
+
+
+def create_csf_reviewed_action(
+    connection: sqlite3.Connection,
+    *,
+    subcategory_id: Any,
+    title: Any,
+    action_status: Any,
+    details: Any = "",
+    rationale: Any = "",
+    progress_note: Any = "",
+    completed_at: Any = "",
+    created_by: Any = "",
+    basis_ids: Iterable[Any] = (),
+    control_id: Any = "",
+    framework_id: str = "nist-sp-800-53-r5.2.0",
+    action_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a reviewed action and optional same-outcome supporting-basis links."""
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    status = _optional_csf_audit_value(
+        action_status, "action_status", CSF_REVIEWED_ACTION_STATUSES
+    )
+    if status is None:
+        raise ValueError("action_status is required.")
+    linked_basis_ids = sorted({str(value or "").strip() for value in basis_ids if str(value or "").strip()})
+    selected_control_id = str(control_id or "").strip().upper()
+    if linked_basis_ids:
+        placeholders = ", ".join("?" for _ in linked_basis_ids)
+        basis_rows = connection.execute(
+            f"SELECT basis_id, subcategory_id FROM csf_supporting_basis WHERE basis_id IN ({placeholders})",
+            linked_basis_ids,
+        ).fetchall()
+        if len(basis_rows) != len(linked_basis_ids) or any(row["subcategory_id"] != subcategory for row in basis_rows):
+            raise ValueError("Reviewed actions can link only existing supporting-basis records for the same Subcategory.")
+    if selected_control_id:
+        mapping = connection.execute(
+            """SELECT 1 FROM csf_subcategory_control_mappings
+            WHERE framework_id = ? AND control_id = ? AND subcategory_id = ?""",
+            (framework_id, selected_control_id, subcategory),
+        ).fetchone()
+        if mapping is None:
+            raise ValueError("Choose a control mapped to the selected CSF Subcategory.")
+        existing_link = connection.execute(
+            """SELECT action_id FROM csf_reviewed_action_control_links
+            WHERE framework_id = ? AND control_id = ? AND subcategory_id = ?""",
+            (framework_id, selected_control_id, subcategory),
+        ).fetchone()
+        if existing_link is not None:
+            raise ValueError("This mapped control already has an action for the selected CSF Subcategory.")
+    record_id = str(action_id or uuid.uuid4()).strip()
+    if not record_id:
+        raise ValueError("action_id must not be blank.")
+    now = utc_now()
+    recorded_completed_at = _csf_record_text(completed_at, "Completed at", required=False, maximum=64) or None
+    if status == "completed" and recorded_completed_at is None:
+        recorded_completed_at = now
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO csf_reviewed_actions (
+                action_id, subcategory_id, title, details, rationale, action_status, completed_at,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                subcategory,
+                _csf_record_text(title, "Title", required=True, maximum=240),
+                _csf_record_text(details, "Details", required=False, maximum=8000) or None,
+                _csf_record_text(rationale, "Rationale", required=False, maximum=4000) or None,
+                status,
+                recorded_completed_at,
+                _csf_record_text(created_by, "Created by", required=False, maximum=240) or None,
+                now,
+                now,
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO csf_reviewed_action_basis_links(action_id, basis_id, linked_at) VALUES (?, ?, ?)",
+            [(record_id, basis_id, now) for basis_id in linked_basis_ids],
+        )
+        if selected_control_id:
+            connection.execute(
+                """INSERT INTO csf_reviewed_action_control_links(
+                    action_id, framework_id, control_id, subcategory_id, linked_at
+                ) VALUES (?, ?, ?, ?, ?)""",
+                (record_id, framework_id, selected_control_id, subcategory, now),
+            )
+        connection.execute(
+            """
+            INSERT INTO csf_reviewed_action_updates(
+                action_update_id, action_id, action_status, progress_note, recorded_by, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                record_id,
+                status,
+                _csf_record_text(progress_note, "Progress note", required=False, maximum=8000) or None,
+                _csf_record_text(created_by, "Created by", required=False, maximum=240) or None,
+                now,
+            ),
+        )
+    connection.commit()
+    row = connection.execute("SELECT * FROM csf_reviewed_actions WHERE action_id = ?", (record_id,)).fetchone()
+    return dict(row) if row else {}
+
+
+def list_csf_reviewed_action_updates(
+    connection: sqlite3.Connection, action_id: Any, limit: int = 200
+) -> List[Dict[str, Any]]:
+    """Return an action's immutable progress history, newest first."""
+    record_id = str(action_id or "").strip()
+    if not record_id:
+        raise ValueError("action_id is required.")
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer.")
+    return [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT * FROM csf_reviewed_action_updates
+            WHERE action_id = ?
+            ORDER BY recorded_at DESC, action_update_id DESC
+            LIMIT ?
+            """,
+            (record_id, limit),
+        ).fetchall()
+    ]
+
+
+def update_csf_reviewed_action(
+    connection: sqlite3.Connection,
+    *,
+    action_id: Any,
+    title: Any,
+    action_status: Any,
+    details: Any = "",
+    rationale: Any = "",
+    progress_note: Any = "",
+    updated_by: Any = "",
+) -> Dict[str, Any]:
+    """Update an action's working state and append one immutable progress entry."""
+    record_id = str(action_id or "").strip()
+    if not record_id:
+        raise ValueError("action_id is required.")
+    status = _optional_csf_audit_value(
+        action_status, "action_status", CSF_REVIEWED_ACTION_STATUSES
+    )
+    if status is None:
+        raise ValueError("action_status is required.")
+    current = connection.execute(
+        "SELECT completed_at, updated_at FROM csf_reviewed_actions WHERE action_id = ?", (record_id,)
+    ).fetchone()
+    if current is None:
+        raise ValueError("Reviewed action was not found.")
+    now = utc_now()
+    previous_updated_at = datetime.fromisoformat(str(current["updated_at"]))
+    if datetime.fromisoformat(now) <= previous_updated_at:
+        now = (previous_updated_at + timedelta(microseconds=1)).isoformat()
+    completed_at = current["completed_at"] or (now if status == "completed" else None)
+    with connection:
+        connection.execute(
+            """
+            UPDATE csf_reviewed_actions
+            SET title = ?, details = ?, rationale = ?, action_status = ?, completed_at = ?, updated_at = ?
+            WHERE action_id = ?
+            """,
+            (
+                _csf_record_text(title, "Title", required=True, maximum=240),
+                _csf_record_text(details, "Details", required=False, maximum=8000) or None,
+                _csf_record_text(rationale, "Rationale", required=False, maximum=4000) or None,
+                status,
+                completed_at,
+                now,
+                record_id,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO csf_reviewed_action_updates(
+                action_update_id, action_id, action_status, progress_note, recorded_by, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                record_id,
+                status,
+                _csf_record_text(progress_note, "Progress note", required=False, maximum=8000) or None,
+                _csf_record_text(updated_by, "Updated by", required=False, maximum=240) or None,
+                now,
+            ),
+        )
+    row = connection.execute("SELECT * FROM csf_reviewed_actions WHERE action_id = ?", (record_id,)).fetchone()
+    return dict(row) if row else {}
+
+
+def delete_csf_reviewed_action(
+    connection: sqlite3.Connection, action_id: Any
+) -> Dict[str, Any]:
+    """Delete one action and its dependent progress history and basis links."""
+    record_id = str(action_id or "").strip()
+    if not record_id:
+        raise ValueError("action_id is required.")
+    row = connection.execute(
+        "SELECT * FROM csf_reviewed_actions WHERE action_id = ?", (record_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Reviewed action was not found.")
+    deleted = dict(row)
+    with connection:
+        connection.execute(
+            "DELETE FROM csf_reviewed_action_basis_links WHERE action_id = ?", (record_id,)
+        )
+        connection.execute(
+            "DELETE FROM csf_reviewed_action_updates WHERE action_id = ?", (record_id,)
+        )
+        connection.execute("DELETE FROM csf_reviewed_actions WHERE action_id = ?", (record_id,))
+    return deleted
+
+
+def list_csf_reviewed_actions(
+    connection: sqlite3.Connection, subcategory_id: Any, limit: int = 200
+) -> List[Dict[str, Any]]:
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer.")
+    rows = connection.execute(
+        """
+        SELECT a.*, GROUP_CONCAT(link.basis_id) AS basis_ids,
+            control_link.framework_id AS control_framework_id,
+            control_link.control_id AS control_id,
+            control.title AS control_title
+        FROM csf_reviewed_actions a
+        LEFT JOIN csf_reviewed_action_basis_links link ON link.action_id = a.action_id
+        LEFT JOIN csf_reviewed_action_control_links control_link ON control_link.action_id = a.action_id
+        LEFT JOIN csf_reference_controls control
+            ON control.framework_id = control_link.framework_id AND control.control_id = control_link.control_id
+        WHERE a.subcategory_id = ?
+        GROUP BY a.action_id
+        ORDER BY a.updated_at DESC, a.action_id
+        LIMIT ?
+        """,
+        (subcategory, limit),
+    ).fetchall()
+    return [
+        {**dict(row), "basis_ids": str(row["basis_ids"] or "").split(",") if row["basis_ids"] else []}
+        for row in rows
+    ]
+
+
+def list_csf_mapped_controls_for_subcategory(
+    connection: sqlite3.Connection, subcategory_id: Any, framework_id: str = "nist-sp-800-53-r5.2.0"
+) -> List[Dict[str, Any]]:
+    """Return official mapped controls and any action already using each exact mapping."""
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not subcategory:
+        raise ValueError("subcategory_id is required.")
+    return [
+        dict(row)
+        for row in connection.execute(
+            """SELECT mapping.control_id, control.title, control.statement_text,
+                mapping.interpretation_text, mapping.suggested_action_text, mapping.action_title_example,
+                mapping.action_details_example, mapping.action_rationale_example, mapping.confidence_note,
+                mapping.interpretation_source,
+                action.action_id, action.title AS action_title,
+                action.action_status
+            FROM csf_subcategory_control_mappings mapping
+            JOIN csf_reference_controls control
+                ON control.framework_id = mapping.framework_id AND control.control_id = mapping.control_id
+            LEFT JOIN csf_reviewed_action_control_links action_link
+                ON action_link.framework_id = mapping.framework_id
+                AND action_link.control_id = mapping.control_id
+                AND action_link.subcategory_id = mapping.subcategory_id
+            LEFT JOIN csf_reviewed_actions action ON action.action_id = action_link.action_id
+            WHERE mapping.framework_id = ? AND mapping.subcategory_id = ?
+            ORDER BY mapping.control_id""",
+            (framework_id, subcategory),
+        ).fetchall()
+    ]
 
 
 def _next_local_csf_suffix(connection: sqlite3.Connection, function_id: str) -> int:
@@ -2403,6 +3296,278 @@ def list_persisted_alerts(connection: sqlite3.Connection, limit: int = 50) -> Li
     return [dict(row) for row in rows]
 
 
+_NIST_CSF_SUBCATEGORY_PATTERN = re.compile(r"^[A-Z]{2}\.[A-Z]{2}-\d{2}$")
+_NIST_SP800_53_REFERENCE_PATTERN = re.compile(
+    r"^SP 800-53 Rev 5\.2\.0:\s*(.+)$", re.MULTILINE
+)
+_NIST_SP800_53_CONTROL_PATTERN = re.compile(r"^[a-z]{2,3}-\d{1,2}(?:\.\d{1,2})?$")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _xlsx_sheet_rows(workbook_path: Path, sheet_name: str) -> List[Dict[str, str]]:
+    """Read a simple worksheet without adding an Excel-library dependency."""
+    namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rel_namespace = {"rel": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+    package_rel_namespace = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+    with zipfile.ZipFile(workbook_path) as archive:
+        shared_strings: List[str] = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            shared_root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared_strings = ["".join(item.itertext()) for item in shared_root.findall("main:si", namespace)]
+        workbook_root = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        sheet = next(
+            (item for item in workbook_root.findall("main:sheets/main:sheet", namespace) if item.attrib.get("name") == sheet_name),
+            None,
+        )
+        if sheet is None:
+            raise ValueError(f"Workbook does not contain a worksheet named {sheet_name!r}.")
+        relationship_id = sheet.attrib.get("{%s}id" % rel_namespace["rel"])
+        rel_root = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        relationship = next(
+            (item for item in rel_root.findall("rel:Relationship", package_rel_namespace) if item.attrib.get("Id") == relationship_id),
+            None,
+        )
+        if relationship is None:
+            raise ValueError(f"Workbook relationship for worksheet {sheet_name!r} is missing.")
+        sheet_path = "xl/" + relationship.attrib["Target"].lstrip("/")
+        sheet_root = ElementTree.fromstring(archive.read(sheet_path))
+
+    rows: List[Dict[str, str]] = []
+    for row in sheet_root.findall("main:sheetData/main:row", namespace):
+        values: Dict[str, str] = {}
+        for cell in row.findall("main:c", namespace):
+            reference = cell.attrib.get("r", "")
+            column = re.match(r"[A-Z]+", reference)
+            if not column:
+                continue
+            cell_type = cell.attrib.get("t")
+            if cell_type == "s":
+                index = cell.findtext("main:v", default="", namespaces=namespace)
+                values[column.group(0)] = shared_strings[int(index)] if index else ""
+            elif cell_type == "inlineStr":
+                values[column.group(0)] = "".join(cell.find("main:is", namespace).itertext()) if cell.find("main:is", namespace) is not None else ""
+            else:
+                values[column.group(0)] = cell.findtext("main:v", default="", namespaces=namespace)
+        rows.append(values)
+    return rows
+
+
+def _nist_control_display_id(catalog_control_id: str) -> str:
+    family, number = catalog_control_id.upper().split("-", 1)
+    base, separator, enhancement = number.partition(".")
+    display = f"{family}-{int(base):02d}"
+    return f"{display}({int(enhancement):02d})" if separator else display
+
+
+def _load_nist_sp800_53_catalog(catalog_path: Path) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Any]]:
+    catalog = load_json(catalog_path)
+    metadata = catalog.get("catalog", {}).get("metadata", {})
+    if metadata.get("version") != "5.2.0":
+        raise ValueError(f"Expected NIST SP 800-53 catalog version 5.2.0; found {metadata.get('version')!r}.")
+    controls: Dict[str, Dict[str, str]] = {}
+
+    def statement_text(control: Dict[str, Any]) -> str:
+        parameter_labels = {
+            str(parameter.get("id") or ""): str(parameter.get("label") or "organization-defined value")
+            for parameter in control.get("params", [])
+        }
+        prose: List[str] = []
+
+        def visit_part(part: Dict[str, Any], inside_statement: bool = False) -> None:
+            in_statement = inside_statement or part.get("name") == "statement"
+            text = str(part.get("prose") or "").strip()
+            if in_statement and text:
+                prose.append(text)
+            for child in part.get("parts", []):
+                visit_part(child, in_statement)
+
+        for part in control.get("parts", []):
+            visit_part(part)
+        text = " ".join(prose)
+        return re.sub(
+            r"\{\{\s*insert:\s*param,\s*([^}\s]+)\s*\}\}",
+            lambda match: "[organization-defined " + parameter_labels.get(match.group(1), "value") + "]",
+            text,
+        )
+
+    def visit_groups(groups: Iterable[Dict[str, Any]]) -> None:
+        for group in groups:
+            visit_controls(group.get("controls", []))
+            visit_groups(group.get("groups", []))
+
+    def visit_controls(items: Iterable[Dict[str, Any]]) -> None:
+        for control in items:
+            control_id = str(control.get("id", "")).lower()
+            title = str(control.get("title", "")).strip()
+            if _NIST_SP800_53_CONTROL_PATTERN.fullmatch(control_id) and title:
+                controls[_nist_control_display_id(control_id)] = {
+                    "catalog_control_id": control_id,
+                    "title": title,
+                    "statement_text": statement_text(control),
+                }
+            visit_controls(control.get("controls", []))
+
+    visit_groups(catalog.get("catalog", {}).get("groups", []))
+    if not controls:
+        raise ValueError("No SP 800-53 controls were found in the supplied OSCAL catalog.")
+    return controls, metadata
+
+
+def _generated_mapping_interpretation(
+    subcategory_id: str, outcome: str, control_id: str, control_title: str, control_statement: str
+) -> Tuple[str, str, str, str]:
+    """Create a clearly product-authored draft interpretation for an official mapping."""
+    key = (subcategory_id, control_id)
+    curated_seed = {
+        ("GV.OC-01", "PM-11"): (
+            "PM-11 applies here because defining and periodically reviewing the organization's mission and business processes makes the mission clear, shared, and current for the people responsible for cybersecurity decisions.",
+            "Document the current mission statement, share it with the person responsible for cybersecurity decisions, and review it when the mission or business activities change.",
+            "Document and share the current mission statement",
+            "Keeping the mission statement current and available helps cybersecurity decisions remain grounded in what the organization is trying to accomplish.",
+        ),
+    }.get(key)
+    if curated_seed:
+        return curated_seed
+    normalized_outcome = outcome.rstrip(".")
+    requirement = re.split(r"(?<=[.;])\s+", control_statement.strip(), maxsplit=1)[0].strip()
+    if not requirement:
+        requirement = f"Apply the {control_title or control_id} requirement"
+    return (
+        f"{requirement} For {subcategory_id}, apply that requirement only to this outcome: {normalized_outcome}.",
+        f"{requirement} Keep the action focused on this outcome: {normalized_outcome}.",
+        f"{control_title or control_id} for {subcategory_id}",
+        f"This action connects {control_id} to the selected outcome: {normalized_outcome}.",
+    )
+
+
+def import_nist_sp800_53_csf_2_mappings(
+    connection: sqlite3.Connection, workbook_path: Path, catalog_path: Path
+) -> Dict[str, Any]:
+    """Import the final SP 800-53 Rev. 5.2.0 CSF 2.0 Informative Reference mapping.
+
+    The workbook is the mapping source; the OSCAL JSON catalog is the authoritative
+    source for the available controls and their titles.  Other workbook references
+    and superseded SP 800-53 versions are intentionally not imported.
+    """
+    workbook_path = workbook_path.resolve()
+    catalog_path = catalog_path.resolve()
+    if not workbook_path.is_file() or not catalog_path.is_file():
+        raise FileNotFoundError("Both the CSF Informative References workbook and SP 800-53 catalog must exist.")
+    controls, catalog_metadata = _load_nist_sp800_53_catalog(catalog_path)
+    mappings: set[Tuple[str, str]] = set()
+    mapping_outcomes: Dict[Tuple[str, str], str] = {}
+    skipped_references: set[str] = set()
+    for row in _xlsx_sheet_rows(workbook_path, "CSF 2.0"):
+        subcategory_match = re.match(r"^([A-Z]{2}\.[A-Z]{2}-\d{2}):", row.get("C", "").strip())
+        if not subcategory_match:
+            continue
+        subcategory_id = subcategory_match.group(1)
+        outcome = row.get("C", "").strip().split(":", 1)[1].strip()
+        for match in _NIST_SP800_53_REFERENCE_PATTERN.finditer(row.get("E", "")):
+            for candidate in re.split(r"[,;]", match.group(1)):
+                value = candidate.strip()
+                if not value:
+                    continue
+                if not re.fullmatch(r"[A-Z]{2,3}-\d{2}(?:\(\d{2}\))?", value):
+                    skipped_references.add(value)
+                    continue
+                if value not in controls:
+                    raise ValueError(f"CSF mapping references {value}, which is absent from the supplied SP 800-53 5.2.0 catalog.")
+                mappings.add((subcategory_id, value))
+                mapping_outcomes[(subcategory_id, value)] = outcome
+    if not mappings:
+        raise ValueError("No SP 800-53 Rev. 5.2.0 CSF mappings were found in the workbook.")
+
+    framework_id = "nist-sp-800-53-r5.2.0"
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """INSERT INTO csf_reference_frameworks(
+                framework_id, framework_name, publisher, version, mapping_name,
+                mapping_reference_id, mapping_status, mapping_source_path, mapping_source_sha256,
+                catalog_source_path, catalog_source_sha256, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(framework_id) DO UPDATE SET
+                framework_name=excluded.framework_name, publisher=excluded.publisher, version=excluded.version,
+                mapping_name=excluded.mapping_name, mapping_reference_id=excluded.mapping_reference_id,
+                mapping_status=excluded.mapping_status, mapping_source_path=excluded.mapping_source_path,
+                mapping_source_sha256=excluded.mapping_source_sha256, catalog_source_path=excluded.catalog_source_path,
+                catalog_source_sha256=excluded.catalog_source_sha256, imported_at=excluded.imported_at""",
+            (framework_id, "NIST SP 800-53", "National Institute of Standards and Technology", "5.2.0",
+             "NIST CSF 2.0 to SP 800-53 Rev. 5.2.0", "186", "final", str(workbook_path),
+             _sha256_file(workbook_path), str(catalog_path), _sha256_file(catalog_path), now),
+        )
+        connection.executemany(
+            """INSERT INTO csf_reference_controls(
+                framework_id, control_id, title, statement_text, catalog_control_id, source_catalog_uuid
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(framework_id, control_id) DO UPDATE SET title=excluded.title,
+                statement_text=excluded.statement_text, catalog_control_id=excluded.catalog_control_id,
+                source_catalog_uuid=excluded.source_catalog_uuid""",
+            [(framework_id, control_id, control["title"], control["statement_text"], control["catalog_control_id"], catalog_metadata.get("uuid"))
+             for control_id, control in controls.items()],
+        )
+        connection.executemany(
+            """INSERT INTO csf_subcategory_control_mappings(
+                framework_id, control_id, subcategory_id, interpretation_text, suggested_action_text,
+                action_title_example, action_rationale_example,
+                interpretation_source, interpretation_updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'product-generated-v1', ?)
+            ON CONFLICT(framework_id, control_id, subcategory_id) DO UPDATE SET
+                interpretation_text = CASE WHEN csf_subcategory_control_mappings.interpretation_source = 'product-generated-v1'
+                    OR csf_subcategory_control_mappings.interpretation_text = '' THEN excluded.interpretation_text
+                    ELSE csf_subcategory_control_mappings.interpretation_text END,
+                suggested_action_text = CASE WHEN csf_subcategory_control_mappings.interpretation_source = 'product-generated-v1'
+                    OR csf_subcategory_control_mappings.suggested_action_text = '' THEN excluded.suggested_action_text
+                    ELSE csf_subcategory_control_mappings.suggested_action_text END,
+                action_title_example = CASE WHEN csf_subcategory_control_mappings.interpretation_source = 'product-generated-v1'
+                    OR csf_subcategory_control_mappings.action_title_example = '' THEN excluded.action_title_example
+                    ELSE csf_subcategory_control_mappings.action_title_example END,
+                action_rationale_example = CASE WHEN csf_subcategory_control_mappings.interpretation_source = 'product-generated-v1'
+                    OR csf_subcategory_control_mappings.action_rationale_example = '' THEN excluded.action_rationale_example
+                    ELSE csf_subcategory_control_mappings.action_rationale_example END,
+                interpretation_source = CASE WHEN csf_subcategory_control_mappings.interpretation_source = 'product-generated-v1'
+                    OR csf_subcategory_control_mappings.interpretation_text = '' THEN excluded.interpretation_source
+                    ELSE csf_subcategory_control_mappings.interpretation_source END,
+                interpretation_updated_at = CASE WHEN csf_subcategory_control_mappings.interpretation_source = 'product-generated-v1'
+                    OR csf_subcategory_control_mappings.interpretation_text = '' THEN excluded.interpretation_updated_at
+                    ELSE csf_subcategory_control_mappings.interpretation_updated_at END""",
+            [
+                (
+                    framework_id,
+                    control_id,
+                    subcategory_id,
+                    *_generated_mapping_interpretation(
+                        subcategory_id,
+                        mapping_outcomes[(subcategory_id, control_id)],
+                        control_id,
+                        controls[control_id]["title"],
+                        controls[control_id]["statement_text"],
+                    ),
+                    now,
+                )
+                for subcategory_id, control_id in sorted(mappings)
+            ],
+        )
+    return {
+        "framework_id": framework_id,
+        "catalog_version": catalog_metadata["version"],
+        "control_count": len(controls),
+        "mapped_control_count": len({control_id for _, control_id in mappings}),
+        "mapping_count": len(mappings),
+        "skipped_reference_values": sorted(skipped_references),
+        "workbook_path": str(workbook_path),
+        "catalog_path": str(catalog_path),
+    }
+
+
 def get_app_state(connection: sqlite3.Connection, namespace: str, state_key: str) -> Dict[str, Any]:
     row = connection.execute(
         """
@@ -2662,6 +3827,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("init", help="Initialize the IOC store schema.")
 
+    nist_mapping_parser = subparsers.add_parser(
+        "import-nist-sp800-53-csf-mappings",
+        help="Import NIST SP 800-53 Rev. 5.2.0 controls and final CSF 2.0 informative-reference mappings.",
+    )
+    nist_mapping_parser.add_argument("--workbook", required=True, help="Path to csf-2.0-informative-references.xlsx.")
+    nist_mapping_parser.add_argument("--catalog", required=True, help="Path to the NIST SP 800-53 Rev. 5 OSCAL JSON catalog.")
+
     import_parser = subparsers.add_parser("import-json", help="Import normalized indicators from a JSON file.")
     import_parser.add_argument("--input", required=True, help="Path to a normalized indicator JSON file.")
 
@@ -2761,6 +3933,15 @@ def main() -> int:
             "Initialized application state store and seeded CSF profile content "
             f"(existing operational records retained): {db_path}"
         )
+        return 0
+
+    if args.command == "import-nist-sp800-53-csf-mappings":
+        payload = import_nist_sp800_53_csf_2_mappings(
+            connection,
+            Path(args.workbook),
+            Path(args.catalog),
+        )
+        print(json.dumps(payload, indent=2))
         return 0
 
     if args.command == "import-json":

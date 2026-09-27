@@ -1,0 +1,206 @@
+flowchart LR
+  classDef outcome fill:#E8F0F8,stroke:#40647A,color:#16242D
+  classDef information fill:#E8F3EC,stroke:#4D806A,color:#16242D
+
+  %% Blue nodes are CSF Subcategories. Green nodes are reusable information items.
+  DE_AE_02["DE.AE-02"]:::outcome
+  DE_AE_03["DE.AE-03"]:::outcome
+  DE_AE_04["DE.AE-04"]:::outcome
+  DE_AE_08["DE.AE-08"]:::outcome
+  DE_CM_01["DE.CM-01"]:::outcome
+  DE_CM_03["DE.CM-03"]:::outcome
+  DE_CM_06["DE.CM-06"]:::outcome
+  DE_CM_09["DE.CM-09"]:::outcome
+  GV_OC_01["GV.OC-01"]:::outcome
+  GV_OC_02["GV.OC-02"]:::outcome
+  GV_OC_03["GV.OC-03"]:::outcome
+  GV_OC_04["GV.OC-04"]:::outcome
+  GV_OC_05["GV.OC-05"]:::outcome
+  GV_OV_01["GV.OV-01"]:::outcome
+  GV_OV_02["GV.OV-02"]:::outcome
+  GV_PO_01["GV.PO-01"]:::outcome
+  GV_PO_02["GV.PO-02"]:::outcome
+  GV_RM_01["GV.RM-01"]:::outcome
+  GV_RM_02["GV.RM-02"]:::outcome
+  GV_RM_04["GV.RM-04"]:::outcome
+  GV_RM_05["GV.RM-05"]:::outcome
+  GV_RM_06["GV.RM-06"]:::outcome
+  GV_RR_02["GV.RR-02"]:::outcome
+  GV_RR_03["GV.RR-03"]:::outcome
+  GV_SC_01["GV.SC-01"]:::outcome
+  GV_SC_02["GV.SC-02"]:::outcome
+  GV_SC_04["GV.SC-04"]:::outcome
+  GV_SC_05["GV.SC-05"]:::outcome
+  GV_SC_06["GV.SC-06"]:::outcome
+  GV_SC_07["GV.SC-07"]:::outcome
+  ID_AM_01["ID.AM-01"]:::outcome
+  ID_AM_02["ID.AM-02"]:::outcome
+  ID_AM_03["ID.AM-03"]:::outcome
+  ID_AM_04["ID.AM-04"]:::outcome
+  ID_AM_05["ID.AM-05"]:::outcome
+  ID_AM_07["ID.AM-07"]:::outcome
+  ID_IM_01["ID.IM-01"]:::outcome
+  ID_IM_02["ID.IM-02"]:::outcome
+  ID_IM_03["ID.IM-03"]:::outcome
+  ID_IM_04["ID.IM-04"]:::outcome
+  ID_RA_01["ID.RA-01"]:::outcome
+  ID_RA_03["ID.RA-03"]:::outcome
+  ID_RA_04["ID.RA-04"]:::outcome
+  ID_RA_05["ID.RA-05"]:::outcome
+  ID_RA_06["ID.RA-06"]:::outcome
+  ID_RA_09["ID.RA-09"]:::outcome
+  ID_RA_10["ID.RA-10"]:::outcome
+  PR_AA_05["PR.AA-05"]:::outcome
+  PR_DS_01["PR.DS-01"]:::outcome
+  PR_DS_02["PR.DS-02"]:::outcome
+  PR_IR_01["PR.IR-01"]:::outcome
+  PR_IR_03["PR.IR-03"]:::outcome
+  PR_PS_01["PR.PS-01"]:::outcome
+  PR_PS_02["PR.PS-02"]:::outcome
+  PR_PS_03["PR.PS-03"]:::outcome
+  RC_CO_03["RC.CO-03"]:::outcome
+  RC_CO_04["RC.CO-04"]:::outcome
+  RC_RP_01["RC.RP-01"]:::outcome
+  RC_RP_02["RC.RP-02"]:::outcome
+  RC_RP_04["RC.RP-04"]:::outcome
+  RC_RP_05["RC.RP-05"]:::outcome
+  RC_RP_06["RC.RP-06"]:::outcome
+  RS_AN_03["RS.AN-03"]:::outcome
+  RS_AN_08["RS.AN-08"]:::outcome
+  RS_CO_02["RS.CO-02"]:::outcome
+  RS_CO_03["RS.CO-03"]:::outcome
+  RS_MA_01["RS.MA-01"]:::outcome
+  RS_MA_03["RS.MA-03"]:::outcome
+  RS_MI_01["RS.MI-01"]:::outcome
+  RS_MI_02["RS.MI-02"]:::outcome
+  info_organizational_mission["Organizational mission and objectives"]:::information
+  info_stakeholder_cybersecurity_needs["Stakeholder cybersecurity and privacy needs"]:::information
+  info_legal_contractual_requirements["Legal, regulatory, and contractual requirements"]:::information
+  info_critical_services_and_objectives["Critical services and objectives"]:::information
+  info_external_dependencies["External dependencies"]:::information
+  info_risk_objectives_and_tolerance["Risk objectives, tolerance, and response direction"]:::information
+  info_risk_assessment_method["Risk assessment method"]:::information
+  info_cybersecurity_roles["Cybersecurity roles and authorities"]:::information
+  info_supplier_criticality["Supplier criticality and priority"]:::information
+  info_asset_inventory["Asset inventory"]:::information
+  info_network_and_data_flows["Network communication and data flows"]:::information
+  info_asset_criticality["Asset criticality and impact"]:::information
+  info_vulnerabilities_and_threats["Validated vulnerabilities and relevant threats"]:::information
+  info_risk_scenarios_and_priorities["Risk scenarios and priorities"]:::information
+  info_selected_risk_responses["Selected risk responses"]:::information
+  info_monitoring_findings["Monitoring findings and potentially adverse events"]:::information
+  info_incident_analysis["Incident analysis and response status"]:::information
+  info_recovery_priorities_and_status["Recovery priorities and restoration status"]:::information
+  info_improvement_lessons["Lessons and improvement opportunities"]:::information
+
+  %% Source outcome → information item
+  GV_OC_01 --> info_organizational_mission
+  GV_OC_02 --> info_stakeholder_cybersecurity_needs
+  GV_OC_03 --> info_legal_contractual_requirements
+  GV_OC_04 --> info_critical_services_and_objectives
+  GV_OC_05 --> info_external_dependencies
+  GV_RM_01 --> info_risk_objectives_and_tolerance
+  GV_RM_02 --> info_risk_objectives_and_tolerance
+  GV_RM_04 --> info_risk_objectives_and_tolerance
+  GV_RM_06 --> info_risk_assessment_method
+  GV_RR_02 --> info_cybersecurity_roles
+  GV_SC_04 --> info_supplier_criticality
+  ID_AM_01 --> info_asset_inventory
+  ID_AM_02 --> info_asset_inventory
+  ID_AM_04 --> info_asset_inventory
+  ID_AM_07 --> info_asset_inventory
+  ID_AM_03 --> info_network_and_data_flows
+  ID_AM_05 --> info_asset_criticality
+  ID_RA_01 --> info_vulnerabilities_and_threats
+  ID_RA_03 --> info_vulnerabilities_and_threats
+  ID_RA_04 --> info_risk_scenarios_and_priorities
+  ID_RA_05 --> info_risk_scenarios_and_priorities
+  ID_RA_06 --> info_selected_risk_responses
+  DE_CM_01 --> info_monitoring_findings
+  DE_CM_03 --> info_monitoring_findings
+  DE_CM_06 --> info_monitoring_findings
+  DE_CM_09 --> info_monitoring_findings
+  DE_AE_08 --> info_incident_analysis
+  RS_AN_03 --> info_incident_analysis
+  RS_AN_08 --> info_incident_analysis
+  RC_RP_02 --> info_recovery_priorities_and_status
+  RC_RP_05 --> info_recovery_priorities_and_status
+  ID_IM_01 --> info_improvement_lessons
+  ID_IM_02 --> info_improvement_lessons
+  ID_IM_03 --> info_improvement_lessons
+
+  %% Information item → downstream outcome. Labels show required, planning, or event input.
+  info_organizational_mission -->|planning input| GV_RM_01
+  info_organizational_mission -->|planning input| ID_AM_05
+  info_organizational_mission -->|planning input| ID_RA_04
+  info_organizational_mission -->|planning input| RC_RP_04
+  info_stakeholder_cybersecurity_needs -->|planning input| GV_RM_01
+  info_stakeholder_cybersecurity_needs -->|planning input| GV_RM_05
+  info_stakeholder_cybersecurity_needs -->|planning input| GV_SC_01
+  info_stakeholder_cybersecurity_needs -->|required input| GV_SC_05
+  info_stakeholder_cybersecurity_needs -->|planning input| RS_CO_02
+  info_stakeholder_cybersecurity_needs -->|planning input| RS_CO_03
+  info_stakeholder_cybersecurity_needs -->|planning input| RC_CO_03
+  info_legal_contractual_requirements -->|planning input| GV_PO_01
+  info_legal_contractual_requirements -->|planning input| GV_PO_02
+  info_legal_contractual_requirements -->|required input| GV_SC_05
+  info_legal_contractual_requirements -->|planning input| RS_CO_02
+  info_legal_contractual_requirements -->|planning input| RC_CO_04
+  info_critical_services_and_objectives -->|planning input| ID_AM_05
+  info_critical_services_and_objectives -->|planning input| ID_RA_04
+  info_critical_services_and_objectives -->|planning input| PR_IR_03
+  info_critical_services_and_objectives -->|required input| RC_RP_02
+  info_critical_services_and_objectives -->|required input| RC_RP_04
+  info_critical_services_and_objectives -->|planning input| RC_CO_03
+  info_external_dependencies -->|planning input| ID_AM_04
+  info_external_dependencies -->|planning input| GV_SC_04
+  info_external_dependencies -->|planning input| ID_RA_10
+  info_external_dependencies -->|planning input| DE_CM_06
+  info_external_dependencies -->|planning input| RC_RP_02
+  info_risk_objectives_and_tolerance -->|planning input| GV_PO_01
+  info_risk_objectives_and_tolerance -->|planning input| ID_RA_06
+  info_risk_objectives_and_tolerance -->|planning input| GV_RR_03
+  info_risk_assessment_method -->|required input| ID_RA_04
+  info_risk_assessment_method -->|required input| ID_RA_05
+  info_risk_assessment_method -->|planning input| ID_RA_06
+  info_cybersecurity_roles -->|required input| GV_SC_02
+  info_cybersecurity_roles -->|required input| RS_MA_01
+  info_cybersecurity_roles -->|required input| RC_RP_01
+  info_supplier_criticality -->|planning input| GV_SC_05
+  info_supplier_criticality -->|planning input| GV_SC_06
+  info_supplier_criticality -->|required input| ID_RA_10
+  info_supplier_criticality -->|planning input| GV_SC_07
+  info_asset_inventory -->|required input| ID_RA_01
+  info_asset_inventory -->|required input| ID_RA_09
+  info_asset_inventory -->|required input| PR_PS_01
+  info_asset_inventory -->|required input| PR_PS_02
+  info_asset_inventory -->|required input| PR_PS_03
+  info_asset_inventory -->|required input| DE_CM_09
+  info_network_and_data_flows -->|planning input| PR_DS_02
+  info_network_and_data_flows -->|planning input| PR_IR_01
+  info_network_and_data_flows -->|required input| DE_CM_01
+  info_asset_criticality -->|planning input| ID_RA_04
+  info_asset_criticality -->|planning input| RC_RP_02
+  info_vulnerabilities_and_threats -->|required input| ID_RA_04
+  info_vulnerabilities_and_threats -->|required input| ID_RA_05
+  info_risk_scenarios_and_priorities -->|required input| ID_RA_06
+  info_selected_risk_responses -->|planning input| PR_AA_05
+  info_selected_risk_responses -->|planning input| PR_DS_01
+  info_selected_risk_responses -->|planning input| PR_DS_02
+  info_selected_risk_responses -->|planning input| PR_IR_03
+  info_monitoring_findings -->|event input| DE_AE_02
+  info_monitoring_findings -->|event input| DE_AE_03
+  info_monitoring_findings -->|event input| DE_AE_04
+  info_monitoring_findings -->|event input| DE_AE_08
+  info_incident_analysis -->|event input| RS_MA_01
+  info_incident_analysis -->|event input| RS_MA_03
+  info_incident_analysis -->|event input| RS_MI_01
+  info_incident_analysis -->|event input| RS_MI_02
+  info_incident_analysis -->|event input| RC_RP_01
+  info_recovery_priorities_and_status -->|event input| RC_RP_05
+  info_recovery_priorities_and_status -->|event input| RC_RP_06
+  info_recovery_priorities_and_status -->|event input| RC_CO_03
+  info_improvement_lessons -->|planning input| GV_OV_01
+  info_improvement_lessons -->|planning input| GV_OV_02
+  info_improvement_lessons -->|planning input| GV_PO_02
+  info_improvement_lessons -->|planning input| ID_IM_04

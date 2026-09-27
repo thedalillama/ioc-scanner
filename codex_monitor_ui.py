@@ -36,7 +36,6 @@ UI_DISPLAY_VERSION = "1.0"
 PRODUCT_DISPLAY_NAME = "CSF Analyst UI"
 FRAMEWORK_DISPLAY_NAME = "National Institute of Standards and Technology Cybersecurity Framework (NIST CSF) 2"
 
-
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -249,15 +248,15 @@ UI_CLIENT_SCRIPT = """
     }
   };
 
-  const explorerScrollStep = (list) => {
-    const row = list.querySelector(".csf-explorer-row");
+  const listScrollStep = (list) => {
+    const row = list.querySelector(".csf-explorer-row, .csf-record-row");
     if (!row) return 0;
     const rowGap = Number.parseFloat(window.getComputedStyle(list).rowGap) || 0;
     return row.getBoundingClientRect().height + rowGap;
   };
 
-  const scrollExplorerList = (list, direction) => {
-    const step = explorerScrollStep(list);
+  const scrollListByRow = (list, direction) => {
+    const step = listScrollStep(list);
     if (!step || list.scrollHeight <= list.clientHeight) return false;
     const currentRow = Math.round(list.scrollTop / step);
     const maxRow = Math.round((list.scrollHeight - list.clientHeight) / step);
@@ -305,6 +304,27 @@ UI_CLIENT_SCRIPT = """
     const modalClose = event.target.closest("button[data-modal-close]");
     const backdrop = event.target.closest(".modal-backdrop");
     if (modalClose || (backdrop && event.target === backdrop)) { event.preventDefault(); closeModal(); return; }
+    const informationFlow = event.target.closest("button[data-information-flow-modal]");
+    if (informationFlow) {
+      event.preventDefault();
+      const host = document.getElementById("csf-modal-host");
+      const template = document.getElementById("csf-information-flow-template");
+      if (!host || !template) return;
+      if (!informationFlow.id) informationFlow.id = `information-flow-opener-${Date.now()}`;
+      host.replaceChildren(template.content.cloneNode(true));
+      const direction = informationFlow.dataset.informationFlowDirection || "all";
+      if (direction !== "all") {
+        host.querySelectorAll("[data-information-flow-section]").forEach((section) => {
+          section.hidden = section.dataset.informationFlowSection !== direction;
+        });
+      }
+      const dialog = host.querySelector("[role=dialog]");
+      if (dialog) {
+        dialog.dataset.returnFocus = informationFlow.id;
+        dialog.querySelector("[data-modal-close]")?.focus();
+      }
+      return;
+    }
     const modalLink = event.target.closest("a[data-record-modal]");
     if (modalLink && event.button === 0 && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
@@ -319,20 +339,41 @@ UI_CLIENT_SCRIPT = """
     }
   });
 
+  document.addEventListener("submit", (event) => {
+    if (!event.submitter?.matches("[data-confirm-delete]")) return;
+    if (!window.confirm("Delete this action and all of its progress updates? This cannot be undone.")) {
+      event.preventDefault();
+    }
+  });
+
+  document.addEventListener("change", (event) => {
+    const control = event.target.closest("input[data-action-title-example]");
+    if (!control?.checked) return;
+    const form = control.closest("form");
+    for (const [selector, example] of [
+      ['input[name="title"]', control.dataset.actionTitleExample],
+      ['textarea[name="details"]', control.dataset.actionDetailsExample],
+      ['textarea[name="rationale"]', control.dataset.actionRationaleExample],
+    ]) {
+      const field = form?.querySelector(selector);
+      if (field && !field.value && example) field.placeholder = `Example: ${example}`;
+    }
+  });
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && document.querySelector("#csf-modal-host [role=dialog]")) closeModal();
-    const explorerList = event.target.closest?.(".csf-explorer-list");
+    const explorerList = event.target.closest?.(".csf-explorer-list, .csf-record-list");
     if (explorerList && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
       event.preventDefault();
-      scrollExplorerList(explorerList, event.key === "ArrowDown" ? 1 : -1);
+      scrollListByRow(explorerList, event.key === "ArrowDown" ? 1 : -1);
     }
   });
 
   document.addEventListener("wheel", (event) => {
-    const explorerList = event.target.closest?.(".csf-explorer-list");
+    const explorerList = event.target.closest?.(".csf-explorer-list, .csf-record-list");
     if (!explorerList || !event.deltaY) return;
     event.preventDefault();
-    scrollExplorerList(explorerList, event.deltaY > 0 ? 1 : -1);
+    scrollListByRow(explorerList, event.deltaY > 0 ? 1 : -1);
   }, { passive: false });
 
   document.addEventListener("mouseover", (event) => {
@@ -396,11 +437,15 @@ def html_page(title: str, body: str) -> str:
     .finding {{ padding:12px 14px; border-radius:16px; border:1px solid rgba(34,50,59,.10); background:rgba(255,255,255,.72); }} .finding.high {{ background:var(--rose-soft); }} .finding.medium {{ background:var(--amber-soft); }}
     .path,pre {{ background:#f8f5ef; border:1px solid rgba(34,50,59,.10); border-radius:16px; color:#354751; }} .path {{ font:12px/1.5 "Cascadia Code","Consolas",monospace; padding:9px 11px; }} pre {{ margin:0; padding:16px; overflow:auto; font:12px/1.55 "Cascadia Code","Consolas",monospace; }}
     .mood-strip {{ display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }} .mood-chip {{ padding:14px 16px; }} .mood-chip .value {{ margin-top:6px; font-size:17px; font-weight:620; color:var(--ink); }}
-    .csf-workspace {{ display:grid; gap:18px; }} .workspace-scroll {{ min-width:0; }} .workspace-scroll > * + * {{ margin-top:18px; }} .workspace-scroll .grid.two,.workspace-scroll .grid.three {{ grid-template-columns:minmax(0,1fr); }} .csf-explorer {{ display:grid; gap:10px; }} .csf-explorer-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }} .csf-explorer-list-panel {{ display:grid; grid-template-rows:auto minmax(0,1fr); gap:6px; min-height:0; }} .csf-explorer-list-panel h3 {{ margin:0; }} .csf-explorer-list {{ display:grid; grid-auto-rows:104px; gap:8px; height:104px; max-height:104px; overflow:auto; padding-right:4px; overscroll-behavior:contain; }} .csf-explorer-list:focus {{ outline:2px solid rgba(135,169,194,.72); outline-offset:3px; border-radius:14px; }} .csf-explorer-row {{ display:grid; grid-template-columns:106px minmax(180px,.6fr) minmax(0,1.8fr); align-items:center; gap:12px; height:104px; overflow:hidden; padding:11px 13px; border:1px solid rgba(34,50,59,.10); border-radius:14px; background:rgba(255,255,255,.72); color:var(--ink); text-align:left; }} .csf-explorer-row:hover {{ background:var(--blue-soft); border-color:rgba(135,169,194,.42); }} .csf-explorer-row.active {{ background:var(--sage-soft); border-color:rgba(125,163,143,.48); box-shadow:inset 4px 0 0 #7da38f; }} .csf-explorer-id {{ font-size:12px; font-weight:750; letter-spacing:.05em; color:#4f6c7e; }} .csf-explorer-title {{ font-weight:700; }} .csf-explorer-copy {{ display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3; color:var(--muted); font-size:13px; }} .csf-explorer-placeholder {{ padding:18px; border:1px dashed rgba(34,50,59,.20); border-radius:16px; color:var(--muted); background:rgba(248,245,239,.70); }} .csf-outcome {{ display:grid; gap:12px; padding:18px; border-radius:18px; background:rgba(232,239,245,.55); border:1px solid rgba(135,169,194,.28); }} .csf-outcome .focus-title {{ font-size:20px; }} .csf-outcome h3 {{ margin:0; }} .csf-outcome p {{ margin:0; color:#475861; }} .csf-outcome-state {{ padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.76); border:1px solid rgba(34,50,59,.10); }} .modal-backdrop {{ position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:24px; background:rgba(26,39,47,.42); }} .modal-dialog {{ width:min(860px,100%); max-height:min(860px,calc(100vh - 48px)); display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border:1px solid rgba(34,50,59,.18); border-radius:24px; background:var(--panel); box-shadow:0 28px 80px rgba(20,32,38,.32); }} .modal-head {{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 22px; border-bottom:1px solid var(--line); }} .modal-body {{ min-height:0; overflow:auto; padding:20px 22px; }} .modal-body .panel {{ box-shadow:none; }}
+    .csf-workspace {{ display:grid; gap:18px; }} .workspace-scroll {{ min-width:0; }} .workspace-scroll > * + * {{ margin-top:18px; }} .workspace-scroll .grid.two,.workspace-scroll .grid.three {{ grid-template-columns:minmax(0,1fr); }} .csf-explorer {{ display:grid; gap:10px; }} .csf-explorer-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }} .csf-explorer-list-panel {{ display:grid; grid-template-rows:auto minmax(0,1fr); gap:6px; min-height:0; }} .csf-explorer-list-panel h3 {{ margin:0; }} .csf-explorer-list {{ display:grid; grid-auto-rows:104px; gap:8px; height:104px; max-height:104px; overflow:auto; padding-right:4px; overscroll-behavior:contain; }} .csf-explorer-list:focus {{ outline:2px solid rgba(135,169,194,.72); outline-offset:3px; border-radius:14px; }} .csf-explorer-row {{ display:grid; grid-template-columns:106px minmax(180px,.6fr) minmax(0,1.8fr); align-items:center; gap:12px; height:104px; overflow:hidden; padding:11px 13px; border:1px solid rgba(34,50,59,.10); border-radius:14px; background:rgba(255,255,255,.72); color:var(--ink); text-align:left; }} .csf-explorer-row:hover {{ background:var(--blue-soft); border-color:rgba(135,169,194,.42); }} .csf-explorer-row.active {{ background:var(--sage-soft); border-color:rgba(125,163,143,.48); box-shadow:inset 4px 0 0 #7da38f; }} .csf-explorer-id {{ font-size:12px; font-weight:750; letter-spacing:.05em; color:#4f6c7e; }} .csf-explorer-title {{ font-weight:700; }} .csf-explorer-copy {{ display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3; color:var(--muted); font-size:13px; }} .csf-explorer-placeholder {{ padding:18px; border:1px dashed rgba(34,50,59,.20); border-radius:16px; color:var(--muted); background:rgba(248,245,239,.70); }} .csf-outcome {{ display:grid; gap:12px; padding:18px; border-radius:18px; background:rgba(232,239,245,.55); border:1px solid rgba(135,169,194,.28); }} .csf-outcome .focus-title {{ font-size:20px; }} .csf-outcome h3 {{ margin:0; }} .csf-outcome p {{ margin:0; color:#475861; }} .csf-outcome-state {{ padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.76); border:1px solid rgba(34,50,59,.10); }} .modal-backdrop {{ position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:16px; background:rgba(26,39,47,.42); }} .modal-dialog {{ width:min(860px,100%); max-height:calc(100vh - 32px); display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border:1px solid rgba(34,50,59,.18); border-radius:24px; background:var(--panel); box-shadow:0 28px 80px rgba(20,32,38,.32); }} .modal-head {{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 22px; border-bottom:1px solid var(--line); }} .modal-body {{ min-height:0; overflow:auto; padding:20px 22px; }} .modal-body .panel {{ box-shadow:none; }}
     @media (min-width:1000px) and (min-height:1000px) {{ html,body {{ height:100%; overflow:hidden; }} .shell {{ height:100vh; max-width:none; padding:14px 18px; }} .page-stack,#csf-app {{ height:100%; min-height:0; }} .page-stack > * + * {{ margin-top:0; }} #csf-app {{ display:grid; grid-template-rows:auto minmax(0,1fr); gap:12px; }} .csf-map {{ width:100%; max-width:none; padding:14px 18px; }} .app-masthead {{ margin-bottom:8px; }} .app-title {{ font-size:17px; }} .csf-map .kicker {{ display:none; }} .csf-action-bar {{ gap:32px; grid-template-columns:repeat(6,minmax(0,1fr)) !important; }} .csf-action {{ min-height:72px; padding:10px 12px; }} .csf-action:not(:last-child)::after {{ right:-25px; font-size:15px; }} .csf-guidance {{ grid-template-columns:auto 1fr; align-items:center; gap:10px; margin-top:10px; padding:9px 12px; }} .csf-utilities {{ display:none; }} .csf-workspace {{ min-height:0; grid-template-rows:minmax(0,1fr); gap:12px; overflow:hidden; }} .workspace-scroll {{ min-height:0; display:grid; grid-template-columns:minmax(0,1fr); grid-auto-rows:minmax(0,1fr); gap:12px; overflow:hidden; }} .workspace-scroll > .grid {{ display:contents; }} .workspace-scroll > .panel,.workspace-scroll > .grid > .panel {{ min-height:0; max-height:none; margin:0 !important; overflow:auto; overscroll-behavior:contain; }} .workspace-scroll > .csf-explorer {{ grid-column:1; }} .workspace-scroll > .csf-selection-list {{ grid-template-rows:auto minmax(0,1fr); overflow:hidden; }} .workspace-scroll > .csf-selection-list .csf-explorer-list-panel {{ min-height:0; }} .workspace-scroll > .csf-selection-list .csf-explorer-list {{ min-height:0; height:104px; max-height:104px; overflow:auto; }} .workspace-scroll > .panel:only-child {{ grid-column:1; }} .workspace-scroll .panel {{ padding:14px 18px; }} .workspace-scroll .grid {{ gap:12px; }} .workspace-scroll .task + .task {{ margin-top:10px; }} .workspace-scroll .metric {{ min-height:78px; padding:12px; }} .workspace-scroll .care-tile,.workspace-scroll .focus-card {{ padding:13px; }} }}
     @media (max-width:1100px) {{ .hero,.grid.two,.grid.three {{ grid-template-columns:1fr; }} .csf-action-bar {{ grid-template-columns:repeat(3,minmax(0,1fr)); }} .csf-action:not(:last-child)::after {{ display:none; }} h1 {{ max-width:none; font-size:38px; }} }} @media (max-width:760px) {{ .shell {{ padding:18px 14px 40px; }} .panel,.hero-main {{ padding:20px; }} .csf-action-bar {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .csf-action {{ min-height:104px; }} .task-head,.page-topbar,.csf-explorer-head {{ flex-direction:column; align-items:flex-start; }} .csf-explorer-list {{ grid-auto-rows:auto; }} .csf-explorer-row {{ grid-template-columns:1fr; height:auto; min-height:104px; gap:4px; }} .kv {{ grid-template-columns:1fr; }} }}
-    .csf-explorer-composite {{ grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; }} .csf-explorer-section {{ min-height:0; }} .csf-explorer-section + .csf-explorer-section {{ padding-top:10px; border-top:1px solid rgba(34,50,59,.10); }} .csf-explorer-composite .csf-selection-list {{ display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; }} .csf-example-region {{ overflow:auto; overscroll-behavior:contain; }} @media (min-width:1000px) and (min-height:1000px) {{ .workspace-scroll.csf-explorer-workspace {{ grid-template-rows:auto minmax(0,1fr); grid-auto-rows:unset; }} .workspace-scroll.csf-explorer-workspace > .csf-explorer-composite {{ grid-row:auto; grid-template-rows:auto auto 148px; align-self:start; overflow:hidden !important; }} }}
-    .csf-assessment-prototype {{ display:grid; gap:10px; }} .csf-assessment-prototype > .kicker {{ margin:0; }} .csf-assessment-prototype > .mini {{ margin:0; }} .csf-assessment-block {{ padding:11px 13px; border:1px solid rgba(34,50,59,.10); border-radius:12px; background:rgba(255,255,255,.76); }} .csf-assessment-block strong {{ display:block; margin-bottom:4px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#475861; }} .csf-assessment-block p {{ margin:0; color:var(--muted); font-size:13px; }} .csf-response-options {{ display:flex; flex-wrap:wrap; gap:7px; margin:7px 0; }} .csf-response-options span {{ padding:4px 8px; border:1px solid rgba(34,50,59,.14); border-radius:999px; color:#53636b; font-size:12px; background:rgba(255,255,255,.82); }}
+    .csf-explorer-composite {{ grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; }} .csf-explorer-section {{ min-height:0; }} .csf-explorer-section + .csf-explorer-section {{ padding-top:10px; border-top:1px solid rgba(34,50,59,.10); }} .csf-explorer-composite .csf-selection-list {{ display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; }} .csf-example-region {{ overflow:auto; overscroll-behavior:contain; }} .csf-example-region .csf-outcome-state {{ padding:6px 14px 12px; color:var(--muted); font-size:13px; }} .csf-example-region .csf-outcome-state > :first-child {{ margin-top:0; }} .csf-example-region .csf-outcome-state > :last-child {{ margin-bottom:0; }} .workspace-scroll.csf-explorer-workspace {{ display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:repeat(2,minmax(0,1fr)); gap:18px; }} .workspace-scroll.csf-explorer-workspace > * + * {{ margin-top:0; }} @media (min-width:1000px) {{ .workspace-scroll .csf-explorer-composite > .csf-selection-list:first-child {{ height:116px; grid-template-rows:18px 98px; }} .workspace-scroll .csf-explorer-composite > .csf-selection-list:first-child .kicker {{ margin-bottom:0; line-height:18px; }} .workspace-scroll .csf-explorer-composite > .csf-selection-list:nth-child(2) {{ height:127px; grid-template-rows:18px 98px; }} .workspace-scroll .csf-explorer-composite > .csf-selection-list:nth-child(2) .kicker {{ margin-bottom:0; line-height:18px; }} .workspace-scroll .csf-selection-list .csf-explorer-list[data-explorer-list="categories"] {{ grid-auto-rows:95px; height:95px; max-height:95px; margin-top:3px; }} .csf-explorer-list[data-explorer-list="categories"] .csf-explorer-row {{ height:95px; }} .workspace-scroll .csf-selection-list .csf-explorer-list[data-explorer-list="subcategories"] {{ grid-auto-rows:95px; height:95px; max-height:95px; margin-top:3px; }} .csf-explorer-list[data-explorer-list="subcategories"] .csf-explorer-row {{ height:95px; }} }} @media (min-width:1000px) and (max-height:999px) {{ .workspace-scroll.csf-explorer-workspace {{ grid-template-rows:repeat(2,534px); }} .workspace-scroll.csf-explorer-workspace > .csf-explorer {{ height:534px; min-height:0; }} .workspace-scroll.csf-explorer-workspace > .csf-explorer:not(.csf-explorer-composite) {{ overflow:auto; overscroll-behavior:contain; }} }} @media (min-width:1000px) and (min-height:1000px) {{ .workspace-scroll.csf-explorer-workspace {{ grid-template-rows:repeat(2,minmax(0,1fr)); grid-auto-rows:unset; }} .workspace-scroll.csf-explorer-workspace > .csf-explorer-composite {{ grid-row:auto; min-height:0; grid-template-rows:116px 127px minmax(0,1fr); overflow:hidden !important; }} }}
+    #csf-evidence-workspace-title {{ margin-bottom:0; line-height:18px; }} .csf-explorer.csf-evidence-workspace {{ align-content:start; gap:3px; }} .csf-assessment-prototype {{ display:grid; gap:6px; }} .csf-assessment-prototype > .kicker {{ margin:0; }} .csf-assessment-context {{ display:grid; gap:4px; }} .csf-assessment-context > .mini {{ margin:0; }} .csf-assessment-example {{ padding:8px 10px; border-left:3px solid rgba(125,163,143,.58); background:rgba(232,240,234,.48); }} .csf-assessment-example p,.csf-assessment-example ul {{ margin:0; color:var(--muted); font-size:13px; }} .csf-assessment-example ul {{ padding-left:18px; }} .csf-assessment-block {{ padding:11px 13px; border:1px solid rgba(34,50,59,.10); border-radius:12px; background:rgba(255,255,255,.76); }} .csf-assessment-block strong {{ display:block; margin-bottom:4px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#475861; }} .csf-assessment-block p {{ margin:0; color:var(--muted); font-size:13px; }} .csf-assessment-comparison {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }} .csf-assessment-comparison .csf-assessment-block {{ min-width:0; }} .csf-response-options {{ display:flex; flex-wrap:wrap; gap:7px; margin:7px 0; }} .csf-response-options .csf-assessment-choice {{ padding:4px 8px; border:1px solid rgba(34,50,59,.14); border-radius:999px; color:#53636b; font:inherit; font-size:12px; background:rgba(255,255,255,.82); cursor:pointer; }} .csf-response-options .csf-assessment-choice:hover {{ border-color:rgba(93,127,148,.56); }} .csf-response-options .csf-assessment-choice.active {{ color:#315345; border-color:rgba(125,163,143,.60); background:var(--sage-soft); font-weight:700; }} .csf-profile-assessment .csf-assessment-choice:disabled {{ cursor:default; opacity:1; }} .csf-record-list {{ display:grid; gap:6px; height:72px; overflow:auto; padding-right:4px; }} .csf-record-list-head {{ display:flex; align-items:center; justify-content:space-between; gap:8px; }} .csf-record-list-head strong {{ margin:0; }} .csf-add-record {{ display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(93,127,148,.45); border-radius:50%; color:#315345; font-size:19px; line-height:1; text-decoration:none; }} .csf-add-record:hover {{ background:var(--sage-soft); }} .csf-record-row {{ display:grid; gap:2px; padding:8px 10px; border:1px solid rgba(34,50,59,.10); border-radius:10px; background:rgba(255,255,255,.68); color:var(--ink); text-decoration:none; }} .csf-record-row:hover {{ background:var(--blue-soft); }} .csf-record-row span {{ color:var(--muted); font-size:12px; }} .csf-record-empty {{ margin:0; color:var(--muted); font-size:13px; }} .csf-entry-form {{ display:grid; gap:12px; }} .csf-entry-form label {{ display:grid; gap:4px; color:#475861; font-size:13px; font-weight:700; }} .csf-entry-form input,.csf-entry-form select,.csf-entry-form textarea {{ width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid rgba(34,50,59,.18); border-radius:8px; background:#fff; font:inherit; font-weight:400; }} .csf-entry-form textarea {{ min-height:76px; resize:vertical; }} .csf-entry-form .mini {{ margin:0; }} @media (max-width:560px) {{ .csf-assessment-comparison {{ grid-template-columns:1fr; }} }}
+    .csf-record-list {{ grid-auto-rows:56px; height:56px; scroll-snap-type:y mandatory; }} .csf-record-row {{ height:56px; box-sizing:border-box; overflow:hidden; scroll-snap-align:start; }} .csf-add-record {{ width:auto; height:auto; border:0; border-radius:0; background:transparent; font-weight:700; }} .csf-add-record:hover {{ background:transparent; color:#1e4c3a; }} .csf-status-options {{ display:flex; flex-wrap:wrap; gap:7px; margin:0; padding:0; border:0; }} .csf-status-options legend {{ width:100%; margin-bottom:4px; color:#475861; font-size:13px; font-weight:700; }} .csf-status-choice {{ display:flex !important; align-items:center; gap:5px; padding:4px 8px; border:1px solid rgba(34,50,59,.14); border-radius:999px; color:#53636b !important; font-weight:400 !important; }} .csf-status-choice:has(input:checked) {{ color:#315345 !important; border-color:rgba(125,163,143,.60); background:var(--sage-soft); font-weight:700 !important; }} .csf-status-choice input {{ width:auto !important; margin:0; }} .modal-head {{ padding:14px 18px; }} .modal-head > div {{ min-width:0; }} .csf-modal-outcome {{ max-width:680px; margin:2px 0 0; font-size:17px; line-height:1.25; }} .modal-body {{ padding:14px 18px; }} .csf-entry-form {{ gap:8px; }} .csf-entry-form textarea {{ min-height:62px; }} .csf-linked-control {{ display:grid; gap:3px; padding:8px 10px; border:1px solid rgba(93,127,148,.32); border-left:3px solid #5d7f94; border-radius:8px; background:rgba(232,239,245,.54); color:#42555f; font-size:12px; }} .csf-linked-control strong {{ color:#41525a; font-size:12px; text-transform:uppercase; letter-spacing:.05em; }} .csf-linked-control.manual {{ border-left-color:#9b8a76; background:rgba(248,245,239,.72); }}
+    .csf-control-picker {{ display:grid; gap:7px; margin:0; padding:11px; border:1px solid rgba(34,50,59,.14); border-radius:10px; }} .csf-control-picker legend {{ padding:0 3px; color:#475861; font-size:13px; font-weight:700; }} .csf-control-picker legend span {{ color:var(--muted); font-weight:400; }} .csf-control-picker .mini {{ margin:0; }} .csf-control-list {{ display:grid; gap:6px; max-height:246px; overflow:auto; padding-right:4px; }} .csf-control-choice {{ display:grid !important; grid-template-columns:auto minmax(0,1fr); align-items:start; gap:9px; padding:9px 10px; border:1px solid rgba(34,50,59,.12); border-radius:8px; background:rgba(255,255,255,.68); cursor:pointer; }} .csf-control-choice > input {{ width:auto !important; margin:3px 0 0 !important; }} .csf-control-content {{ display:grid; gap:3px; min-width:0; color:var(--muted); font-weight:400; }} .csf-control-choice strong {{ color:var(--ink); font-size:12px; }} .csf-control-title {{ color:#53636b; font-size:12px; }} .csf-control-interpretation,.csf-control-action {{ margin:3px 0 0; color:#586a73; font-size:12px; line-height:1.38; }} .csf-control-action {{ color:#456557; }} .csf-control-interpretation b,.csf-control-action b {{ color:#41525a; }} .csf-control-official {{ margin-top:3px; color:var(--muted); font-size:11px; }} .csf-control-official summary {{ cursor:pointer; color:#4f6c7e; }} .csf-control-official p {{ margin:5px 0 0; line-height:1.38; }} .csf-control-choice small {{ color:#7b6a61; font-size:11px; }} .csf-control-choice:has(input:checked) {{ border-color:rgba(125,163,143,.60); background:var(--sage-soft); }} .csf-control-choice.unavailable {{ opacity:.48; cursor:not-allowed; background:rgba(235,232,226,.72); }}
+    .csf-why-matters {{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border-left:3px solid rgba(93,127,148,.60); background:rgba(232,239,245,.55); }} .csf-why-matters .kicker {{ margin:0 0 2px; }} .csf-why-matters p {{ margin:0; color:#4b606b; font-size:13px; line-height:1.45; }} .csf-information-flow-button {{ flex:none; padding:6px 9px; border:1px solid rgba(93,127,148,.40); border-radius:999px; background:rgba(255,255,255,.76); color:#38586b; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }} .csf-information-flow-button:hover {{ background:var(--blue-soft); }} .csf-information-flow-dialog {{ width:min(1080px,100%); }} .csf-information-flow-body {{ display:grid; gap:14px; }} .csf-information-flow-body section {{ display:grid; gap:7px; }} .csf-information-flow-body h3 {{ margin:0; }} .csf-flow-graph {{ display:grid; grid-template-columns:minmax(140px,.85fr) 62px minmax(180px,1fr) 62px minmax(240px,1.45fr); align-items:center; gap:8px; padding:10px; border:1px solid rgba(34,50,59,.10); border-radius:14px; background:rgba(248,245,239,.52); }} .csf-flow-node,.csf-flow-consumer {{ display:grid; gap:2px; padding:8px; border:1px solid rgba(34,50,59,.12); border-radius:10px; background:rgba(255,255,255,.78); }} .csf-flow-node.source {{ border-left:3px solid #5d7f94; }} .csf-flow-node.information {{ border-left:3px solid #7da38f; background:var(--sage-soft); }} .csf-flow-node strong,.csf-flow-consumer strong {{ font-size:12px; line-height:1.25; }} .csf-flow-node span,.csf-flow-consumer span,.csf-flow-consumer p {{ margin:0; color:var(--muted); font-size:11px; line-height:1.25; }} .csf-flow-consumers {{ display:grid; gap:4px; }} .csf-flow-consumer {{ padding:5px 8px; }} .csf-flow-consumer span {{ color:#456557; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }} .csf-flow-consumer p {{ display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; }} .csf-flow-arrow {{ display:grid; grid-template-columns:auto 1fr; align-items:center; gap:4px; color:#648072; font-size:11px; white-space:nowrap; }} .csf-flow-arrow b {{ font-size:22px; line-height:1; font-weight:500; }} @media (max-width:760px) {{ .csf-why-matters {{ align-items:flex-start; flex-direction:column; }} .csf-flow-graph,.csf-flow-graph.input {{ grid-template-columns:1fr; }} .csf-flow-arrow {{ grid-template-columns:auto auto; }} .csf-flow-arrow b {{ transform:rotate(90deg); justify-self:start; }} }}
+    .csf-assessment-inline {{ display:flex; align-items:center; gap:8px; min-width:0; }} .csf-assessment-inline > strong {{ flex:none; margin:0; }} .csf-assessment-inline form {{ min-width:0; }} .csf-assessment-inline .csf-response-options {{ margin:0; }} .csf-information-flow-buttons {{ display:flex; flex:none; flex-wrap:wrap; gap:6px; justify-content:flex-end; }}
   </style>
 </head>
 <body>
@@ -982,8 +1027,8 @@ def list_sqlite_csf_product_examples(state_db_path: Path, language_code: str = "
     try:
         connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True); connection.row_factory = sqlite3.Row
         try:
-            rows = connection.execute("SELECT subcategory_id, examples_json, single_pc_scope_note FROM csf_subcategory_guidance WHERE language_code = ?", (language_code,)).fetchall()
-            return {str(row["subcategory_id"]): {"examples": json.loads(row["examples_json"] or "[]"), "scope_note": str(row["single_pc_scope_note"] or "")} for row in rows}
+            rows = connection.execute("SELECT subcategory_id, examples_json FROM csf_subcategory_guidance WHERE language_code = ?", (language_code,)).fetchall()
+            return {str(row["subcategory_id"]): {"examples": json.loads(row["examples_json"] or "[]")} for row in rows}
         finally: connection.close()
     except (OSError, sqlite3.Error, ValueError, json.JSONDecodeError): return {}
 
@@ -1017,6 +1062,112 @@ def list_sqlite_csf_profile_metadata(state_db_path: Path, language_code: str = "
             connection.close()
     except (OSError, sqlite3.Error, ValueError):
         return {}
+
+
+def list_sqlite_csf_current_assessments(state_db_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Read the mutable current-assessment working records without touching audit history."""
+    if not state_db_path.is_file():
+        return {}
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            return ioc_store.list_current_csf_assessments(connection)
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return {}
+
+
+def list_sqlite_csf_outcome_records(state_db_path: Path, subcategory_id: str) -> Dict[str, Any]:
+    """Read the two mutable Tile 3 record lists for one official outcome."""
+    if not state_db_path.is_file() or not str(subcategory_id or "").strip():
+        return {"reviewed_actions": [], "supporting_basis": [], "read_error": ""}
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            return {
+                "reviewed_actions": ioc_store.list_csf_reviewed_actions(connection, subcategory_id),
+                "reviewed_action_total": int(connection.execute("SELECT COUNT(*) FROM csf_reviewed_actions").fetchone()[0]),
+                "mapped_controls": ioc_store.list_csf_mapped_controls_for_subcategory(connection, subcategory_id),
+                "supporting_basis": [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT * FROM csf_supporting_basis WHERE subcategory_id = ? ORDER BY updated_at DESC, basis_id",
+                        (str(subcategory_id).strip().upper(),),
+                    ).fetchall()
+                ],
+            }
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return {"reviewed_actions": [], "supporting_basis": [], "read_error": str(exc)}
+
+
+def get_sqlite_csf_information_flow(state_db_path: Path, subcategory_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Return the one-hop, product-authored information flow for a CSF outcome.
+
+    This is deliberately read-only.  The underlying flow catalog is seeded as a
+    separate foundation from the control mappings and is never changed by this UI.
+    """
+    subcategory = str(subcategory_id or "").strip().upper()
+    empty = {"inputs": [], "outputs": []}
+    if not state_db_path.is_file() or not subcategory:
+        return empty
+    try:
+        connection = sqlite3.connect(f"file:{state_db_path.resolve()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            input_rows = connection.execute(
+                """
+                SELECT item.information_id, item.title, item.description,
+                       use.dependency_kind, use.use_reason,
+                       source.source_subcategory_id, source.source_guidance
+                FROM csf_subcategory_information_uses AS use
+                JOIN csf_information_items AS item ON item.information_id = use.information_id
+                LEFT JOIN csf_subcategory_information_sources AS source ON source.information_id = item.information_id
+                WHERE use.consumer_subcategory_id = ?
+                ORDER BY item.title, source.source_subcategory_id
+                """,
+                (subcategory,),
+            ).fetchall()
+            output_rows = connection.execute(
+                """
+                SELECT item.information_id, item.title, item.description,
+                       source.source_guidance, use.consumer_subcategory_id,
+                       use.dependency_kind, use.use_reason
+                FROM csf_subcategory_information_sources AS source
+                JOIN csf_information_items AS item ON item.information_id = source.information_id
+                LEFT JOIN csf_subcategory_information_uses AS use ON use.information_id = item.information_id
+                WHERE source.source_subcategory_id = ?
+                ORDER BY item.title, use.dependency_kind, use.consumer_subcategory_id
+                """,
+                (subcategory,),
+            ).fetchall()
+
+            inputs: Dict[str, Dict[str, Any]] = {}
+            for row in input_rows:
+                item = inputs.setdefault(str(row["information_id"]), {
+                    "information_id": str(row["information_id"]), "title": str(row["title"]),
+                    "description": str(row["description"]), "dependency_kind": str(row["dependency_kind"]),
+                    "use_reason": str(row["use_reason"]), "sources": [],
+                })
+                if row["source_subcategory_id"]:
+                    item["sources"].append({"subcategory_id": str(row["source_subcategory_id"]), "guidance": str(row["source_guidance"] or "")})
+            outputs: Dict[str, Dict[str, Any]] = {}
+            for row in output_rows:
+                item = outputs.setdefault(str(row["information_id"]), {
+                    "information_id": str(row["information_id"]), "title": str(row["title"]),
+                    "description": str(row["description"]), "source_guidance": str(row["source_guidance"] or ""), "uses": [],
+                })
+                if row["consumer_subcategory_id"]:
+                    item["uses"].append({"subcategory_id": str(row["consumer_subcategory_id"]), "dependency_kind": str(row["dependency_kind"]), "reason": str(row["use_reason"] or "")})
+            return {"inputs": list(inputs.values()), "outputs": list(outputs.values())}
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return empty
 
 
 def get_sqlite_alert_detail(state_db_path: Path, alert_id: str) -> Dict[str, Any]:
@@ -1306,7 +1457,7 @@ def build_acceptance_helper_command(report_path: Path, finding_index: int) -> st
     return (
         f'.\\accept-posture-drift.ps1 -ReportPath "{report_path}" '
         f'-FindingIndex {finding_index} -Reason "Reviewed expected change" '
-        f'-StateDbPath ".\\state\\ioc-store.db"'
+        f'-StateDbPath ".\\state\\codex-monitor.db"'
     )
 
 
@@ -2697,6 +2848,12 @@ def build_dashboard_model(config: AppConfig, snapshot: Dict[str, Any], message: 
     model["csf_subcategory_guidance"] = dict(snapshot.get("csf_subcategory_guidance") or {})
     model["csf_subcategory_profile_metadata"] = dict(snapshot.get("csf_subcategory_profile_metadata") or {})
     model["csf_subcategory_product_examples"] = dict(snapshot.get("csf_subcategory_product_examples") or {})
+    model["csf_current_assessments"] = dict(snapshot.get("csf_current_assessments") or {})
+    # Keep Tile 3's per-request SQLite records and diagnostic path available to
+    # the CSF renderer; this model is otherwise deliberately selective.
+    model["csf_outcome_records"] = dict(snapshot.get("csf_outcome_records") or {})
+    model["csf_information_flow"] = dict(snapshot.get("csf_information_flow") or {})
+    model["csf_state_db_path"] = str(snapshot.get("csf_state_db_path") or "")
     return model
 
 
@@ -2835,14 +2992,59 @@ def render_nist_implementation_examples(subcategory: Dict[str, Any]) -> str:
     return f'<div class="csf-outcome-state"><ul>{rows}</ul></div>'
 
 
-def render_csf_assessment_prototype(metadata: Dict[str, Any], plain_english_text: str = "") -> str:
+def render_csf_assessment_prototype(
+    metadata: Dict[str, Any],
+    plain_english_text: str = "",
+    examples: Optional[List[str]] = None,
+    profile_assessment: Optional[Dict[str, Any]] = None,
+    current_assessment: Optional[Dict[str, Any]] = None,
+    subcategory_id: str = "",
+    category_id: str = "",
+    return_to: str = "",
+    reviewed_actions: Optional[List[Dict[str, Any]]] = None,
+    supporting_basis: Optional[List[Dict[str, Any]]] = None,
+    record_read_error: str = "",
+    reviewed_action_total: int = 0,
+    information_flow: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> str:
     """Render a non-persistent preview of the method-specific assessment workspace."""
     method = str(metadata.get("assessment_method") or "").strip().lower()
     guidance = str(metadata.get("research_guidance") or "").strip()
     plain_text = str(plain_english_text or "").strip()
     note_required = bool(metadata.get("supporting_note_required"))
-    response = '''<div class="csf-assessment-block"><strong>Profile assessment</strong><div class="csf-response-options"><span>Fully implemented</span><span>Partly implemented</span><span>Not implemented</span><span>Not applicable</span></div><p>No response is recorded in this preview.</p></div>'''
-    actions = '<div class="csf-assessment-block"><strong>Reviewed actions</strong><p>No reviewed action is mapped for this outcome yet.</p></div>'
+    profile_level = str((profile_assessment or {}).get("target_assessment_level") or "").strip().lower()
+    profile_name = str((profile_assessment or {}).get("profile_name") or "").strip()
+    current_level = str((current_assessment or {}).get("assessment_level") or "").strip().lower()
+    option_labels = {
+        "fully_implemented": "Fully implemented",
+        "partly_implemented": "Partly implemented",
+        "not_implemented": "Not implemented",
+        "not_applicable": "Not applicable",
+    }
+    current_options = "".join(
+        f'<button class="csf-assessment-choice{(" active" if current_level == value else "")}" type="submit" name="assessment_level" value="{value}">{label}</button>'
+        for value, label in option_labels.items()
+    )
+    profile_options = "".join(
+        f'<button class="csf-assessment-choice{(" active" if profile_level == value else "")}" type="button" disabled>{label}</button>'
+        for value, label in option_labels.items()
+    )
+    current_status = (
+        f'Current assessment: {option_labels[current_level]}.'
+        if current_level in option_labels
+        else "No current assessment is recorded."
+    )
+    response = f'''<div class="csf-assessment-comparison"><div class="csf-assessment-block"><div class="csf-assessment-inline"><strong>Profile</strong><div class="csf-response-options csf-profile-assessment">{profile_options}</div></div><p>Profile name: {esc(profile_name or "Not configured.")}</p></div><div class="csf-assessment-block"><div class="csf-assessment-inline"><strong>Current</strong><form method="post" action="/set-csf-current-assessment"><input type="hidden" name="subcategory_id" value="{esc(subcategory_id)}"><input type="hidden" name="category_id" value="{esc(category_id)}"><input type="hidden" name="return_to" value="{esc(return_to)}"><div class="csf-response-options">{current_options}</div></form></div><p>{esc(current_status)}</p></div></div>'''
+    query = urllib.parse.urlencode({"csf_category": category_id, "csf_subcategory": subcategory_id, "return_to": return_to})
+    action_rows = "".join(
+        f'<a class="csf-record-row" data-record-modal href="/csf-reviewed-action?{query}&amp;action_id={urllib.parse.quote(str(row.get("action_id") or ""), safe="")}"><strong>{esc(row.get("title") or "Untitled action")}</strong><span>{esc((str(row.get("control_id") or "").strip() or "Manual action") + " · " + str(row.get("action_status") or "").replace("_", " ").title())}</span></a>'
+        for row in (reviewed_actions or [])
+    ) or f'<p class="csf-record-empty">{esc("Unable to load records: " + record_read_error) if record_read_error else "No action is recorded yet."}</p>'
+    basis_rows = "".join(
+        f'<a class="csf-record-row" data-record-modal href="/csf-supporting-basis?{query}&amp;basis_id={urllib.parse.quote(str(row.get("basis_id") or ""), safe="")}"><strong>{esc(row.get("title") or "Untitled basis")}</strong><span>{esc(str(row.get("basis_type") or "").replace("_", " ").title())}</span></a>'
+        for row in (supporting_basis or [])
+    ) or f'<p class="csf-record-empty">{esc("Unable to load records: " + record_read_error) if record_read_error else "No supporting basis is recorded yet."}</p>'
+    actions = f'<div class="csf-assessment-block"><div class="csf-record-list-head"><strong>Actions</strong><a class="csf-add-record" data-record-modal aria-label="Add action" href="/csf-reviewed-action?{query}">+</a></div><div class="csf-record-list" tabindex="0" aria-label="Actions">{action_rows}</div></div>'
     if method == "evidence":
         body = '''<div class="csf-assessment-block"><strong>Local evidence</strong><p>No reviewed local-evidence mapping is available yet. This is not a passing result.</p></div>''' + response
     elif method == "attestation":
@@ -2853,14 +3055,73 @@ def render_csf_assessment_prototype(metadata: Dict[str, Any], plain_english_text
         body = '''<div class="csf-assessment-block"><strong>Local evidence</strong><p>No reviewed local-evidence mapping is available yet. This is not a passing result.</p></div><div class="csf-assessment-block"><strong>Human confirmation</strong><p>Confirm the context and outcome with the person responsible for this PC.</p></div>''' + response
     else:
         body = '<div class="csf-assessment-block"><p>Assessment metadata is not available for this outcome.</p></div>'
-    note = (
-        '<div class="csf-assessment-block"><strong>Supporting basis</strong><p>A supporting-evidence or decision note will be required when this assessment is recorded.</p></div>'
-        if note_required
-        else ""
+    supporting_basis = f'<div class="csf-assessment-block"><div class="csf-record-list-head"><strong>Evidence &amp; basis</strong><a class="csf-add-record" data-record-modal aria-label="Add evidence or basis" href="/csf-supporting-basis?{query}">+</a></div><div class="csf-record-list" tabindex="0" aria-label="Evidence and basis">{basis_rows}</div></div>'
+    example_values = [str(example).strip() for example in (examples or []) if str(example).strip()]
+    if len(example_values) == 1:
+        example_content = f'<p class="mini">{esc(example_values[0])}</p>'
+    elif example_values:
+        example_content = '<ul class="mini">' + ''.join(f'<li>{esc(example)}</li>' for example in example_values) + '</ul>'
+    else:
+        example_content = '<p class="mini">No local example is mapped for this outcome yet.</p>'
+    flow = information_flow or {"inputs": [], "outputs": []}
+    flow_inputs = list(flow.get("inputs") or [])
+    flow_outputs = list(flow.get("outputs") or [])
+    selected_catalog_record = csf_catalog.find_official_subcategory(subcategory_id) or {}
+    selected_short_description = str(selected_catalog_record.get("short_description") or "").strip()
+    selected_label = f'{subcategory_id}: {selected_short_description}' if selected_short_description else subcategory_id
+
+    def flow_label(flow_subcategory_id: str) -> str:
+        record = csf_catalog.find_official_subcategory(flow_subcategory_id) or {}
+        short_description = str(record.get("short_description") or "").strip()
+        return f'{flow_subcategory_id}: {short_description}' if short_description else flow_subcategory_id
+
+    def dependency_label(kind: str) -> str:
+        return {"required_input": "required input", "planning_input": "planning input", "event_input": "event input"}.get(kind, kind.replace("_", " "))
+
+    output_graphs = "".join(
+        f'''<div class="csf-flow-graph">
+  <div class="csf-flow-node source"><strong>{esc(selected_label)}</strong><span>This outcome</span></div>
+  <div class="csf-flow-arrow"><span>produces</span><b>→</b></div>
+  <div class="csf-flow-node information"><strong>{esc(str(item.get("title") or "Information"))}</strong><span>{esc(str(item.get("description") or ""))}</span></div>
+  <div class="csf-flow-arrow"><span>used by</span><b>→</b></div>
+  <div class="csf-flow-consumers">{''.join(f'<div class="csf-flow-consumer"><strong>{esc(flow_label(str(use.get("subcategory_id") or "")))}</strong><span>{esc(dependency_label(str(use.get("dependency_kind") or "")))}</span><p>{esc(str(use.get("reason") or ""))}</p></div>' for use in item.get("uses") or []) or '<p class="csf-record-empty">No direct downstream use is defined yet.</p>'}</div>
+</div>'''
+        for item in flow_outputs
     )
+    input_graphs = "".join(
+        f'''<div class="csf-flow-graph input">
+  <div class="csf-flow-consumers">{''.join(f'<div class="csf-flow-consumer"><strong>{esc(flow_label(str(source.get("subcategory_id") or "")))}</strong><p>{esc(str(source.get("guidance") or ""))}</p></div>' for source in item.get("sources") or []) or '<p class="csf-record-empty">A source outcome has not been defined yet.</p>'}</div>
+  <div class="csf-flow-arrow"><span>produces</span><b>→</b></div>
+  <div class="csf-flow-node information"><strong>{esc(str(item.get("title") or "Information"))}</strong><span>{esc(str(item.get("description") or ""))}</span></div>
+  <div class="csf-flow-arrow"><span>used here</span><b>→</b></div>
+  <div class="csf-flow-node source"><strong>{esc(selected_label)}</strong><span>{esc(dependency_label(str(item.get("dependency_kind") or "")))}</span></div>
+</div>'''
+        for item in flow_inputs
+    )
+    if flow_outputs or flow_inputs:
+        if flow_outputs:
+            first_output = flow_outputs[0]
+            consumer_labels = [str(item.get("subcategory_id") or "") for item in first_output.get("uses") or []]
+            downstream_text = ", ".join(consumer_labels[:3]) + (" and other outcomes" if len(consumer_labels) > 3 else "")
+            why_text = f'This outcome records {str(first_output.get("title") or "information").lower()}. That information is used by {downstream_text or "later CSF outcomes"}.'
+        else:
+            first_input = flow_inputs[0]
+            source_labels = [str(item.get("subcategory_id") or "") for item in first_input.get("sources") or []]
+            source_text = ", ".join(source_labels[:2]) + (" and other sources" if len(source_labels) > 2 else "")
+            why_text = f'This outcome needs {str(first_input.get("title") or "information").lower()} from {source_text or "earlier work"}.'
+        if flow_outputs and flow_inputs:
+            flow_buttons = '<button class="csf-information-flow-button" type="button" data-information-flow-modal aria-haspopup="dialog">Information flow</button>'
+        elif flow_outputs:
+            flow_buttons = '<button class="csf-information-flow-button" type="button" data-information-flow-modal data-information-flow-direction="downstream" aria-haspopup="dialog">Information flow</button>'
+        else:
+            flow_buttons = '<button class="csf-information-flow-button" type="button" data-information-flow-modal data-information-flow-direction="upstream" aria-haspopup="dialog">Information flow</button>'
+        flow_context = f'''<div class="csf-why-matters"><div><div class="kicker">Why this matters</div><p>{esc(why_text)}</p></div><div class="csf-information-flow-buttons">{flow_buttons}</div></div>
+<template id="csf-information-flow-template"><div class="modal-backdrop"><section class="modal-dialog csf-information-flow-dialog" role="dialog" aria-modal="true" aria-labelledby="csf-information-flow-title"><header class="modal-head"><div><div class="kicker">Why this outcome is necessary</div><h2 id="csf-information-flow-title">Information flow</h2><p class="csf-modal-outcome">{esc(selected_label)}</p></div><button class="btn" type="button" data-modal-close>Close</button></header><div class="modal-body csf-information-flow-body">{f'<section data-information-flow-section="downstream"><h3>Information this outcome provides</h3>{output_graphs}</section>' if output_graphs else ''}{f'<section data-information-flow-section="upstream"><h3>Information this outcome needs</h3>{input_graphs}</section>' if input_graphs else ''}</div></section></div></template>'''
+    else:
+        flow_context = ""
     return f'''<div class="csf-assessment-prototype">
-  <p class="mini">{esc(plain_text or guidance or "Product explanation is not available for this outcome.")}</p>
-  {body}{note}{actions}
+  <div class="csf-assessment-context"><p class="mini">{esc(plain_text or guidance or "Product explanation is not available for this outcome.")}</p>{example_content}{flow_context}</div>
+  {body}<div class="csf-assessment-comparison">{actions}{supporting_basis}</div>
 </div>'''
 
 
@@ -2934,19 +3195,30 @@ def render_csf_explorer(
 </section>'''
             outcome_content = render_nist_implementation_examples(selected_subcategory)
             metadata = dict(((model or {}).get("csf_subcategory_profile_metadata") or {}).get(selected_subcategory["id"]) or {})
+            metadata["sqlite_path"] = str((model or {}).get("csf_state_db_path") or "")
             assessment_method = str(metadata.get("assessment_method") or "").strip().lower()
             if assessment_method in {"evidence", "attestation", "review", "hybrid"}:
                 assessment_heading = assessment_method.title()
             plain_english_text = str(((model or {}).get("csf_subcategory_guidance") or {}).get(selected_subcategory["id"]) or "").strip()
-            evidence_content = render_csf_assessment_prototype(metadata, plain_english_text)
             product_record = dict(((model or {}).get("csf_subcategory_product_examples") or {}).get(selected_subcategory["id"]) or {})
             product_examples = [str(item).strip() for item in (product_record.get("examples") or []) if str(item).strip()]
-            product_scope_note = str(product_record.get("scope_note") or "").strip()
-            if product_examples:
-                evidence_content += '<div class="csf-product-examples"><div class="kicker">Examples to consider</div><ul>' + ''.join(f'<li>{esc(item)}</li>' for item in product_examples) + '</ul>'
-                if product_scope_note:
-                    evidence_content += f'<p class="mini">Scope note: {esc(product_scope_note)}</p>'
-                evidence_content += '</div>'
+            profile_assessment = dict(((model or {}).get("csf_profile_assessments") or {}).get(selected_subcategory["id"]) or {})
+            current_assessment = dict(((model or {}).get("csf_current_assessments") or {}).get(selected_subcategory["id"]) or {})
+            evidence_content = render_csf_assessment_prototype(
+                metadata,
+                plain_english_text,
+                product_examples,
+                profile_assessment,
+                current_assessment,
+                selected_subcategory["id"],
+                selected_category["id"],
+                current_path,
+                list(((model or {}).get("csf_outcome_records") or {}).get("reviewed_actions") or []),
+                list(((model or {}).get("csf_outcome_records") or {}).get("supporting_basis") or []),
+                str(((model or {}).get("csf_outcome_records") or {}).get("read_error") or ""),
+                int(((model or {}).get("csf_outcome_records") or {}).get("reviewed_action_total") or 0),
+                dict((model or {}).get("csf_information_flow") or {}),
+            )
 
     return f'''<section class="panel csf-explorer csf-explorer-composite" aria-label="CSF Category, Subcategory, and NIST implementation examples">
   <div class="csf-explorer-section csf-selection-list" aria-labelledby="csf-explorer-title">
@@ -2961,7 +3233,7 @@ def render_csf_explorer(
   {outcome_content}
 </div>
 </section>
-<section class="panel csf-explorer" aria-labelledby="csf-evidence-workspace-title">
+<section class="panel csf-explorer csf-evidence-workspace" aria-labelledby="csf-evidence-workspace-title">
   <div id="csf-evidence-workspace-title" class="kicker">{esc(assessment_heading)}</div>{evidence_content}
 </section>'''
 
@@ -2999,7 +3271,6 @@ def render_page_shell(model: Dict[str, Any], current_path: str, title: str, lede
   <div class="kicker">CSF action map</div>
   <nav class="csf-action-bar" aria-label="NIST Cybersecurity Framework actions">{render_primary_nav(current_path, persona_profile=persona_profile, show_technical=show_technical_nav)}</nav>
   {render_csf_guidance(current_path)}
-  <div class="task-actions csf-utilities"><a class="btn" href="/">Overview</a><a class="btn" href="/reports">Evidence records</a>{(f'<a class="btn" href="/diagnostics">Diagnostics</a>' if show_technical_nav else '')}</div>
 </section>
 <main id="csf-workspace" class="csf-workspace" tabindex="-1">
   <div class="{workspace_class}">{workspace_html}</div>
@@ -3019,18 +3290,146 @@ def extract_csf_app_fragment(document: str) -> str:
     return match.group(1).strip()
 
 
-def render_record_modal(title: str, content_html: str, detail_href: str) -> str:
+def render_record_modal(
+    title: str,
+    content_html: str,
+    detail_href: str,
+    kicker: str = "Evidence detail",
+    context_heading: str = "",
+) -> str:
+    heading = context_heading or title
     return f"""
 <div class="modal-backdrop" data-modal-close>
   <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="record-detail-title">
     <div class="modal-head">
-      <div><div class="kicker">Evidence detail</div><h2 id="record-detail-title">{esc(title)}</h2></div>
+      <div><div class="kicker">{esc(kicker)}</div><h2 id="record-detail-title" class="csf-modal-outcome">{esc(heading)}</h2></div>
       <button class="btn" type="button" data-modal-close aria-label="Close detail">Close</button>
     </div>
     <div class="modal-body">{content_html}<div class="task-actions" style="margin-top:14px"><a class="btn" href="{esc(detail_href)}">Open full page</a></div></div>
   </section>
 </div>
 """
+
+
+def render_csf_entry_modal(
+    kind: str,
+    subcategory_id: str,
+    category_id: str,
+    return_to: str,
+    record: Optional[Dict[str, Any]] = None,
+    action_updates: Optional[List[Dict[str, Any]]] = None,
+    edit: bool = False,
+    mapped_controls: Optional[List[Dict[str, Any]]] = None,
+    subcategory_outcome: str = "",
+) -> str:
+    """Render a compact Tile 3 entry form, detail view, or action-update form."""
+    is_action = kind == "action"
+    title = "Action" if is_action else "Evidence & basis"
+    outcome_heading = str(subcategory_outcome or subcategory_id).strip()
+    linked_control_id = str((record or {}).get("control_id") or "").strip()
+    linked_control_title = str((record or {}).get("control_title") or "").strip()
+    query = urllib.parse.urlencode({
+        "csf_category": category_id,
+        "csf_subcategory": subcategory_id,
+        "return_to": return_to,
+    })
+    if record and not edit:
+        fields = [("Title", record.get("title")), ("Details", record.get("details"))]
+        if is_action:
+            fields.extend([
+                ("Mapped control", f"NIST SP 800-53: {linked_control_id} - {linked_control_title}" if linked_control_id else "Manual action — no mapped control selected"),
+                ("Why this action?", record.get("rationale")),
+                ("Status", str(record.get("action_status") or "").replace("_", " ").title()),
+                ("Created", pretty_time(record.get("created_at"))),
+                ("Last updated", pretty_time(record.get("updated_at"))),
+                ("Completed", pretty_time(record.get("completed_at"))),
+            ])
+            history_rows = "".join(
+                f'<div class="csf-record-row"><strong>{esc(str(item.get("action_status") or "").replace("_", " ").title())}</strong><span>{esc(pretty_time(item.get("recorded_at")))} · {esc(item.get("progress_note") or "No progress note.")}</span></div>'
+                for item in (action_updates or [])
+            ) or '<p class="csf-record-empty">No progress updates are recorded yet.</p>'
+            edit_href = f'/csf-reviewed-action?{query}&amp;action_id={urllib.parse.quote(str(record.get("action_id") or ""), safe="")}&amp;edit=1'
+            content = (
+                '<dl class="kv">' + ''.join(f'<dt>{esc(label)}</dt><dd>{esc(value or "—")}</dd>' for label, value in fields) + '</dl>'
+                + f'<div class="csf-record-list-head" style="margin-top:16px"><strong>Previous updates</strong><a class="btn" data-record-modal href="{edit_href}">Edit action</a></div>'
+                + f'<div class="csf-record-list" tabindex="0" aria-label="Previous action updates">{history_rows}</div>'
+            )
+        else:
+            fields.extend([
+                ("Reference location", record.get("reference_location")),
+                ("Recorded on", record.get("recorded_on")),
+                ("Review on", record.get("review_on")),
+                ("Created", pretty_time(record.get("created_at"))),
+                ("Last updated", pretty_time(record.get("updated_at"))),
+            ])
+            content = '<dl class="kv">' + ''.join(f'<dt>{esc(label)}</dt><dd>{esc(value or "—")}</dd>' for label, value in fields) + '</dl>'
+        return render_record_modal(
+            title,
+            content,
+            return_to,
+            f"{title} · {subcategory_id}",
+            outcome_heading,
+        )
+    action = "/update-csf-reviewed-action" if is_action and record else ("/create-csf-reviewed-action" if is_action else "/create-csf-supporting-basis")
+    action += "?" + urllib.parse.urlencode({
+        "csf_category": category_id,
+        "csf_subcategory": subcategory_id,
+        "return_to": return_to,
+    })
+    delete_action = ""
+    if is_action and record:
+        record_id_query = urllib.parse.quote(str(record.get("action_id") or ""), safe="")
+        action += "&action_id=" + record_id_query
+        delete_action = f"/delete-csf-reviewed-action?{query}&action_id={record_id_query}"
+    hidden = f'<input type="hidden" name="subcategory_id" value="{esc(subcategory_id)}"><input type="hidden" name="category_id" value="{esc(category_id)}"><input type="hidden" name="return_to" value="{esc(return_to)}">'
+    if is_action:
+        status = str((record or {}).get("action_status") or "planned")
+        action_id = str((record or {}).get("action_id") or "")
+        status_buttons = "".join(
+            f'<label class="csf-status-choice"><input type="radio" name="action_status" value="{value}"{" checked" if status == value else ""}>{label}</label>'
+            for value, label in (("planned", "Planned"), ("in_progress", "In progress"), ("completed", "Completed"), ("not_proceeding", "Not proceeding"))
+        )
+        control_picker = ""
+        if not record:
+            def render_mapped_control_row(item: Dict[str, Any]) -> str:
+                confidence_note = str(item.get("confidence_note") or "").strip()
+                confidence_html = (
+                    f'<p class="csf-control-confidence"><b>Review note:</b> {esc(confidence_note)}</p>'
+                    if confidence_note else ""
+                )
+                recorded_action_html = (
+                    "<small>Action already recorded: " + esc(item.get("action_title") or "Untitled action")
+                    + " (" + esc(str(item.get("action_status") or "").replace("_", " ").title()) + ")</small>"
+                    if item.get("action_id") else ""
+                )
+                return f'''<label class="csf-control-choice{(" unavailable" if item.get("action_id") else "")}">
+<input type="radio" name="control_id" value="{esc(str(item.get("control_id") or ""))}" data-action-title-example="{esc(item.get("action_title_example") or "")}" data-action-details-example="{esc(item.get("action_details_example") or item.get("suggested_action_text") or "")}" data-action-rationale-example="{esc(item.get("action_rationale_example") or "")}"{" disabled" if item.get("action_id") else ""}>
+<div class="csf-control-content"><strong>{esc(item.get("control_id") or "")}</strong><span class="csf-control-title">{esc(item.get("title") or "")}</span><p class="csf-control-interpretation"><b>How it applies here:</b> {esc(item.get("interpretation_text") or "A product interpretation has not been recorded for this mapping yet.")}</p><p class="csf-control-action"><b>Possible action:</b> {esc(item.get("suggested_action_text") or "Choose a locally appropriate action that advances this CSF outcome.")}</p>{confidence_html}<details class="csf-control-official"><summary>Official NIST control statement</summary><p>{esc(item.get("statement_text") or "Official control statement is not imported yet.")}</p></details>{recorded_action_html}</div>
+</label>'''
+            control_rows = "".join(
+                render_mapped_control_row(item)
+                for item in (mapped_controls or [])
+            ) or '<p class="csf-record-empty">No imported NIST SP 800-53 controls are mapped to this CSF Subcategory. You can still add an action by hand.</p>'
+            control_picker = f'''<fieldset class="csf-control-picker"><legend>Mapped NIST SP 800-53 controls <span>(optional)</span></legend><p class="mini">Choose one control to show outcome-specific examples in the action fields, or leave this unselected to add an action by hand.</p><div class="csf-control-list" tabindex="0" aria-label="Mapped NIST SP 800-53 controls">{control_rows}</div></fieldset>'''
+        fields = f'''<input type="hidden" name="action_id" value="{esc(action_id)}">
+{control_picker}
+{(f'<div class="csf-linked-control"><strong>Mapped control</strong><span>NIST SP 800-53: {esc(linked_control_id)} - {esc(linked_control_title or "Title unavailable")}</span></div>' if linked_control_id else ('<div class="csf-linked-control manual"><strong>Action origin</strong><span>Manual action — no mapped NIST SP 800-53 control selected.</span></div>' if record else ''))}
+<label>Action title<input name="title" required maxlength="240" value="{esc((record or {}).get("title") or "")}" placeholder="Example: Enable BitLocker on the laptop"></label>
+<label>Action details<textarea name="details" placeholder="What will be done and how? Example: Turn on BitLocker and securely retain the recovery key.">{esc((record or {}).get("details") or "")}</textarea></label>
+<label>Why this action?<textarea name="rationale" placeholder="Why does this address the CSF outcome? Example: The laptop may contain customer information and is used outside the office.">{esc((record or {}).get("rationale") or "")}</textarea></label>
+<fieldset class="csf-status-options"><legend>Status</legend>{status_buttons}</fieldset>
+<label>Progress note<textarea name="progress_note" placeholder="What changed since the last update? Example: Recovery key verified and stored in the approved location."></textarea></label>'''
+    else:
+        fields = '''<label>Basis title<input name="title" required maxlength="240" placeholder="Example: Current mission statement"></label>
+<label>Basis type<select name="basis_type"><option value="document">Document</option><option value="local_evidence">Local evidence</option><option value="attestation">Attestation</option><option value="decision_note">Decision note</option><option value="other">Other</option></select></label>
+<label>Details<textarea name="details" placeholder="What does this evidence or decision establish?"></textarea></label>
+<label>Reference location<input name="reference_location" placeholder="Example: C:\\Evidence\\mission-statement.pdf"></label>
+<label>Recorded on<input type="date" name="recorded_on"></label><label>Review on<input type="date" name="review_on"></label>
+<p class="mini">Evidence should be reconsidered as conditions change; a review date helps make that visible.</p>'''
+    form_heading = f'Edit {title}' if record else f'Add {title}'
+    save_label = "Save update" if is_action and record else f"Save {title}"
+    delete_control = f'<button class="btn" type="submit" formmethod="post" formaction="{esc(delete_action)}" data-confirm-delete>Delete action</button>' if delete_action else ""
+    return f'''<div class="modal-backdrop" data-modal-close><section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="record-detail-title"><div class="modal-head"><div><div class="kicker">{esc(form_heading)} · {esc(subcategory_id)}</div><h2 id="record-detail-title" class="csf-modal-outcome">{esc(outcome_heading)}</h2></div><button class="btn" type="button" data-modal-close>Close</button></div><div class="modal-body"><form class="csf-entry-form" method="post" action="{action}">{hidden}{fields}<div class="task-actions"><button class="btn primary" type="submit">{save_label}</button>{delete_control}</div></form></div></section></div>'''
 
 
 def render_record_payload(title: str, subtitle: str, payload_text: str) -> str:
@@ -3652,6 +4051,15 @@ class CodexUiHandler(BaseHTTPRequestHandler):
         snapshot["csf_subcategory_guidance"] = list_sqlite_csf_guidance(self.app_config.state_db_path)
         snapshot["csf_subcategory_product_examples"] = list_sqlite_csf_product_examples(self.app_config.state_db_path)
         snapshot["csf_subcategory_profile_metadata"] = list_sqlite_csf_profile_metadata(self.app_config.state_db_path)
+        snapshot["csf_current_assessments"] = list_sqlite_csf_current_assessments(self.app_config.state_db_path)
+        snapshot["csf_state_db_path"] = str(self.app_config.state_db_path)
+        selected_subcategory_id = str((explorer_selection or {}).get("subcategory_id") or "")
+        snapshot["csf_outcome_records"] = list_sqlite_csf_outcome_records(
+            self.app_config.state_db_path, selected_subcategory_id
+        )
+        snapshot["csf_information_flow"] = get_sqlite_csf_information_flow(
+            self.app_config.state_db_path, selected_subcategory_id
+        )
         snapshot["csf_explorer_selection"] = dict(explorer_selection or {})
         return snapshot
 
@@ -3756,6 +4164,38 @@ class CodexUiHandler(BaseHTTPRequestHandler):
                     return self.respond_html(render_record_modal(report_path.name, render_record_payload(report_path.name, str(report_path), payload_text), detail_href))
                 return self.respond_html(render_file_detail(report_path.name, str(report_path), payload_text))
 
+            if parsed.path in {"/csf-reviewed-action", "/csf-supporting-basis"}:
+                subcategory_id = params.get("csf_subcategory", [""])[0].strip().upper()
+                category_id = params.get("csf_category", [""])[0].strip().upper()
+                official_subcategory = csf_catalog.find_official_subcategory(subcategory_id)
+                if official_subcategory is None or category_id != str(official_subcategory.get("category_id") or ""):
+                    return self.respond_error(HTTPStatus.BAD_REQUEST, "Choose an official CSF Subcategory before adding a record.")
+                records = list_sqlite_csf_outcome_records(self.app_config.state_db_path, subcategory_id)
+                is_action = parsed.path == "/csf-reviewed-action"
+                record_id = params.get("action_id" if is_action else "basis_id", [""])[0].strip()
+                record = next((row for row in records["reviewed_actions" if is_action else "supporting_basis"] if str(row.get("action_id" if is_action else "basis_id")) == record_id), None)
+                action_updates: List[Dict[str, Any]] = []
+                if is_action and record is not None:
+                    connection = ioc_store.connect_db(self.app_config.state_db_path)
+                    try:
+                        action_updates = ioc_store.list_csf_reviewed_action_updates(connection, record_id)
+                    finally:
+                        connection.close()
+                modal = render_csf_entry_modal(
+                    is_action and "action" or "basis",
+                    subcategory_id,
+                    category_id,
+                    params.get("return_to", ["/"])[0] or "/",
+                    record,
+                    action_updates,
+                    params.get("edit", [""])[0].strip() == "1",
+                    list(records.get("mapped_controls") or []),
+                    str(official_subcategory.get("outcome") or ""),
+                )
+                if fragment == "modal":
+                    return self.respond_html(modal)
+                return self.respond_html(html_page("CSF Tile 3", modal))
+
             if parsed.path == "/api/snapshot":
                 return self.respond_json(self.get_ui_snapshot(parsed.path, force_live=force_live))
 
@@ -3771,6 +4211,7 @@ class CodexUiHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8")
             payload = urllib.parse.parse_qs(body)
+            query_params = urllib.parse.parse_qs(parsed.query)
             return_to = payload.get("return_to", [""])[0].strip() or "/"
             allowed_return_routes = {
                 "/",
@@ -3811,6 +4252,95 @@ class CodexUiHandler(BaseHTTPRequestHandler):
                     raise RuntimeError("No UI persona was provided.")
                 result = set_ui_persona(self.app_config, persona_id)
                 return self.redirect(return_to + "?message=" + urllib.parse.quote(result))
+
+            if parsed.path == "/set-csf-current-assessment":
+                subcategory_id = payload.get("subcategory_id", [""])[0].strip().upper()
+                category_id = payload.get("category_id", [""])[0].strip().upper()
+                assessment_level = payload.get("assessment_level", [""])[0]
+                official_subcategory = csf_catalog.find_official_subcategory(subcategory_id)
+                if official_subcategory is None:
+                    raise RuntimeError("Choose an official CSF Subcategory before saving an assessment.")
+                if category_id != str(official_subcategory.get("category_id") or ""):
+                    raise RuntimeError("The selected CSF Category does not match the Subcategory.")
+                connection = ioc_store.connect_db(self.app_config.state_db_path)
+                try:
+                    ioc_store.init_db(connection)
+                    ioc_store.set_current_csf_assessment(
+                        connection,
+                        subcategory_id,
+                        assessment_level,
+                        getpass.getuser(),
+                    )
+                finally:
+                    connection.close()
+                redirect_params = urllib.parse.urlencode(
+                    {
+                        "csf_category": category_id,
+                        "csf_subcategory": subcategory_id,
+                    }
+                )
+                return self.redirect(return_to + "?" + redirect_params)
+
+            if parsed.path in {"/create-csf-reviewed-action", "/update-csf-reviewed-action", "/delete-csf-reviewed-action", "/create-csf-supporting-basis"}:
+                subcategory_id = (payload.get("subcategory_id", [""])[0] or query_params.get("csf_subcategory", [""])[0]).strip().upper()
+                category_id = (payload.get("category_id", [""])[0] or query_params.get("csf_category", [""])[0]).strip().upper()
+                return_to = (payload.get("return_to", [""])[0] or query_params.get("return_to", ["/"])[0]).strip() or "/"
+                if return_to not in allowed_return_routes:
+                    return_to = "/"
+                official_subcategory = csf_catalog.find_official_subcategory(subcategory_id)
+                if official_subcategory is None or category_id != str(official_subcategory.get("category_id") or ""):
+                    raise RuntimeError("Choose an official CSF Subcategory before saving a Tile 3 record.")
+                connection = ioc_store.connect_db(self.app_config.state_db_path)
+                try:
+                    ioc_store.init_db(connection)
+                    if parsed.path == "/create-csf-reviewed-action":
+                        ioc_store.create_csf_reviewed_action(
+                            connection,
+                            subcategory_id=subcategory_id,
+                            title=payload.get("title", [""])[0],
+                            details=payload.get("details", [""])[0],
+                            rationale=payload.get("rationale", [""])[0],
+                            action_status=payload.get("action_status", [""])[0],
+                            progress_note=payload.get("progress_note", [""])[0],
+                            control_id=payload.get("control_id", [""])[0],
+                            created_by=getpass.getuser(),
+                        )
+                    elif parsed.path == "/update-csf-reviewed-action":
+                        action_id = (payload.get("action_id", [""])[0] or query_params.get("action_id", [""])[0]).strip()
+                        existing = connection.execute(
+                            "SELECT subcategory_id FROM csf_reviewed_actions WHERE action_id = ?", (action_id,)
+                        ).fetchone()
+                        if existing is None or str(existing["subcategory_id"]) != subcategory_id:
+                            raise RuntimeError("Choose an action from the selected CSF Subcategory before saving an update.")
+                        ioc_store.update_csf_reviewed_action(
+                            connection,
+                            action_id=action_id,
+                            title=payload.get("title", [""])[0],
+                            details=payload.get("details", [""])[0],
+                            rationale=payload.get("rationale", [""])[0],
+                            action_status=payload.get("action_status", [""])[0],
+                            progress_note=payload.get("progress_note", [""])[0],
+                            updated_by=getpass.getuser(),
+                        )
+                    elif parsed.path == "/delete-csf-reviewed-action":
+                        action_id = (payload.get("action_id", [""])[0] or query_params.get("action_id", [""])[0]).strip()
+                        existing = connection.execute(
+                            "SELECT subcategory_id FROM csf_reviewed_actions WHERE action_id = ?", (action_id,)
+                        ).fetchone()
+                        if existing is None or str(existing["subcategory_id"]) != subcategory_id:
+                            raise RuntimeError("Choose an action from the selected CSF Subcategory before deleting it.")
+                        ioc_store.delete_csf_reviewed_action(connection, action_id)
+                    else:
+                        ioc_store.create_csf_supporting_basis(
+                            connection, subcategory_id=subcategory_id, title=payload.get("title", [""])[0],
+                            basis_type=payload.get("basis_type", [""])[0], details=payload.get("details", [""])[0],
+                            reference_location=payload.get("reference_location", [""])[0],
+                            recorded_on=payload.get("recorded_on", [""])[0], review_on=payload.get("review_on", [""])[0],
+                            created_by=getpass.getuser(),
+                        )
+                finally:
+                    connection.close()
+                return self.redirect(return_to + "?" + urllib.parse.urlencode({"csf_category": category_id, "csf_subcategory": subcategory_id}))
 
             return self.respond_error(HTTPStatus.NOT_FOUND, "Route not found.")
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):

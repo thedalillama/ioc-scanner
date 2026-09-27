@@ -1,0 +1,61 @@
+<div id="subcategory-information-flow">
+  <style>
+    #subcategory-information-flow { color: var(--foreground); }
+    #subcategory-information-flow svg { width: 100%; height: auto; display: block; }
+    #subcategory-information-flow .outcome { fill: color-mix(in srgb, var(--blue) 15%, var(--background)); stroke: var(--blue); }
+    #subcategory-information-flow .information { fill: color-mix(in srgb, var(--green) 15%, var(--background)); stroke: var(--green); }
+    #subcategory-information-flow .consumer { fill: color-mix(in srgb, var(--orange) 14%, var(--background)); stroke: var(--orange); }
+    #subcategory-information-flow .node { stroke-width: 1.5; rx: 9; }
+    #subcategory-information-flow .edge { fill: none; stroke: var(--muted-foreground); stroke-width: 1.5; marker-end: url(#arrow); }
+    #subcategory-information-flow text { fill: var(--foreground); font-family: sans-serif; font-size: 13px; }
+    #subcategory-information-flow .small { fill: var(--muted-foreground); font-size: 11px; }
+    #subcategory-information-flow .title { font-size: 18px; font-weight: 500; }
+    #subcategory-information-flow .legend { font-size: 12px; }
+  </style>
+  <svg viewBox="0 0 1024 830" role="img" aria-labelledby="flow-title flow-description">
+    <title id="flow-title">CSF Subcategory-to-information-flow map</title>
+    <desc id="flow-description">Five Govern Organizational Context Subcategories produce reusable information records. Those records flow to later CSF Subcategories that use them for planning or required decisions.</desc>
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted-foreground)"></path>
+      </marker>
+    </defs>
+
+    <text x="28" y="32" class="title">CSF Subcategory → information → downstream outcome</text>
+    <text x="28" y="54" class="small">Current first-pass planning relationships. Controls are deliberately not shown.</text>
+
+    <rect x="28" y="72" width="14" height="14" class="outcome node"></rect><text x="50" y="84" class="legend">CSF Subcategory that produces information</text>
+    <rect x="310" y="72" width="14" height="14" class="information node"></rect><text x="332" y="84" class="legend">Reusable information item</text>
+    <rect x="565" y="72" width="14" height="14" class="consumer node"></rect><text x="587" y="84" class="legend">CSF Subcategory that uses it</text>
+
+    <path d="M 248 148 L 332 148" class="edge"></path><path d="M 558 148 L 640 126" class="edge"></path><path d="M 558 148 L 640 162" class="edge"></path><path d="M 558 148 L 640 198" class="edge"></path><path d="M 558 148 L 640 234" class="edge"></path>
+    <rect x="28" y="116" width="220" height="64" class="outcome node"></rect><text x="44" y="141">GV.OC-01</text><text x="44" y="162" class="small">Mission understood</text>
+    <rect x="332" y="116" width="226" height="64" class="information node"></rect><text x="348" y="141">Mission and objectives</text><text x="348" y="162" class="small">current purpose and priorities</text>
+    <rect x="640" y="104" width="350" height="44" class="consumer node"></rect><text x="656" y="131">GV.RM-01 · risk objectives</text>
+    <rect x="640" y="152" width="350" height="44" class="consumer node"></rect><text x="656" y="179">ID.AM-05 · asset priority</text>
+    <rect x="640" y="200" width="350" height="44" class="consumer node"></rect><text x="656" y="227">ID.RA-04 · impact analysis</text>
+    <rect x="640" y="248" width="350" height="44" class="consumer node"></rect><text x="656" y="275">RC.RP-04 · recovery priorities</text>
+
+    <path d="M 248 350 L 332 350" class="edge"></path><path d="M 558 350 L 640 326" class="edge"></path><path d="M 558 350 L 640 374" class="edge"></path><path d="M 558 350 L 640 422" class="edge"></path><path d="M 558 350 L 640 470" class="edge"></path>
+    <rect x="28" y="318" width="220" height="64" class="outcome node"></rect><text x="44" y="343">GV.OC-02</text><text x="44" y="364" class="small">Stakeholders and needs understood</text>
+    <rect x="332" y="318" width="226" height="64" class="information node"></rect><text x="348" y="343">Stakeholder security</text><text x="348" y="364" class="small">and privacy needs</text>
+    <rect x="640" y="304" width="350" height="44" class="consumer node"></rect><text x="656" y="331">GV.RM-05 · risk communication</text>
+    <rect x="640" y="352" width="350" height="44" class="consumer node"></rect><text x="656" y="379">GV.SC-05 · supplier requirements</text>
+    <rect x="640" y="400" width="350" height="44" class="consumer node"></rect><text x="656" y="427">RS.CO-02 · incident notifications</text>
+    <rect x="640" y="448" width="350" height="44" class="consumer node"></rect><text x="656" y="475">RC.CO-03 · recovery communications</text>
+
+    <path d="M 248 552 L 332 552" class="edge"></path><path d="M 558 552 L 640 528" class="edge"></path><path d="M 558 552 L 640 576" class="edge"></path><path d="M 558 552 L 640 624" class="edge"></path>
+    <rect x="28" y="520" width="220" height="64" class="outcome node"></rect><text x="44" y="545">GV.OC-03</text><text x="44" y="566" class="small">Requirements understood</text>
+    <rect x="332" y="520" width="226" height="64" class="information node"></rect><text x="348" y="545">Legal, regulatory, and</text><text x="348" y="566" class="small">contractual requirements</text>
+    <rect x="640" y="506" width="350" height="44" class="consumer node"></rect><text x="656" y="533">GV.PO-01 · cybersecurity policy</text>
+    <rect x="640" y="554" width="350" height="44" class="consumer node"></rect><text x="656" y="581">GV.SC-05 · supplier requirements</text>
+    <rect x="640" y="602" width="350" height="44" class="consumer node"></rect><text x="656" y="629">RS.CO-02 · incident notifications</text>
+
+    <path d="M 248 710 L 332 710" class="edge"></path><path d="M 558 710 L 640 686" class="edge"></path><path d="M 558 710 L 640 734" class="edge"></path><path d="M 558 710 L 640 782" class="edge"></path>
+    <rect x="28" y="678" width="220" height="64" class="outcome node"></rect><text x="44" y="703">GV.OC-04 / GV.OC-05</text><text x="44" y="724" class="small">Critical services and dependencies</text>
+    <rect x="332" y="678" width="226" height="64" class="information node"></rect><text x="348" y="703">Critical services and</text><text x="348" y="724" class="small">external dependencies</text>
+    <rect x="640" y="664" width="350" height="44" class="consumer node"></rect><text x="656" y="691">PR.IR-03 · resilience requirements</text>
+    <rect x="640" y="712" width="350" height="44" class="consumer node"></rect><text x="656" y="739">ID.RA-10 · supplier assessment</text>
+    <rect x="640" y="760" width="350" height="44" class="consumer node"></rect><text x="656" y="787">RC.RP-02 · recovery actions</text>
+  </svg>
+</div>

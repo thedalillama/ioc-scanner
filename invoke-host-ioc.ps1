@@ -120,7 +120,7 @@ function Get-ResolvedStateDbPath {
     if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
         return (Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath))
     }
-    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+    return (Join-Path $PSScriptRoot "state\codex-monitor.db")
 }
 
 function Get-StateDbContext {
@@ -128,7 +128,7 @@ function Get-StateDbContext {
     $defaultPath = if (-not [string]::IsNullOrWhiteSpace([string]$settings.StateDbPath)) {
         Resolve-SettingsPathValue -Value ([string]$settings.StateDbPath)
     } else {
-        Join-Path $PSScriptRoot "state\ioc-store.db"
+        Join-Path $PSScriptRoot "state\codex-monitor.db"
     }
 
     $resolvedPath = Get-ResolvedStateDbPath

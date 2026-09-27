@@ -71,7 +71,11 @@ $requiredRuntimeTargets = @(
     "protection-profiles.json",
     "profiles\persona-profiles.json",
     "profiles\system-profiles.json",
-    "profiles\posture-drift-rules.json"
+    "profiles\posture-drift-rules.json",
+    "csf_catalog.py",
+    "csf_guidance.py",
+    "csf_profile.py",
+    "profiles\nist-csf-2.0-catalog.json"
 )
 foreach ($target in $requiredRuntimeTargets) {
     Assert-InstallerManifestEntry -InstallerPath $installerPath -Target $target

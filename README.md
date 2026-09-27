@@ -200,7 +200,7 @@ Important output patterns:
 - `THREAT_RSS_*.json/md`
 - `<DataRoot>\alerts\pending\ALERT_*.json/md`
 - `<DataRoot>\alerts\archive\ALERT_*.json/md`
-- `<DataRoot>\state\ioc-store.db`
+- `<DataRoot>\state\codex-monitor.db`
 - `<DataRoot>\indicators\feed-indicators-latest.json`
 
 ## Product Principle

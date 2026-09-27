@@ -110,19 +110,20 @@ Verified:
 - Phase 4 is operationally complete. The protected runtime backup is `C:\ProgramData\CodexMonitor\migration-backup\phase4-20260911-094011`; deployed files include `ioc_store.py`, `invoke-host-tripwire.ps1`, `start-codex-alert-helper.ps1`, `codex-alert-notifier.cmd`, and `run-hidden.vbs`. The notifier uses SQLite claim/complete commands rather than pending-directory polling; failed deliveries are retryable and an interrupted claim expires after five minutes. The interactive notifier identity has Modify access only to `C:\ProgramData\CodexMonitor\state`, including SQLite WAL/SHM sidecars; protected-runtime permissions remain unchanged. A normal Tripwire run persisted linked SQLite alerts, then the interactive notifier returned `0` after popup dismissal and recorded both validation deliveries as `delivered` with their alerts `acknowledged`. JSON/Markdown alert exports remain optional review artifacts. Full validation passes 55 tests, including source-link integrity, acknowledged-delivery duplicate prevention, failed-delivery retry, and interrupted-claim recovery.
 - Installer follow-up (Phase 4 blocker): grant the configured interactive notifier identity the minimum required Modify access to `DataRoot\state` during installation, so it can update `ioc-store.db` and its SQLite WAL/SHM sidecars for atomic alert delivery claims and acknowledgements. Do not grant write access to the protected runtime. Record the granted identity and add a clean-install/notifier acknowledgement test before treating the Phase 4 task path as operationally complete.
 - Phase 5 is operationally complete in the isolated clean candidate. The collectors retain operational JSON/Markdown only when explicitly requested with `-Export`; `ioc_store.py` supplies exact-ID `export-indicators`, `export-report`, and `export-alert` commands; and the UI reads alerts from SQLite by immutable `alert_id` rather than alert files. The clean candidate's five standard scheduled tasks each returned `0`, the dashboard and Respond routes returned HTTP `200`, and recursive inspection found zero operational `HOST_*`, `THREAT_*`, `ALERT_*`, feed-indicator JSON, or Markdown artifacts. The candidate's SQLite database contained persisted reports and acknowledged alerts with no pending alerts. Full regression validation passed 62 tests, including exact-ID acceptance, wildcard refusal, dangerous-finding guardrails, SQLite UI fixtures, and no-export collector contracts. Existing JSON/Markdown material remains available only as explicit exports or retained migration evidence; see `SQLITE_FIRST_MIGRATION_PLAN.md` for the detailed Task 1-8 record.
-- local `main` and GitHub `origin/main` were confirmed at the same commit, `c85225e` (`Clean up runtime path assumptions`). The local worktree remains intentionally dirty with the pending Respond/UI, installer, documentation, test-reliability, and handoff/artifact changes; no commit or push was performed during this work.
+- On 2026-09-18, local `main` and GitHub `origin/main` were confirmed at `1ea3a5e` (`feat: unify application state store and CSF profile guidance`). That commit contains the current application-state schema and CSF profile guidance; the development workspace uses `state\\codex-monitor.db` and `codex_monitor_store.py`. The installed runtime remains on the earlier deployment and its existing `ioc-store.db` until a separately approved deployment. References above to `ioc_store.py` and `ioc-store.db` describe the historical installed/runtime state at the time of their dated validation.
+- On 2026-09-18, the installed hourly Tripwire check was confirmed to create a new High alert on each run for the same 68 `protected` findings. Each alert can be acknowledged, but protected findings correctly cannot be accepted through the ordinary acceptance path. To prevent repeated operator interruptions while the required protected-baseline workflow is designed, the installed `Codex Alert Notifier` scheduled task was temporarily **disabled**. Tripwire continues to collect and persist results. Re-enable the notifier only after the protected differences have been deliberately reviewed and resolved through an approved workflow, or after an explicit operator decision to resume notifications.
 
 Current release blockers:
 
-- the completed source, test, and documentation changes remain uncommitted and must be separated into reviewable release slices before a production release candidate is prepared;
+- any future source changes must be committed and reviewed before a production release candidate is prepared; the current application-state and CSF profile guidance changes are already committed and pushed as `1ea3a5e`;
 - the five verified candidate tasks target the isolated `C:\CodexTestWork\.phase5-task7-clean-runtime` / data roots, not the protected production runtime; a separately approved protected-runtime deployment remains required;
 - legacy `C:\CodexTest` retention and production cutover remain separate release-management decisions.
 
 Next management actions:
 
-1. Separate the working tree into reviewable Respond/UI, installer, and test-reliability changes before any release candidate is prepared.
-2. Observe the next normal scheduled cadence for RSS, feed import, IOC scan, and Tripwire; retain the generated reports and investigate any nonzero task result or missing output.
-3. Design and test a baseline-refresh workflow that does not capture its own temporary SYSTEM task as scheduled-task drift. Preserve the existing guardrail rule; do not broadly suppress task-persistence changes.
+1. Design and test a baseline-refresh workflow that does not capture its own temporary SYSTEM task as scheduled-task drift. Preserve the existing guardrail rule; do not broadly suppress task-persistence changes.
+2. Keep the notifier paused while the repeated protected drift remains unresolved; re-enable it only after the workflow has been live-verified or an operator explicitly directs resumption.
+3. Observe the next normal scheduled cadence for RSS, feed import, IOC scan, and Tripwire when notifications are deliberately resumed; retain the generated reports and investigate any nonzero task result or missing output.
 4. Approve a retention period and then remove `C:\\CodexTest` only after the protected deployment has passed the remaining operational gates.
 5. Only after those operational gates pass, begin vulnerability-intelligence ingestion and host-software matching.
 
@@ -151,6 +152,14 @@ Replace the raw alert-detail view with an operator-facing page that presents the
 Status: open; observed 2026-09-09.
 
 Creating the one-time SYSTEM task needed to refresh the trusted tripwire baseline caused that task and its task-file removal to appear as Critical changes in the next check. The guardrail behavior is correct: the changes must not be automatically accepted. Design a dedicated SYSTEM baseline execution path that does not leave the bootstrap task in the captured scheduled-task snapshot, and add an end-to-end regression check.
+
+### Restore protected-drift notification only after a deliberate review workflow exists
+
+Status: open; notification temporarily paused 2026-09-18.
+
+The installed Tripwire check currently records 68 protected findings every cadence. They are intentionally ineligible for ordinary finding acceptance, so alert acknowledgement cannot resolve them and an identical logical condition produces a new alert on each run. The `Codex Alert Notifier` scheduled task is temporarily disabled to stop repeated popups; Tripwire collection and SQLite persistence remain active.
+
+Design and test an operator-facing, protected-baseline review and refresh workflow. It must identify the exact protected differences, require an explicit trusted-baseline decision, preserve immutable evidence and audit history, and refresh only the approved protected baseline. It must not weaken the exact-ID acceptance rule, make protected findings ordinarily acceptable, or broadly suppress scheduled-task/persistence monitoring. After live verification of that workflow, explicitly re-enable the notifier and confirm that unresolved protected drift alerts while approved baseline changes do not recur.
 
 ### Define SQLite operational retention and controlled compaction
 
@@ -309,10 +318,11 @@ Do not mark tasks complete without verification of the actual runtime behavior o
 
 ## Immediate Next Step
 
-Observe the next normal scheduled cadence and preserve its reports.
+Design the safe, deliberate Tripwire protected-baseline review and refresh workflow.
 
 Reason:
 
-- all five tasks have been retargeted and manually exercised after migration
-- one normal unattended cycle is the remaining evidence needed before legacy-runtime retirement can be considered
-- any nonzero task result, missing report, or unexpected alert should be investigated before new capability is added
+- the normal scheduled cadence has already been observed and the current protected differences are repeatedly detected
+- the ordinary acceptance path correctly refuses protected findings, but no separate trusted-baseline workflow exists to resolve reviewed protected changes
+- the notifier is temporarily disabled to prevent recurring interruptions while Tripwire continues to preserve evidence
+- retention/compaction remains design-only until an explicit retention and deletion policy is approved

@@ -327,11 +327,11 @@ function Get-StateDbPath {
     if (-not [string]::IsNullOrWhiteSpace($LegacyStatePath)) {
         $legacyParent = Split-Path -Path $LegacyStatePath -Parent
         if (-not [string]::IsNullOrWhiteSpace($legacyParent) -and $legacyParent -ne $PSScriptRoot) {
-            return (Join-Path $legacyParent "ioc-store.db")
+            return (Join-Path $legacyParent "codex-monitor.db")
         }
     }
 
-    return (Join-Path $PSScriptRoot "state\ioc-store.db")
+    return (Join-Path $PSScriptRoot "state\codex-monitor.db")
 }
 
 function Read-LegacyStateFile {

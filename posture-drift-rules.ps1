@@ -204,7 +204,7 @@ function Load-AcceptedPostureDriftRegistry {
         [string]$DbPath = '',
         [string]$JsonFallbackPath = ''
     )
-    $resolvedDbPath = if ([string]::IsNullOrWhiteSpace($DbPath)) { Join-Path $PSScriptRoot 'state\ioc-store.db' } else { $DbPath }
+    $resolvedDbPath = if ([string]::IsNullOrWhiteSpace($DbPath)) { Join-Path $PSScriptRoot 'state\codex-monitor.db' } else { $DbPath }
     $fallbackPath = if ([string]::IsNullOrWhiteSpace($JsonFallbackPath)) { Get-DefaultAcceptedPostureDriftJsonPath } else { $JsonFallbackPath }
     $result = [pscustomobject]@{ RegistryPath = $resolvedDbPath; RegistryStatus = 'missing'; RegistryLoadedCount = 0; Warning = ''; Entries = @() }
     try {

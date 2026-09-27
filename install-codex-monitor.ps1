@@ -24,6 +24,31 @@ function Ensure-Directory {
     }
 }
 
+function Copy-SqliteDatabase {
+    param(
+        [string]$PythonCommand,
+        [string]$SourcePath,
+        [string]$DestinationPath
+    )
+
+    $backupScript = @'
+import sqlite3
+import sys
+
+source = sqlite3.connect(sys.argv[1])
+destination = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(destination)
+finally:
+    destination.close()
+    source.close()
+'@
+    & $PythonCommand -c $backupScript $SourcePath $DestinationPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to migrate the existing SQLite state database to the application-state filename."
+    }
+}
+
 function Copy-IfExists {
     param(
         [string]$Path,
@@ -323,6 +348,9 @@ $runtimeFiles = @(
     @{ Target = "import-threat-feeds.ps1"; Candidates = @("import-threat-feeds.ps1", "feed-import.ps1") },
     @{ Target = "get-codex-monitor-status.ps1"; Candidates = @("get-codex-monitor-status.ps1", "status.ps1") },
     @{ Target = "codex_monitor_store.py"; Candidates = @("codex_monitor_store.py", "store.py") },
+    @{ Target = "csf_catalog.py"; Candidates = @("csf_catalog.py") },
+    @{ Target = "csf_guidance.py"; Candidates = @("csf_guidance.py") },
+    @{ Target = "csf_profile.py"; Candidates = @("csf_profile.py") },
     @{ Target = "host-tripwire-config.json"; Candidates = @("host-tripwire-config.json", "tripwire-config.json") },
     @{ Target = "ioc-monitor-locations.json"; Candidates = @("ioc-monitor-locations.json", "ioc-locations.json") },
     @{ Target = "accept-posture-drift.ps1"; Candidates = @("accept-posture-drift.ps1") },
@@ -332,6 +360,7 @@ $runtimeFiles = @(
     @{ Target = "profiles\persona-profiles.json"; Candidates = @("profiles\persona-profiles.json") },
     @{ Target = "profiles\system-profiles.json"; Candidates = @("profiles\system-profiles.json") },
     @{ Target = "profiles\posture-drift-rules.json"; Candidates = @("profiles\posture-drift-rules.json") },
+    @{ Target = "profiles\nist-csf-2.0-catalog.json"; Candidates = @("profiles\nist-csf-2.0-catalog.json") },
     @{ Target = "run-hidden.vbs"; Candidates = @("run-hidden.vbs", "hidden.vbs") }
 )
 
@@ -373,6 +402,10 @@ $runtimeRootTaskPath = $RuntimeRoot
 $dataRootTaskPath = $DataRoot
 
 $applicationStateDbPath = Join-Path $DataRoot "state\codex-monitor.db"
+$legacyStateDbPath = Join-Path $DataRoot "state\ioc-store.db"
+if (-not (Test-Path -LiteralPath $applicationStateDbPath) -and (Test-Path -LiteralPath $legacyStateDbPath)) {
+    Copy-SqliteDatabase -PythonCommand $pythonRuntime -SourcePath $legacyStateDbPath -DestinationPath $applicationStateDbPath
+}
 $iocStoreRuntimePath = Join-Path $RuntimeRoot "codex_monitor_store.py"
 if (Test-Path -LiteralPath $iocStoreRuntimePath) {
     & $pythonRuntime $iocStoreRuntimePath --db $applicationStateDbPath init | Out-Null

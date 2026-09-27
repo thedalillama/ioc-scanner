@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import codex_monitor_store as ioc_store
+from csf_capability_dependencies import CAPABILITY_DEPENDENCIES
 
 
 class IocStoreTests(unittest.TestCase):
@@ -38,6 +39,20 @@ class IocStoreTests(unittest.TestCase):
             "local_csf_outcomes",
             "csf_subcategory_guidance",
             "csf_subcategory_profile_metadata",
+            "csf_outcome_audit_events",
+            "csf_current_assessments",
+            "csf_supporting_basis",
+            "csf_reviewed_actions",
+            "csf_reviewed_action_updates",
+            "csf_reviewed_action_basis_links",
+            "csf_reference_frameworks",
+            "csf_reference_controls",
+            "csf_subcategory_control_mappings",
+            "csf_reviewed_action_control_links",
+            "csf_information_items",
+            "csf_subcategory_information_sources",
+            "csf_subcategory_information_uses",
+            "csf_subcategory_capability_dependencies",
         }
         rows = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({0})".format(
@@ -50,10 +65,30 @@ class IocStoreTests(unittest.TestCase):
         migrations = self.conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        self.assertEqual([1, 2, 3, 4, 5], [row["version"] for row in migrations])
+        self.assertEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], [row["version"] for row in migrations])
+        self.assertNotIn(
+            "single_pc_scope_note",
+            {row["name"] for row in self.conn.execute("PRAGMA table_info(csf_subcategory_guidance)").fetchall()},
+        )
         self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_guidance WHERE language_code = 'en-US'").fetchone()[0])
         self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_guidance WHERE language_code = 'en-US' AND examples_json <> '[]'").fetchone()[0])
         self.assertEqual(106, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_profile_metadata WHERE language_code = 'en-US'").fetchone()[0])
+        self.assertGreaterEqual(self.conn.execute("SELECT COUNT(*) FROM csf_information_items").fetchone()[0], 15)
+        self.assertGreaterEqual(self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_information_uses").fetchone()[0], 50)
+        stakeholder_purchase_use = self.conn.execute(
+            """SELECT dependency_kind, use_reason
+            FROM csf_subcategory_information_uses
+            WHERE information_id = 'stakeholder_cybersecurity_needs' AND consumer_subcategory_id = 'GV.SC-05'"""
+        ).fetchone()
+        self.assertEqual("required_input", stakeholder_purchase_use["dependency_kind"])
+        self.assertIn("supplier and purchasing requirements", stakeholder_purchase_use["use_reason"])
+        capability_count = self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_capability_dependencies").fetchone()[0]
+        self.assertEqual(len(CAPABILITY_DEPENDENCIES), capability_count)
+        authentication_gate = self.conn.execute(
+            """SELECT dependency_strength FROM csf_subcategory_capability_dependencies
+            WHERE prerequisite_subcategory_id = 'PR.AA-03' AND dependent_subcategory_id = 'PR.AA-05'"""
+        ).fetchone()
+        self.assertEqual("hard_gate", authentication_gate["dependency_strength"])
 
         indexes = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
@@ -69,6 +104,235 @@ class IocStoreTests(unittest.TestCase):
             },
             {row["name"] for row in indexes},
         )
+
+    def test_import_nist_sp800_53_final_csf_mappings_is_idempotent(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        payload = ioc_store.import_nist_sp800_53_csf_2_mappings(
+            self.conn,
+            project_root / "reference-data" / "NIST" / "csf-2.0-informative-references.xlsx",
+            project_root / "reference-data" / "NIST" / "NIST_SP-800-53_rev5_catalog.json",
+        )
+        self.assertEqual("nist-sp-800-53-r5.2.0", payload["framework_id"])
+        self.assertEqual("5.2.0", payload["catalog_version"])
+        self.assertEqual(1196, payload["control_count"])
+        self.assertEqual(210, payload["mapped_control_count"])
+        self.assertEqual(737, payload["mapping_count"])
+        self.assertEqual(["CP", "IR", "PT"], payload["skipped_reference_values"])
+        self.assertEqual(
+            "Identify Critical Assets",
+            self.conn.execute(
+                "SELECT title FROM csf_reference_controls WHERE framework_id = ? AND control_id = ?",
+                ("nist-sp-800-53-r5.2.0", "CP-02(08)"),
+            ).fetchone()[0],
+        )
+        self.assertIn(
+            "Define organizational mission and business processes",
+            self.conn.execute(
+                "SELECT statement_text FROM csf_reference_controls WHERE framework_id = ? AND control_id = ?",
+                ("nist-sp-800-53-r5.2.0", "PM-11"),
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            ["PM-11"],
+            [row[0] for row in self.conn.execute(
+                "SELECT control_id FROM csf_subcategory_control_mappings WHERE subcategory_id = ? ORDER BY control_id",
+                ("GV.OC-01",),
+            ).fetchall()],
+        )
+        mapping_description = self.conn.execute(
+            """SELECT interpretation_text, suggested_action_text, action_title_example,
+            action_rationale_example, interpretation_source
+            FROM csf_subcategory_control_mappings
+            WHERE framework_id = ? AND control_id = ? AND subcategory_id = ?""",
+            ("nist-sp-800-53-r5.2.0", "PM-11", "GV.OC-01"),
+        ).fetchone()
+        self.assertEqual("product-generated-v1", mapping_description["interpretation_source"])
+        self.assertIn("mission clear, shared, and current", mapping_description["interpretation_text"])
+        self.assertIn("Document the current mission statement", mapping_description["suggested_action_text"])
+        self.assertEqual("Document and share the current mission statement", mapping_description["action_title_example"])
+        self.assertIn("mission statement current", mapping_description["action_rationale_example"])
+        repeated = ioc_store.import_nist_sp800_53_csf_2_mappings(
+            self.conn,
+            project_root / "reference-data" / "NIST" / "csf-2.0-informative-references.xlsx",
+            project_root / "reference-data" / "NIST" / "NIST_SP-800-53_rev5_catalog.json",
+        )
+        self.assertEqual(payload["mapping_count"], repeated["mapping_count"])
+        self.assertEqual(737, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_control_mappings").fetchone()[0])
+
+        action = ioc_store.create_csf_reviewed_action(
+            self.conn,
+            subcategory_id="GV.OC-01",
+            title="Address PM-11 — Mission and Business Process Definition",
+            action_status="planned",
+            control_id="PM-11",
+        )
+        controls = ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, "GV.OC-01")
+        self.assertEqual("PM-11", controls[0]["control_id"])
+        self.assertEqual(action["action_id"], controls[0]["action_id"])
+        with self.assertRaisesRegex(ValueError, "already has an action"):
+            ioc_store.create_csf_reviewed_action(
+                self.conn,
+                subcategory_id="GV.OC-01",
+                title="Duplicate PM-11 action",
+                action_status="planned",
+                control_id="PM-11",
+            )
+        ioc_store.delete_csf_reviewed_action(self.conn, action["action_id"])
+        self.assertIsNone(ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, "GV.OC-01")[0]["action_id"])
+
+    def test_csf_outcome_audit_events_are_append_only_and_preserve_assessment_context(self) -> None:
+        recorded = ioc_store.record_csf_outcome_audit_event(
+            self.conn,
+            audit_event_id="audit-gv-oc-01",
+            subcategory_id="gv.oc-01",
+            event_type="assessment_recorded",
+            assessment_method="review",
+            profile_id="single-pc",
+            profile_version="2026.09",
+            target_assessment_level="fully_implemented",
+            current_assessment_level="partly_implemented",
+            related_record_type="supporting_evidence",
+            related_record_id="evidence-001",
+            rationale_note="One required artifact remains to be reviewed.",
+            payload={"source": "user-entry"},
+            recorded_by="local-user",
+            recorded_at="2026-09-19T12:00:00+00:00",
+        )
+
+        self.assertEqual("GV.OC-01", recorded["subcategory_id"])
+        self.assertEqual("assessment_recorded", recorded["event_type"])
+        self.assertEqual("partly_implemented", recorded["current_assessment_level"])
+        self.assertEqual({"source": "user-entry"}, json.loads(recorded["payload_json"]))
+        self.assertEqual(
+            ["audit-gv-oc-01"],
+            [item["audit_event_id"] for item in ioc_store.list_csf_outcome_audit_events(self.conn, "GV.OC-01")],
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.conn.execute(
+                "UPDATE csf_outcome_audit_events SET rationale_note = 'changed' WHERE audit_event_id = ?",
+                (recorded["audit_event_id"],),
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.conn.execute(
+                "DELETE FROM csf_outcome_audit_events WHERE audit_event_id = ?",
+                (recorded["audit_event_id"],),
+            )
+        with self.assertRaisesRegex(ValueError, "current_assessment_level"):
+            ioc_store.record_csf_outcome_audit_event(
+                self.conn,
+                subcategory_id="GV.OC-01",
+                event_type="assessment_recorded",
+                current_assessment_level="undecided",
+            )
+
+    def test_init_removes_legacy_scope_note_column_without_losing_guidance(self) -> None:
+        self.conn.execute("ALTER TABLE csf_subcategory_guidance ADD COLUMN single_pc_scope_note TEXT NOT NULL DEFAULT ''")
+        self.conn.execute(
+            "UPDATE csf_subcategory_guidance SET single_pc_scope_note = 'Legacy product note' WHERE subcategory_id = 'GV.OC-01'"
+        )
+        self.conn.commit()
+
+        ioc_store.init_db(self.conn)
+
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(csf_subcategory_guidance)").fetchall()}
+        guidance = self.conn.execute(
+            "SELECT plain_english_text, examples_json FROM csf_subcategory_guidance WHERE subcategory_id = 'GV.OC-01'"
+        ).fetchone()
+        self.assertNotIn("single_pc_scope_note", columns)
+        self.assertTrue(guidance["plain_english_text"])
+        self.assertNotEqual("[]", guidance["examples_json"])
+
+    def test_current_csf_assessment_is_updatable_without_creating_an_audit_event(self) -> None:
+        saved = ioc_store.set_current_csf_assessment(
+            self.conn, "gv.oc-01", "partly_implemented", "local-user"
+        )
+        updated = ioc_store.set_current_csf_assessment(
+            self.conn, "GV.OC-01", "fully_implemented", "local-user"
+        )
+
+        self.assertEqual("partly_implemented", saved["assessment_level"])
+        self.assertEqual("fully_implemented", updated["assessment_level"])
+        self.assertEqual(
+            "fully_implemented",
+            ioc_store.list_current_csf_assessments(self.conn)["GV.OC-01"]["assessment_level"],
+        )
+        self.assertEqual(0, self.conn.execute("SELECT COUNT(*) FROM csf_outcome_audit_events").fetchone()[0])
+        with self.assertRaisesRegex(ValueError, "assessment_level"):
+            ioc_store.set_current_csf_assessment(self.conn, "GV.OC-01", "undecided")
+
+    def test_supporting_basis_and_reviewed_actions_link_to_the_same_subcategory(self) -> None:
+        basis = ioc_store.create_csf_supporting_basis(
+            self.conn,
+            basis_id="basis-001",
+            subcategory_id="gv.oc-01",
+            basis_type="document",
+            title="Mission statement",
+            details="Reviewed the current organization mission statement.",
+            reference_location="C:/evidence/mission.pdf",
+            created_by="local-user",
+        )
+        action = ioc_store.create_csf_reviewed_action(
+            self.conn,
+            action_id="action-001",
+            subcategory_id="GV.OC-01",
+            title="Share the mission statement with staff",
+            action_status="in_progress",
+            basis_ids=[basis["basis_id"]],
+            created_by="local-user",
+        )
+
+        self.assertEqual("GV.OC-01", basis["subcategory_id"])
+        self.assertEqual(["basis-001"], [item["basis_id"] for item in ioc_store.list_csf_supporting_basis(self.conn, "GV.OC-01")])
+        self.assertEqual("in_progress", action["action_status"])
+        self.assertEqual(
+            ["basis-001"],
+            ioc_store.list_csf_reviewed_actions(self.conn, "GV.OC-01")[0]["basis_ids"],
+        )
+        with self.assertRaisesRegex(ValueError, "same Subcategory"):
+            ioc_store.create_csf_reviewed_action(
+                self.conn,
+                subcategory_id="GV.OV-01",
+                title="Invalid cross-outcome link",
+                action_status="planned",
+                basis_ids=[basis["basis_id"]],
+            )
+
+    def test_reviewed_action_updates_are_append_only_and_set_first_completion_time(self) -> None:
+        action = ioc_store.create_csf_reviewed_action(
+            self.conn,
+            action_id="action-update-001",
+            subcategory_id="GV.OC-01",
+            title="Share the mission statement with staff",
+            action_status="planned",
+            progress_note="Scheduled the staff meeting.",
+            created_by="local-user",
+        )
+        updated = ioc_store.update_csf_reviewed_action(
+            self.conn,
+            action_id=action["action_id"],
+            title=action["title"],
+            details="Reviewed the statement with staff.",
+            rationale="Staff need the context to make risk decisions.",
+            action_status="completed",
+            progress_note="Meeting completed and statement shared.",
+            updated_by="local-user",
+        )
+
+        history = ioc_store.list_csf_reviewed_action_updates(self.conn, action["action_id"])
+        self.assertEqual("completed", updated["action_status"])
+        self.assertTrue(updated["completed_at"])
+        self.assertNotEqual(action["updated_at"], updated["updated_at"])
+        self.assertEqual(["completed", "planned"], [item["action_status"] for item in history])
+        self.assertEqual("Meeting completed and statement shared.", history[0]["progress_note"])
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.conn.execute(
+                "UPDATE csf_reviewed_action_updates SET progress_note = 'changed' WHERE action_update_id = ?",
+                (history[0]["action_update_id"],),
+            )
+        deleted = ioc_store.delete_csf_reviewed_action(self.conn, action["action_id"])
+        self.assertEqual(action["action_id"], deleted["action_id"])
+        self.assertEqual([], ioc_store.list_csf_reviewed_action_updates(self.conn, action["action_id"]))
+        self.assertEqual([], ioc_store.list_csf_reviewed_actions(self.conn, "GV.OC-01"))
 
     def test_local_csf_extensions_are_scoped_and_advisory_only(self) -> None:
         category = ioc_store.create_local_csf_category(
