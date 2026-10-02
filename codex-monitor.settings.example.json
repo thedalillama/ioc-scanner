@@ -1,7 +1,9 @@
 {
   "RuntimeRoot": "C:\\Program Files\\CodexMonitor",
   "DataRoot": "C:\\ProgramData\\CodexMonitor",
-  "StateDbPath": "C:\\ProgramData\\CodexMonitor\\state\\codex-monitor.db",
+  "StateDbPath": "C:\\ProgramData\\CodexMonitor\\state\\codex-monitoring.db",
+  "MonitorStateDbPath": "C:\\ProgramData\\CodexMonitor\\state\\codex-monitoring.db",
+  "AnalystStateDbPath": "C:\\ProgramData\\CodexMonitor\\state\\csf-analyst.db",
   "ProtectionProfile": "microsoft_baseline",
   "PythonCommand": "C:\\Users\\me\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
   "IndicatorExportPath": "C:\\ProgramData\\CodexMonitor\\indicators\\feed-indicators-latest.json",

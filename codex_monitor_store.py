@@ -10,10 +10,35 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from xml.etree import ElementTree
 
-from csf_guidance import PLAIN_ENGLISH_GUIDANCE_EN_US, PRODUCT_EXAMPLES_EN_US
+from csf_guidance import GENERIC_ACTION_DETAILS_EN_US, GENERIC_ACTION_RATIONALE_EN_US, GENERIC_ACTION_TITLE_EN_US, PLAIN_ENGLISH_GUIDANCE_EN_US, PRODUCT_EXAMPLES_EN_US
 from csf_capability_dependencies import CAPABILITY_DEPENDENCIES
+from csf_control_mapping_relationships import CONTROL_MAPPING_RELATIONSHIPS
 from csf_information_flows import INFORMATION_ITEMS, INFORMATION_SOURCES, INFORMATION_USES
 from csf_profile import SUBCATEGORY_PROFILE_METADATA_EN_US
+import csf_catalog
+
+
+# Inventory copied from NIST's CSF 2.0 Profiles catalog.  It is deliberately
+# only metadata: each Community Profile keeps its own publication and update
+# lifecycle, and its detailed outcome selections must be imported explicitly.
+NIST_CSF_COMMUNITY_PROFILE_CATALOG_URL = "https://www.nist.gov/cyberframework/profiles"
+NIST_CSF_COMMUNITY_PROFILES = [
+    ("nist-oran-2026-draft", "Federal Agency Open Radio Access Network (O-RAN) Deployment", "NIST", "Draft / public comment", "Federal agency O-RAN deployment"),
+    ("nist-cyber-ai", "Cyber AI Profile", "NIST", "Reviewing comments", "Cybersecurity of AI and AI for cybersecurity"),
+    ("nist-transit", "Transit Community CSF Profile", "NIST", "Finalized", "Public transit operations"),
+    ("nist-manufacturing", "Manufacturing CSF Profile", "NIST", "Draft / reviewing comments", "Manufacturing"),
+    ("nist-foundational-pnt", "Foundational PNT CSF Profile", "NIST", "Draft / reviewing comments", "Positioning, navigation, and timing services"),
+    ("nist-incident-response", "Incident Response CSF Profile", "NIST", "Final", "Cybersecurity incident response"),
+    ("nist-semiconductor", "Semiconductor Community Profile", "NIST", "Draft / reviewing comments", "Semiconductor manufacturing"),
+    ("nist-ransomware", "Ransomware Risk Management CSF Profile", "NIST", "Final", "Ransomware risk management"),
+    ("nist-genomic-data", "Genomic Data CSF Profile", "NIST", "Draft", "Genomic data cybersecurity and privacy"),
+    ("csa-cloud-security", "Cloud Security Community Profile", "Cloud Security Alliance", "See source", "Cloud security"),
+    ("cablelabs-internet-routing", "Internet Routing CSF Profile", "CableLabs", "See source", "Internet routing"),
+    ("cri-financial-cloud", "Financial Sector Cloud Services Community Profile", "Cyber Risk Institute", "See source", "Financial-sector cloud services"),
+    ("cri-financial-sector", "Financial Sector CSF Profile", "Cyber Risk Institute", "See source", "Financial services"),
+    ("seemless-telco-v1", "Telecommunications Sector CSF Profile Version 1.0", "Seemless Transition", "See source", "Telecommunications"),
+    ("tca-telco-v2", "Telecommunications Sector CSF Profile Version 2.0", "Trusted Cyber Annex", "See source", "Telecommunications"),
+]
 
 
 
@@ -471,6 +496,9 @@ def init_db(connection: sqlite3.Connection) -> None:
             language_code TEXT NOT NULL,
             plain_english_text TEXT NOT NULL CHECK(length(trim(plain_english_text)) > 0),
             examples_json TEXT NOT NULL DEFAULT '[]',
+            generic_action_title TEXT NOT NULL DEFAULT '',
+            generic_action_details TEXT NOT NULL DEFAULT '',
+            generic_action_rationale TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(subcategory_id, language_code)
         );
 
@@ -535,8 +563,199 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_csf_current_assessments_level
             ON csf_current_assessments(assessment_level, updated_at);
 
+        -- Profile-scoped replacement for the original, single-context working
+        -- assessment table.  The legacy table is retained only for migration.
+        CREATE TABLE IF NOT EXISTS csf_profile_current_assessments (
+            profile_id TEXT NOT NULL CHECK(length(trim(profile_id)) > 0),
+            subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
+            assessment_level TEXT NOT NULL CHECK(assessment_level IN ('fully_implemented', 'partly_implemented', 'not_implemented', 'not_applicable')),
+            updated_by TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(profile_id, subcategory_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_csf_profile_current_assessments_level
+            ON csf_profile_current_assessments(profile_id, assessment_level, updated_at);
+
+        -- The desired Tile 3 assessment is an Organizational Profile choice,
+        -- keyed by the profile's UUID rather than its display name.
+        CREATE TABLE IF NOT EXISTS csf_profile_outcome_targets (
+            profile_id TEXT NOT NULL CHECK(length(trim(profile_id)) > 0),
+            subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
+            target_assessment_level TEXT NOT NULL CHECK(target_assessment_level IN ('fully_implemented', 'partly_implemented', 'not_implemented', 'not_applicable')),
+            updated_by TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(profile_id, subcategory_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_csf_profile_outcome_targets_profile
+            ON csf_profile_outcome_targets(profile_id, target_assessment_level, updated_at);
+
+        CREATE TABLE IF NOT EXISTS csf_profile_definitions (
+            profile_id TEXT NOT NULL UNIQUE,
+            profile_name TEXT PRIMARY KEY CHECK(length(trim(profile_name)) > 0),
+            profile_kind TEXT NOT NULL DEFAULT 'organizational',
+            context_summary TEXT NOT NULL DEFAULT '',
+            community_profile_source TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_active_profile (
+            selection_id INTEGER PRIMARY KEY CHECK(selection_id = 1),
+            profile_name TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(profile_name) REFERENCES csf_profile_definitions(profile_name) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_community_profile_catalog (
+            community_profile_id TEXT PRIMARY KEY,
+            profile_name TEXT NOT NULL,
+            publisher TEXT NOT NULL,
+            publication_status TEXT NOT NULL,
+            focus TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            catalog_source_url TEXT NOT NULL,
+            catalog_checked_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_profile_community_profile_sources (
+            profile_name TEXT NOT NULL,
+            community_profile_id TEXT NOT NULL,
+            selected_at TEXT NOT NULL,
+            PRIMARY KEY(profile_name, community_profile_id),
+            FOREIGN KEY(profile_name) REFERENCES csf_profile_definitions(profile_name) ON DELETE CASCADE,
+            FOREIGN KEY(community_profile_id) REFERENCES csf_community_profile_catalog(community_profile_id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_community_profile_frozen_sources (
+            community_profile_id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL UNIQUE,
+            source_workbook_path TEXT NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            source_version TEXT NOT NULL DEFAULT '',
+            source_published_at TEXT,
+            source_reviewed_at TEXT,
+            next_source_review_at TEXT,
+            imported_at TEXT NOT NULL,
+            FOREIGN KEY(community_profile_id) REFERENCES csf_community_profile_catalog(community_profile_id) ON DELETE RESTRICT,
+            FOREIGN KEY(profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT
+        );
+
+        -- Some Community Profiles express separate source guidance for more
+        -- than one focus area (for example, Secure, Defend, and Thwart in
+        -- NIST IR 8596).  Keep those source records independent instead of
+        -- flattening them into the outcome's general community guidance.
+        CREATE TABLE IF NOT EXISTS csf_community_profile_outcome_facets (
+            profile_id TEXT NOT NULL,
+            outcome_id TEXT NOT NULL,
+            facet_id TEXT NOT NULL,
+            facet_label TEXT NOT NULL,
+            proposed_priority TEXT NOT NULL DEFAULT '',
+            considerations TEXT NOT NULL DEFAULT '',
+            opportunities TEXT NOT NULL DEFAULT '',
+            informative_references TEXT NOT NULL DEFAULT '',
+            source_text TEXT NOT NULL DEFAULT '',
+            source_locator TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(profile_id, outcome_id, facet_id),
+            FOREIGN KEY(profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_csf_community_profile_outcome_facets_outcome
+            ON csf_community_profile_outcome_facets(profile_id, outcome_id, facet_id);
+
+        CREATE TABLE IF NOT EXISTS csf_profile_source_lineage (
+            profile_id TEXT NOT NULL,
+            source_profile_id TEXT NOT NULL,
+            source_role TEXT NOT NULL,
+            copied_at TEXT NOT NULL,
+            PRIMARY KEY(profile_id, source_profile_id),
+            FOREIGN KEY(profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT,
+            FOREIGN KEY(source_profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_profile_audit_events (
+            profile_audit_event_id TEXT PRIMARY KEY,
+            profile_name TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            outcome_id TEXT,
+            field_name TEXT,
+            old_value_json TEXT,
+            new_value_json TEXT NOT NULL,
+            rationale TEXT NOT NULL DEFAULT '',
+            recorded_by TEXT,
+            supporting_evidence_reference TEXT NOT NULL DEFAULT '',
+            recorded_at TEXT NOT NULL,
+            FOREIGN KEY(profile_name) REFERENCES csf_profile_definitions(profile_name) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_csf_profile_audit_events_timeline
+            ON csf_profile_audit_events(profile_name, recorded_at, profile_audit_event_id);
+        CREATE TRIGGER IF NOT EXISTS prevent_csf_profile_audit_event_update
+        BEFORE UPDATE ON csf_profile_audit_events BEGIN SELECT RAISE(ABORT, 'CSF profile audit events are append-only.'); END;
+        CREATE TRIGGER IF NOT EXISTS prevent_csf_profile_audit_event_delete
+        BEFORE DELETE ON csf_profile_audit_events BEGIN SELECT RAISE(ABORT, 'CSF profile audit events are append-only.'); END;
+
+        -- Each row represents one official CSF Category or Subcategory in a
+        -- named Organizational Profile. Field names mirror NIST's CSF 2.0
+        -- Organizational Profile Template; no profile is seeded by default.
+        CREATE TABLE IF NOT EXISTS csf_profiles (
+            profile_name TEXT NOT NULL CHECK(length(trim(profile_name)) > 0),
+            outcome_id TEXT NOT NULL CHECK(length(trim(outcome_id)) > 0),
+            outcome_type TEXT NOT NULL CHECK(outcome_type IN ('category', 'subcategory')),
+            outcome_description TEXT NOT NULL CHECK(length(trim(outcome_description)) > 0),
+            included_in_profile INTEGER NOT NULL DEFAULT 0 CHECK(included_in_profile IN (0, 1)),
+            profile_status TEXT NOT NULL DEFAULT 'not_selected' CHECK(profile_status IN ('not_selected', 'included', 'inherited', 'out_of_scope')),
+            rationale TEXT NOT NULL DEFAULT '',
+            current_priority TEXT NOT NULL DEFAULT '',
+            current_status TEXT NOT NULL DEFAULT '',
+            current_policies_processes_procedures TEXT NOT NULL DEFAULT '',
+            current_internal_practices TEXT NOT NULL DEFAULT '',
+            current_roles_responsibilities TEXT NOT NULL DEFAULT '',
+            current_selected_informative_references TEXT NOT NULL DEFAULT '',
+            current_artifacts_evidence TEXT NOT NULL DEFAULT '',
+            target_priority TEXT NOT NULL DEFAULT '',
+            target_csf_tier TEXT NOT NULL DEFAULT '',
+            target_policies_processes_procedures TEXT NOT NULL DEFAULT '',
+            target_internal_practices TEXT NOT NULL DEFAULT '',
+            target_roles_responsibilities TEXT NOT NULL DEFAULT '',
+            target_selected_informative_references TEXT NOT NULL DEFAULT '',
+            community_priority TEXT NOT NULL DEFAULT '',
+            community_risk_rationale TEXT NOT NULL DEFAULT '',
+            community_supporting_references TEXT NOT NULL DEFAULT '',
+            community_other_guidance TEXT NOT NULL DEFAULT '',
+            community_source_locator TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            considerations TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(profile_name, outcome_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_profiles_name_outcome_type
+            ON csf_profiles(profile_name, outcome_type, outcome_id);
+
+        -- Profile source material can produce action examples that differ
+        -- from the generic CSF wording.  These are examples only; the action
+        -- records themselves remain separately profile-scoped.
+        CREATE TABLE IF NOT EXISTS csf_profile_action_guidance (
+            profile_id TEXT NOT NULL,
+            subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
+            action_title_example TEXT NOT NULL DEFAULT '',
+            action_details_example TEXT NOT NULL DEFAULT '',
+            action_rationale_example TEXT NOT NULL DEFAULT '',
+            source_kind TEXT NOT NULL DEFAULT '',
+            prompt_version TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(profile_id, subcategory_id),
+            FOREIGN KEY(profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_csf_profile_action_guidance_profile
+            ON csf_profile_action_guidance(profile_id, subcategory_id);
+
         CREATE TABLE IF NOT EXISTS csf_supporting_basis (
             basis_id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
             subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
             basis_type TEXT NOT NULL CHECK(basis_type IN ('local_evidence', 'document', 'attestation', 'decision_note', 'other')),
             title TEXT NOT NULL CHECK(length(trim(title)) > 0),
@@ -552,8 +771,32 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_csf_supporting_basis_subcategory
             ON csf_supporting_basis(subcategory_id, updated_at, basis_id);
 
+        -- A Supporting Basis record is the durable, Profile-scoped evidence
+        -- artifact.  Its original Subcategory remains its primary context;
+        -- these links record every additional claim that the same artifact
+        -- supports without copying the evidence.
+        CREATE TABLE IF NOT EXISTS csf_evidence_outcome_links (
+            evidence_outcome_link_id TEXT PRIMARY KEY,
+            basis_id TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
+            link_role TEXT NOT NULL CHECK(link_role IN ('supports_outcome', 'supports_current_assessment', 'supports_target_rationale')),
+            assertion_text TEXT NOT NULL DEFAULT '',
+            applicability_note TEXT NOT NULL DEFAULT '',
+            linked_by TEXT,
+            linked_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            review_note TEXT NOT NULL DEFAULT '',
+            UNIQUE(basis_id, subcategory_id, link_role),
+            FOREIGN KEY(basis_id) REFERENCES csf_supporting_basis(basis_id) ON DELETE CASCADE,
+            FOREIGN KEY(profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_csf_evidence_outcome_links_profile_outcome
+            ON csf_evidence_outcome_links(profile_id, subcategory_id, linked_at, basis_id);
+
         CREATE TABLE IF NOT EXISTS csf_reviewed_actions (
             action_id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
             subcategory_id TEXT NOT NULL CHECK(length(trim(subcategory_id)) > 0),
             title TEXT NOT NULL CHECK(length(trim(title)) > 0),
             details TEXT,
@@ -590,7 +833,13 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS csf_reviewed_action_basis_links (
             action_id TEXT NOT NULL,
             basis_id TEXT NOT NULL,
+            link_role TEXT NOT NULL DEFAULT 'supports_action' CHECK(link_role IN ('supports_action', 'supports_progress', 'supports_completion')),
+            assertion_text TEXT NOT NULL DEFAULT '',
+            applicability_note TEXT NOT NULL DEFAULT '',
+            linked_by TEXT,
             linked_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            review_note TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(action_id, basis_id),
             FOREIGN KEY(action_id) REFERENCES csf_reviewed_actions(action_id) ON DELETE CASCADE,
             FOREIGN KEY(basis_id) REFERENCES csf_supporting_basis(basis_id) ON DELETE CASCADE
@@ -598,6 +847,41 @@ def init_db(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_csf_reviewed_action_basis_links_basis
             ON csf_reviewed_action_basis_links(basis_id, action_id);
+
+        CREATE TABLE IF NOT EXISTS csf_reviewed_action_update_basis_links (
+            action_update_id TEXT NOT NULL,
+            basis_id TEXT NOT NULL,
+            assertion_text TEXT NOT NULL DEFAULT '',
+            applicability_note TEXT NOT NULL DEFAULT '',
+            linked_by TEXT,
+            linked_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            review_note TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(action_update_id, basis_id),
+            FOREIGN KEY(action_update_id) REFERENCES csf_reviewed_action_updates(action_update_id) ON DELETE CASCADE,
+            FOREIGN KEY(basis_id) REFERENCES csf_supporting_basis(basis_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_csf_reviewed_action_update_basis_links_basis
+            ON csf_reviewed_action_update_basis_links(basis_id, action_update_id);
+
+        CREATE TABLE IF NOT EXISTS csf_evidence_link_audit_events (
+            evidence_link_audit_event_id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            basis_id TEXT NOT NULL,
+            target_type TEXT NOT NULL CHECK(target_type IN ('outcome', 'action', 'action_update')),
+            target_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN ('linked', 'unlinked', 'updated')),
+            link_role TEXT NOT NULL DEFAULT '',
+            assertion_text TEXT NOT NULL DEFAULT '',
+            applicability_note TEXT NOT NULL DEFAULT '',
+            recorded_by TEXT,
+            recorded_at TEXT NOT NULL,
+            FOREIGN KEY(basis_id) REFERENCES csf_supporting_basis(basis_id) ON DELETE RESTRICT,
+            FOREIGN KEY(profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_evidence_link_audit_events_target
+            ON csf_evidence_link_audit_events(profile_id, target_type, target_id, recorded_at);
 
         CREATE TABLE IF NOT EXISTS csf_reference_frameworks (
             framework_id TEXT PRIMARY KEY,
@@ -613,6 +897,35 @@ def init_db(connection: sqlite3.Connection) -> None:
             catalog_source_sha256 TEXT NOT NULL,
             imported_at TEXT NOT NULL
         );
+
+        -- A selectable catalog is a product setting, separate from the
+        -- imported framework and its official controls/mappings.  Disabling a
+        -- catalog only removes it from the action picker; it never removes
+        -- reference data or an action already linked to a control.
+        CREATE TABLE IF NOT EXISTS csf_control_catalogs (
+            framework_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL CHECK(length(trim(display_name)) > 0),
+            version TEXT NOT NULL DEFAULT '',
+            source_label TEXT NOT NULL DEFAULT '',
+            source_path TEXT NOT NULL DEFAULT '',
+            is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0, 1)),
+            registered_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS csf_profile_control_catalogs (
+            profile_id TEXT NOT NULL,
+            framework_id TEXT NOT NULL,
+            is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0, 1)),
+            configured_by TEXT,
+            configured_at TEXT NOT NULL,
+            PRIMARY KEY(profile_id, framework_id),
+            FOREIGN KEY(profile_id) REFERENCES csf_profile_definitions(profile_id) ON DELETE RESTRICT,
+            FOREIGN KEY(framework_id) REFERENCES csf_control_catalogs(framework_id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_profile_control_catalogs_enabled
+            ON csf_profile_control_catalogs(profile_id, is_enabled, framework_id);
 
         CREATE TABLE IF NOT EXISTS csf_reference_controls (
             framework_id TEXT NOT NULL,
@@ -647,6 +960,46 @@ def init_db(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_csf_subcategory_control_mappings_subcategory
             ON csf_subcategory_control_mappings(subcategory_id, framework_id, control_id);
+
+        CREATE TABLE IF NOT EXISTS csf_control_mapping_relationships (
+            framework_id TEXT NOT NULL,
+            control_id TEXT NOT NULL,
+            subcategory_id TEXT NOT NULL,
+            relationship_role TEXT NOT NULL CHECK(relationship_role IN (
+                'produces_outcome_information', 'consumes_outcome_information',
+                'enables_outcome_capability', 'context_only'
+            )),
+            information_id TEXT NOT NULL DEFAULT '',
+            relationship_scope TEXT NOT NULL CHECK(relationship_scope IN ('direct', 'partial', 'indirect')),
+            rationale TEXT NOT NULL CHECK(length(trim(rationale)) > 0),
+            review_status TEXT NOT NULL CHECK(review_status IN ('draft', 'reviewed', 'rejected')),
+            source_label TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(framework_id, control_id, subcategory_id, relationship_role, information_id),
+            FOREIGN KEY(framework_id, control_id, subcategory_id)
+                REFERENCES csf_subcategory_control_mappings(framework_id, control_id, subcategory_id)
+                ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_csf_control_mapping_relationships_subcategory
+            ON csf_control_mapping_relationships(subcategory_id, framework_id, control_id, review_status);
+
+        CREATE TABLE IF NOT EXISTS csf_control_mapping_relationship_sources (
+            framework_id TEXT NOT NULL,
+            control_id TEXT NOT NULL,
+            subcategory_id TEXT NOT NULL,
+            source_artifact TEXT NOT NULL,
+            request_custom_id TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            source_kind TEXT NOT NULL CHECK(source_kind IN ('ai_assisted_draft', 'human_reviewed_decision')),
+            response_json TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            PRIMARY KEY(framework_id, control_id, subcategory_id, source_artifact),
+            FOREIGN KEY(framework_id, control_id, subcategory_id)
+                REFERENCES csf_subcategory_control_mappings(framework_id, control_id, subcategory_id)
+                ON DELETE CASCADE
+        );
 
         CREATE TABLE IF NOT EXISTS csf_reviewed_action_control_links (
             action_id TEXT PRIMARY KEY,
@@ -739,17 +1092,58 @@ def init_db(connection: sqlite3.Connection) -> None:
             connection.execute(
                 "ALTER TABLE csf_subcategory_guidance_without_scope_note RENAME TO csf_subcategory_guidance"
             )
+        guidance_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(csf_subcategory_guidance)").fetchall()
+        }
     basis_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_supporting_basis)").fetchall()}
     action_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_reviewed_actions)").fetchall()}
+    action_basis_link_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(csf_reviewed_action_basis_links)").fetchall()
+    }
     reference_control_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_reference_controls)").fetchall()}
     mapping_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_subcategory_control_mappings)").fetchall()}
+    profile_outcome_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_profiles)").fetchall()}
+    profile_definition_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_profile_definitions)").fetchall()}
+    profile_audit_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(csf_profile_audit_events)").fetchall()}
+    frozen_source_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(csf_community_profile_frozen_sources)").fetchall()
+    }
     with connection:
         if "recorded_on" not in basis_columns:
             connection.execute("ALTER TABLE csf_supporting_basis ADD COLUMN recorded_on TEXT")
         if "review_on" not in basis_columns:
             connection.execute("ALTER TABLE csf_supporting_basis ADD COLUMN review_on TEXT")
+        if "profile_id" not in basis_columns:
+            connection.execute("ALTER TABLE csf_supporting_basis ADD COLUMN profile_id TEXT")
+        # Existing links predate the evidence library. Preserve them as
+        # supports-action assertions and add context for each evidence use.
+        if "link_role" not in action_basis_link_columns:
+            connection.execute("ALTER TABLE csf_reviewed_action_basis_links ADD COLUMN link_role TEXT NOT NULL DEFAULT 'supports_action'")
+        if "assertion_text" not in action_basis_link_columns:
+            connection.execute("ALTER TABLE csf_reviewed_action_basis_links ADD COLUMN assertion_text TEXT NOT NULL DEFAULT ''")
+        if "applicability_note" not in action_basis_link_columns:
+            connection.execute("ALTER TABLE csf_reviewed_action_basis_links ADD COLUMN applicability_note TEXT NOT NULL DEFAULT ''")
+        if "linked_by" not in action_basis_link_columns:
+            connection.execute("ALTER TABLE csf_reviewed_action_basis_links ADD COLUMN linked_by TEXT")
+        if "reviewed_at" not in action_basis_link_columns:
+            connection.execute("ALTER TABLE csf_reviewed_action_basis_links ADD COLUMN reviewed_at TEXT")
+        if "review_note" not in action_basis_link_columns:
+            connection.execute("ALTER TABLE csf_reviewed_action_basis_links ADD COLUMN review_note TEXT NOT NULL DEFAULT ''")
         if "rationale" not in action_columns:
             connection.execute("ALTER TABLE csf_reviewed_actions ADD COLUMN rationale TEXT")
+        if "profile_id" not in action_columns:
+            connection.execute("ALTER TABLE csf_reviewed_actions ADD COLUMN profile_id TEXT")
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_csf_supporting_basis_profile_subcategory
+            ON csf_supporting_basis(profile_id, subcategory_id, updated_at, basis_id)"""
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_csf_reviewed_actions_profile_subcategory
+            ON csf_reviewed_actions(profile_id, subcategory_id, action_status, updated_at, action_id)"""
+        )
         if "statement_text" not in reference_control_columns:
             connection.execute("ALTER TABLE csf_reference_controls ADD COLUMN statement_text TEXT")
         if "interpretation_text" not in mapping_columns:
@@ -768,9 +1162,187 @@ def init_db(connection: sqlite3.Connection) -> None:
             connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN interpretation_source TEXT NOT NULL DEFAULT 'product-generated-v1'")
         if "interpretation_updated_at" not in mapping_columns:
             connection.execute("ALTER TABLE csf_subcategory_control_mappings ADD COLUMN interpretation_updated_at TEXT")
+        if "generic_action_title" not in guidance_columns:
+            connection.execute("ALTER TABLE csf_subcategory_guidance ADD COLUMN generic_action_title TEXT NOT NULL DEFAULT ''")
+        if "generic_action_details" not in guidance_columns:
+            connection.execute("ALTER TABLE csf_subcategory_guidance ADD COLUMN generic_action_details TEXT NOT NULL DEFAULT ''")
+        if "generic_action_rationale" not in guidance_columns:
+            connection.execute("ALTER TABLE csf_subcategory_guidance ADD COLUMN generic_action_rationale TEXT NOT NULL DEFAULT ''")
+        if "supporting_evidence_reference" not in profile_audit_columns:
+            connection.execute("ALTER TABLE csf_profile_audit_events ADD COLUMN supporting_evidence_reference TEXT NOT NULL DEFAULT ''")
+        if "profile_status" not in profile_outcome_columns:
+            connection.execute("ALTER TABLE csf_profiles ADD COLUMN profile_status TEXT NOT NULL DEFAULT 'not_selected'")
+        if "community_priority" not in profile_outcome_columns:
+            connection.execute("ALTER TABLE csf_profiles ADD COLUMN community_priority TEXT NOT NULL DEFAULT ''")
+        if "community_risk_rationale" not in profile_outcome_columns:
+            connection.execute("ALTER TABLE csf_profiles ADD COLUMN community_risk_rationale TEXT NOT NULL DEFAULT ''")
+        if "community_supporting_references" not in profile_outcome_columns:
+            connection.execute("ALTER TABLE csf_profiles ADD COLUMN community_supporting_references TEXT NOT NULL DEFAULT ''")
+        if "community_other_guidance" not in profile_outcome_columns:
+            connection.execute("ALTER TABLE csf_profiles ADD COLUMN community_other_guidance TEXT NOT NULL DEFAULT ''")
+        if "community_source_locator" not in profile_outcome_columns:
+            connection.execute("ALTER TABLE csf_profiles ADD COLUMN community_source_locator TEXT NOT NULL DEFAULT ''")
+        if "archived_at" not in profile_definition_columns:
+            connection.execute("ALTER TABLE csf_profile_definitions ADD COLUMN archived_at TEXT")
+        if "profile_id" not in profile_definition_columns:
+            connection.execute("ALTER TABLE csf_profile_definitions ADD COLUMN profile_id TEXT")
+        if "profile_kind" not in profile_definition_columns:
+            connection.execute("ALTER TABLE csf_profile_definitions ADD COLUMN profile_kind TEXT NOT NULL DEFAULT 'organizational'")
+        if "source_version" not in frozen_source_columns:
+            connection.execute("ALTER TABLE csf_community_profile_frozen_sources ADD COLUMN source_version TEXT NOT NULL DEFAULT ''")
+        if "source_published_at" not in frozen_source_columns:
+            connection.execute("ALTER TABLE csf_community_profile_frozen_sources ADD COLUMN source_published_at TEXT")
+        if "source_reviewed_at" not in frozen_source_columns:
+            connection.execute("ALTER TABLE csf_community_profile_frozen_sources ADD COLUMN source_reviewed_at TEXT")
+        if "next_source_review_at" not in frozen_source_columns:
+            connection.execute("ALTER TABLE csf_community_profile_frozen_sources ADD COLUMN next_source_review_at TEXT")
         # Action progress entries are immutable while their parent action exists.
         # Removing a parent action must still be able to cascade its history.
         connection.execute("DROP TRIGGER IF EXISTS prevent_csf_reviewed_action_update_delete")
+        catalog_now = utc_now()
+        connection.execute(
+            """INSERT INTO csf_control_catalogs(
+                framework_id, display_name, version, source_label, source_path,
+                is_enabled, registered_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(framework_id) DO UPDATE SET
+                display_name=excluded.display_name, version=excluded.version,
+                source_label=excluded.source_label, source_path=excluded.source_path,
+                updated_at=excluded.updated_at""",
+            (
+                "nist-sp-800-53-r5.2.0", "NIST SP 800-53", "5.2.0",
+                "NIST SP 800-53 Rev. 5.2.0 OSCAL catalog",
+                "reference-data/NIST/NIST_SP-800-53_rev5_catalog.json",
+                catalog_now, catalog_now,
+            ),
+        )
+        community_catalog_checked_at = utc_now()
+        connection.executemany(
+            """INSERT INTO csf_community_profile_catalog(
+                community_profile_id, profile_name, publisher, publication_status, focus,
+                source_url, catalog_source_url, catalog_checked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(community_profile_id) DO UPDATE SET
+                profile_name=excluded.profile_name, publisher=excluded.publisher,
+                publication_status=excluded.publication_status, focus=excluded.focus,
+                source_url=excluded.source_url, catalog_source_url=excluded.catalog_source_url,
+                catalog_checked_at=excluded.catalog_checked_at""",
+            [
+                (*row, NIST_CSF_COMMUNITY_PROFILE_CATALOG_URL,
+                 NIST_CSF_COMMUNITY_PROFILE_CATALOG_URL, community_catalog_checked_at)
+                for row in NIST_CSF_COMMUNITY_PROFILES
+            ],
+        )
+        profile_now = utc_now()
+        connection.execute(
+            """INSERT OR IGNORE INTO csf_profile_definitions(
+                profile_id, profile_name, context_summary, community_profile_source, created_at, updated_at
+            ) VALUES (?, ?, ?, '', ?, ?)""",
+            (str(uuid.uuid4()), "Single-PC baseline", "A single user PC and its local cybersecurity context.", profile_now, profile_now),
+        )
+        profile_id_rows = connection.execute(
+            "SELECT profile_name, profile_id FROM csf_profile_definitions"
+        ).fetchall()
+        for profile_id_row in profile_id_rows:
+            if not str(profile_id_row["profile_id"] or "").strip():
+                connection.execute(
+                    "UPDATE csf_profile_definitions SET profile_id = ? WHERE profile_name = ?",
+                    (str(uuid.uuid4()), profile_id_row["profile_name"]),
+                )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_csf_profile_definitions_profile_id ON csf_profile_definitions(profile_id)"
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO csf_active_profile(selection_id, profile_name, updated_at)
+            VALUES (1, ?, ?)""",
+            ("Single-PC baseline", profile_now),
+        )
+        base_profile_id = _seed_frozen_nist_base_profile(connection)
+        _seed_csf_profile_outcome_rows(connection, "Single-PC baseline", profile_now)
+        connection.execute(
+            """INSERT OR IGNORE INTO csf_profile_source_lineage(profile_id, source_profile_id, source_role, copied_at)
+            SELECT profile_id, ?, 'base', ? FROM csf_profile_definitions WHERE profile_name = 'Single-PC baseline'""",
+            (base_profile_id, profile_now),
+        )
+        _seed_frozen_ransomware_community_profile(connection)
+        _refresh_frozen_profile_category_statuses(connection, "NIST IR 8374 Rev. 1 Ransomware Community Profile")
+        connection.execute(
+            """UPDATE csf_community_profile_frozen_sources
+            SET source_version = CASE community_profile_id
+                WHEN 'nist-ransomware' THEN 'NIST IR 8374 Rev. 1'
+                WHEN 'nist-cyber-ai-secure' THEN 'NIST IR 8596'
+                WHEN 'nist-cyber-ai-defend' THEN 'NIST IR 8596'
+                WHEN 'nist-cyber-ai-thwart' THEN 'NIST IR 8596'
+                ELSE source_version END
+            WHERE source_version = ''"""
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO csf_profile_outcome_targets(
+                profile_id, subcategory_id, target_assessment_level, updated_by, updated_at
+            )
+            SELECT definition.profile_id, outcome.outcome_id, 'fully_implemented', NULL, ?
+            FROM csf_profiles outcome
+            JOIN csf_profile_definitions definition ON definition.profile_name = outcome.profile_name
+            WHERE outcome.outcome_type = 'subcategory'
+              AND outcome.profile_status IN ('included', 'inherited')""",
+            (profile_now,),
+        )
+        # Preserve working assessments created before profiles existed by
+        # assigning them to the original single-PC baseline context.
+        connection.execute(
+            """INSERT OR IGNORE INTO csf_profile_current_assessments(
+                profile_id, subcategory_id, assessment_level, updated_by, updated_at
+            ) SELECT definition.profile_id, legacy.subcategory_id, legacy.assessment_level, legacy.updated_by, legacy.updated_at
+            FROM csf_current_assessments legacy
+            JOIN csf_profile_definitions definition ON definition.profile_name = 'Single-PC baseline'"""
+        )
+        baseline_profile_id = connection.execute(
+            "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = ?", ("Single-PC baseline",)
+        ).fetchone()["profile_id"]
+        if "profile_name" in basis_columns:
+            connection.execute(
+                """UPDATE csf_supporting_basis SET profile_id = (
+                    SELECT profile_id FROM csf_profile_definitions definition
+                    WHERE definition.profile_name = csf_supporting_basis.profile_name
+                ) WHERE profile_id IS NULL"""
+            )
+        connection.execute("UPDATE csf_supporting_basis SET profile_id = ? WHERE profile_id IS NULL", (baseline_profile_id,))
+        legacy_basis_rows = connection.execute(
+            """SELECT basis_id, profile_id, subcategory_id, created_by, created_at
+            FROM csf_supporting_basis
+            WHERE profile_id IS NOT NULL AND trim(subcategory_id) <> ''"""
+        ).fetchall()
+        connection.executemany(
+            """INSERT OR IGNORE INTO csf_evidence_outcome_links(
+                evidence_outcome_link_id, basis_id, profile_id, subcategory_id,
+                link_role, assertion_text, applicability_note, linked_by,
+                linked_at, reviewed_at, review_note
+            ) VALUES (?, ?, ?, ?, 'supports_outcome', '', '', ?, ?, NULL, '')""",
+            [
+                (str(uuid.uuid4()), row["basis_id"], row["profile_id"], row["subcategory_id"], row["created_by"], row["created_at"])
+                for row in legacy_basis_rows
+            ],
+        )
+        if "profile_name" in action_columns:
+            connection.execute(
+                """UPDATE csf_reviewed_actions SET profile_id = (
+                    SELECT profile_id FROM csf_profile_definitions definition
+                    WHERE definition.profile_name = csf_reviewed_actions.profile_name
+                ) WHERE profile_id IS NULL"""
+            )
+        connection.execute("UPDATE csf_reviewed_actions SET profile_id = ? WHERE profile_id IS NULL", (baseline_profile_id,))
+        # Existing profiles start with the workspace selection that was in
+        # effect at migration time. Future edits are Profile-specific.
+        connection.execute(
+            """INSERT OR IGNORE INTO csf_profile_control_catalogs(
+                profile_id, framework_id, is_enabled, configured_by, configured_at
+            )
+            SELECT profile.profile_id, catalog.framework_id, catalog.is_enabled, NULL, ?
+            FROM csf_profile_definitions profile
+            CROSS JOIN csf_control_catalogs catalog
+            WHERE profile.profile_id IS NOT NULL""",
+            (profile_now,),
+        )
     connection.executemany(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at, description) VALUES (?, ?, ?)",
         [
@@ -794,13 +1366,68 @@ def init_db(connection: sqlite3.Connection) -> None:
             (18, utc_now(), "Store batch-generated action-detail examples and mapping review notes."),
             (19, utc_now(), "Add product-authored CSF outcome information-flow planning relationships."),
             (20, utc_now(), "Add product-authored CSF capability prerequisite relationships."),
+            (21, utc_now(), "Add reviewed product-authored control-to-outcome relationship directions."),
+            (22, utc_now(), "Store product-authored generic action titles for CSF Subcategories."),
+            (23, utc_now(), "Store generic action details and rationale for CSF Subcategories."),
+            (24, utc_now(), "Add selectable, framework-neutral control catalogs."),
+            (25, utc_now(), "Add NIST CSF Organizational Profile rows for Categories and Subcategories."),
+            (26, utc_now(), "Add defined CSF Profiles and persistent active-profile selection."),
+            (27, utc_now(), "Add sourced NIST CSF Community Profile catalog and profile-source links."),
+            (28, utc_now(), "Add append-only audit events for CSF Organizational Profile creation and tailoring."),
+            (29, utc_now(), "Add explicit profile tailoring status for each Category and Subcategory."),
+            (30, utc_now(), "Allow retired Organizational Profiles to be archived while retaining their audit history."),
+            (31, utc_now(), "Scope Tile 3 assessments, actions, and evidence to the selected Organizational Profile."),
+            (32, utc_now(), "Use globally unique Profile identifiers for Tile 3 records."),
+            (33, utc_now(), "Store per-outcome Target assessments using the Organizational Profile UUID."),
+            (34, utc_now(), "Add supporting-evidence references to immutable Organizational Profile audit events."),
+            (35, utc_now(), "Add frozen UUID-backed Community Profile source artifacts."),
+            (36, utc_now(), "Add frozen NIST base source and profile source-lineage records."),
+            (37, utc_now(), "Correct a typographical error in the frozen Ransomware Community Profile guidance."),
+            (38, utc_now(), "Store Community Profile priority, risk rationale, supporting references, and source locators separately from outcome notes."),
+            (39, utc_now(), "Store distinct Community Profile focus-area guidance without flattening it into outcome notes."),
+            (40, utc_now(), "Add profile-specific action example templates with generic CSF fallback."),
+            (41, utc_now(), "Correct the ID.IM-02 Cyber AI Thwart source rationale and retain base CSF Tile 2 guidance."),
+            (42, utc_now(), "Add reusable profile-scoped evidence artifacts and auditable outcome, action, and action-update uses."),
+            (43, utc_now(), "Add append-only audit events for evidence-link changes."),
+            (44, utc_now(), "Scope control-catalog selection to each CSF Profile."),
         ],
     )
+    connection.execute(
+        """UPDATE csf_profiles
+        SET notes = REPLACE(notes, 'Communicationregarding', 'Communication regarding')
+        WHERE profile_name = 'NIST IR 8374 Rev. 1 Ransomware Community Profile'
+          AND notes LIKE '%Communicationregarding%'"""
+    )
+    connection.execute(
+        """UPDATE csf_profiles
+        SET notes = ?, rationale = '', updated_at = ?
+        WHERE profile_name = 'Cyber AI - Thwart' AND outcome_id = 'ID.IM-02'""",
+        (
+            "Organizations may consider leveraging and implementing AI-assisted penetration-testing and "
+            "red-teaming tools to maintain pace and scale of AI-enabled cyber-attacks when performing "
+            "security tests.",
+            utc_now(),
+        ),
+    )
+    connection.execute(
+        """UPDATE csf_community_profile_outcome_facets
+        SET considerations = ?, updated_at = ?
+        WHERE profile_id = ? AND outcome_id = 'ID.IM-02' AND facet_id = 'thwart'""",
+        (
+            "Standard cybersecurity practices apply. (Rationale) Organizations may consider leveraging and "
+            "implementing AI-assisted penetration-testing and red-teaming tools to maintain pace and scale "
+            "of AI-enabled cyber-attacks when performing security tests.",
+            utc_now(),
+            "c2dc3303-5dae-4789-bc88-85419ac445c6",
+        ),
+    )
     connection.executemany(
-        """INSERT INTO csf_subcategory_guidance(subcategory_id, language_code, plain_english_text, examples_json)
-        VALUES (?, 'en-US', ?, ?)
-        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET plain_english_text=excluded.plain_english_text, examples_json=excluded.examples_json""",
-        [(identifier, text, json.dumps(PRODUCT_EXAMPLES_EN_US[identifier])) for identifier, text in PLAIN_ENGLISH_GUIDANCE_EN_US.items()],
+        """INSERT INTO csf_subcategory_guidance(subcategory_id, language_code, plain_english_text, examples_json, generic_action_title, generic_action_details, generic_action_rationale)
+        VALUES (?, 'en-US', ?, ?, ?, ?, ?)
+        ON CONFLICT(subcategory_id, language_code) DO UPDATE SET plain_english_text=excluded.plain_english_text,
+            examples_json=excluded.examples_json, generic_action_title=excluded.generic_action_title,
+            generic_action_details=excluded.generic_action_details, generic_action_rationale=excluded.generic_action_rationale""",
+        [(identifier, text, json.dumps(PRODUCT_EXAMPLES_EN_US[identifier]), GENERIC_ACTION_TITLE_EN_US[identifier], GENERIC_ACTION_DETAILS_EN_US[identifier], GENERIC_ACTION_RATIONALE_EN_US[identifier]) for identifier, text in PLAIN_ENGLISH_GUIDANCE_EN_US.items()],
     )
     connection.executemany(
         """INSERT INTO csf_subcategory_profile_metadata(subcategory_id, language_code, assessment_method, research_guidance, supporting_note_required)
@@ -900,6 +1527,21 @@ def _optional_csf_audit_value(value: Any, field_name: str, allowed_values: set[s
         allowed = ", ".join(sorted(allowed_values))
         raise ValueError(f"{field_name} must be one of: {allowed}.")
     return normalized
+
+
+def _active_csf_profile_id(connection: sqlite3.Connection, profile_id: Any) -> str:
+    """Validate a live Profile UUID before attaching Tile 3 work."""
+    identifier = str(profile_id or "").strip()
+    if not identifier:
+        raise ValueError("profile_id is required.")
+    row = connection.execute(
+        """SELECT 1 FROM csf_profile_definitions
+        WHERE profile_id = ? AND archived_at IS NULL""",
+        (identifier,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("The selected Organizational Profile is not available.")
+    return identifier
 
 
 def record_csf_outcome_audit_event(
@@ -1007,11 +1649,13 @@ def list_csf_outcome_audit_events(
 
 def set_current_csf_assessment(
     connection: sqlite3.Connection,
+    profile_id: Any,
     subcategory_id: Any,
     assessment_level: Any,
     updated_by: Any = "",
 ) -> Dict[str, Any]:
-    """Store the current working assessment separately from the immutable audit ledger."""
+    """Store the current assessment and append an immutable change event."""
+    profile = _active_csf_profile_id(connection, profile_id)
     subcategory = str(subcategory_id or "").strip().upper()
     if not subcategory:
         raise ValueError("subcategory_id is required.")
@@ -1020,42 +1664,1335 @@ def set_current_csf_assessment(
     )
     if level is None:
         raise ValueError("assessment_level is required.")
+    previous = connection.execute(
+        """SELECT assessment_level, updated_at FROM csf_profile_current_assessments
+        WHERE profile_id = ? AND subcategory_id = ?""",
+        (profile, subcategory),
+    ).fetchone()
+    prior_level = str(previous["assessment_level"]) if previous is not None else None
+    now = utc_now()
+    if previous is not None and datetime.fromisoformat(now) <= datetime.fromisoformat(str(previous["updated_at"])):
+        now = (datetime.fromisoformat(str(previous["updated_at"])) + timedelta(microseconds=1)).isoformat()
     with connection:
         connection.execute(
             """
-            INSERT INTO csf_current_assessments (
-                subcategory_id, assessment_level, updated_by, updated_at
-            ) VALUES (?, ?, ?, ?)
-            ON CONFLICT(subcategory_id) DO UPDATE SET
+            INSERT INTO csf_profile_current_assessments (
+                profile_id, subcategory_id, assessment_level, updated_by, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, subcategory_id) DO UPDATE SET
                 assessment_level=excluded.assessment_level,
                 updated_by=excluded.updated_by,
                 updated_at=excluded.updated_at
             """,
-            (subcategory, level, str(updated_by or "").strip() or None, utc_now()),
+            (profile, subcategory, level, str(updated_by or "").strip() or None, now),
         )
+        if prior_level != level:
+            record_csf_outcome_audit_event(
+                connection,
+                subcategory_id=subcategory,
+                event_type="assessment_recorded" if prior_level is None else "assessment_superseded",
+                profile_id=profile,
+                current_assessment_level=level,
+                related_record_type="current_assessment",
+                rationale_note="Current assessment changed.",
+                payload={"previous_current_assessment_level": prior_level, "current_assessment_level": level},
+                recorded_by=updated_by,
+                recorded_at=now,
+            )
     row = connection.execute(
-        "SELECT * FROM csf_current_assessments WHERE subcategory_id = ?", (subcategory,)
+        """SELECT * FROM csf_profile_current_assessments
+        WHERE profile_id = ? AND subcategory_id = ?""", (profile, subcategory),
     ).fetchone()
     return dict(row) if row else {}
 
 
-def list_current_csf_assessments(connection: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
-    """Return the latest working assessment by official CSF Subcategory."""
+def list_current_csf_assessments(connection: sqlite3.Connection, profile_id: Any) -> Dict[str, Dict[str, Any]]:
+    """Return one Profile's latest working assessment by official CSF Subcategory."""
+    profile = _active_csf_profile_id(connection, profile_id)
     return {
         str(row["subcategory_id"]): dict(row)
         for row in connection.execute(
-            "SELECT * FROM csf_current_assessments ORDER BY subcategory_id"
+            """SELECT * FROM csf_profile_current_assessments
+            WHERE profile_id = ? ORDER BY subcategory_id""",
+            (profile,),
         ).fetchall()
     }
+
+
+def list_csf_profile_definitions(connection: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Return the defined Organizational Profiles available to the CSF UI."""
+    return [
+        dict(row)
+        for row in connection.execute(
+            """SELECT * FROM csf_profile_definitions
+            WHERE archived_at IS NULL ORDER BY
+                CASE profile_kind WHEN 'frozen_base' THEN 0 WHEN 'frozen_community' THEN 1 ELSE 2 END,
+                profile_name COLLATE NOCASE"""
+        ).fetchall()
+    ]
+
+
+def list_csf_community_profiles(connection: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Return Community Profiles that have a locally imported, frozen artifact.
+
+    The broader reference index is retained for provenance, but it must not
+    appear as a selectable catalog until its actual profile content is present.
+    """
+    return [
+        dict(row)
+        for row in connection.execute(
+            """SELECT catalog.*, frozen.profile_id AS frozen_profile_id,
+                      frozen.source_version, frozen.source_published_at,
+                      frozen.source_reviewed_at, frozen.next_source_review_at,
+                      definition.profile_name AS imported_profile_name
+            FROM csf_community_profile_catalog AS catalog
+            JOIN csf_community_profile_frozen_sources AS frozen
+                ON frozen.community_profile_id = catalog.community_profile_id
+            JOIN csf_profile_definitions AS definition
+                ON definition.profile_id = frozen.profile_id
+               AND definition.profile_kind = 'frozen_community'
+               AND definition.archived_at IS NULL
+            ORDER BY catalog.publisher COLLATE NOCASE, catalog.profile_name COLLATE NOCASE"""
+        ).fetchall()
+    ]
+
+
+def get_active_csf_profile(connection: sqlite3.Connection) -> Dict[str, Any]:
+    """Return the one active profile and its profile-definition context."""
+    row = connection.execute(
+        """SELECT active.profile_name, active.updated_at, definition.profile_id, definition.profile_kind, definition.context_summary,
+            definition.community_profile_source,
+            COALESCE(selected_source.community_profile_id, frozen_source.community_profile_id) AS community_profile_id,
+            catalog.profile_name AS community_profile_name,
+            catalog.publisher AS community_profile_publisher,
+            catalog.publication_status AS community_profile_publication_status,
+            catalog.focus AS community_profile_focus,
+            COALESCE(selected_frozen_source.source_version, frozen_source.source_version) AS community_profile_source_version,
+            COALESCE(selected_frozen_source.source_published_at, frozen_source.source_published_at) AS community_profile_source_published_at,
+            COALESCE(selected_frozen_source.source_reviewed_at, frozen_source.source_reviewed_at) AS community_profile_source_reviewed_at,
+            COALESCE(selected_frozen_source.next_source_review_at, frozen_source.next_source_review_at) AS community_profile_next_source_review_at,
+            lineage.source_profile_id,
+            lineage.source_role,
+            source_definition.profile_name AS source_profile_name,
+            source_definition.profile_kind AS source_profile_kind
+        FROM csf_active_profile active
+        JOIN csf_profile_definitions definition ON definition.profile_name = active.profile_name
+        LEFT JOIN csf_profile_community_profile_sources selected_source
+            ON selected_source.profile_name = definition.profile_name
+        LEFT JOIN csf_community_profile_frozen_sources frozen_source
+            ON frozen_source.profile_id = definition.profile_id
+        LEFT JOIN csf_community_profile_frozen_sources selected_frozen_source
+            ON selected_frozen_source.community_profile_id = selected_source.community_profile_id
+        LEFT JOIN csf_community_profile_catalog catalog
+            ON catalog.community_profile_id = COALESCE(selected_source.community_profile_id, frozen_source.community_profile_id)
+        LEFT JOIN csf_profile_source_lineage lineage
+            ON lineage.profile_id = definition.profile_id
+        LEFT JOIN csf_profile_definitions source_definition
+            ON source_definition.profile_id = lineage.source_profile_id
+        WHERE active.selection_id = 1 AND definition.archived_at IS NULL"""
+    ).fetchone()
+    return dict(row) if row is not None else {}
+
+
+def set_active_csf_profile(connection: sqlite3.Connection, profile_name: Any) -> Dict[str, Any]:
+    """Select a defined profile as the UI context without modifying profile rows."""
+    name = str(profile_name or "").strip()
+    if not name:
+        raise ValueError("A defined profile must be selected.")
+    exists = connection.execute(
+        "SELECT 1 FROM csf_profile_definitions WHERE profile_name = ? AND archived_at IS NULL", (name,)
+    ).fetchone()
+    if exists is None:
+        raise ValueError("The selected CSF Profile is not defined.")
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """INSERT INTO csf_active_profile(selection_id, profile_name, updated_at)
+            VALUES (1, ?, ?)
+            ON CONFLICT(selection_id) DO UPDATE SET profile_name=excluded.profile_name,
+                updated_at=excluded.updated_at""",
+            (name, now),
+        )
+    return get_active_csf_profile(connection)
+
+
+def archive_csf_profile_definition(connection: sqlite3.Connection, profile_name: Any, recorded_by: str = "") -> Dict[str, Any]:
+    """Retire a Profile from use while retaining its append-only audit history."""
+    name = str(profile_name or "").strip()
+    if name == "Single-PC baseline":
+        raise ValueError("The NIST CSF 2.0 base profile cannot be deleted.")
+    row = connection.execute(
+        "SELECT archived_at FROM csf_profile_definitions WHERE profile_name = ?", (name,)
+    ).fetchone()
+    if row is None or row["archived_at"] is not None:
+        raise ValueError("The selected Profile is not available.")
+    now = utc_now()
+    with connection:
+        record_csf_profile_audit_event(
+            connection,
+            profile_name=name,
+            event_type="profile_archived",
+            new_value={"archived_at": now},
+            rationale="Profile removed from active use.",
+            recorded_by=recorded_by,
+        )
+        connection.execute(
+            """UPDATE csf_profile_definitions
+            SET archived_at = ?, updated_at = ? WHERE profile_name = ?""",
+            (now, now, name),
+        )
+        active = connection.execute(
+            "SELECT profile_name FROM csf_active_profile WHERE selection_id = 1"
+        ).fetchone()
+        if active is not None and active["profile_name"] == name:
+            connection.execute(
+                """UPDATE csf_active_profile SET profile_name = ?, updated_at = ?
+                WHERE selection_id = 1""",
+                ("Single-PC baseline", now),
+            )
+    return get_active_csf_profile(connection)
+
+
+def _seed_csf_profile_outcome_rows(
+    connection: sqlite3.Connection, profile_name: str, timestamp: Optional[str] = None
+) -> None:
+    """Add the official NIST base outcomes as included rows for a new Profile.
+
+    Each new organizational profile begins as an independent copy of the NIST
+    CSF base.  Tailoring can later mark an outcome out of scope or otherwise
+    change its status, but the base itself contains every official outcome.
+    """
+    now = timestamp or utc_now()
+    rows: List[Tuple[str, str, str, str, int, str, str, str]] = []
+    for function in csf_catalog.load_official_catalog().get("functions") or []:
+        for category in function.get("categories") or []:
+            rows.append((
+                profile_name, str(category["id"]), "category", str(category.get("outcome") or ""),
+                1, "included", now, now,
+            ))
+            for subcategory in category.get("subcategories") or []:
+                rows.append((
+                    profile_name, str(subcategory["id"]), "subcategory", str(subcategory.get("outcome") or ""),
+                    1, "included", now, now,
+                ))
+    connection.executemany(
+        """INSERT OR IGNORE INTO csf_profiles(
+            profile_name, outcome_id, outcome_type, outcome_description,
+            included_in_profile, profile_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+
+
+def _seed_frozen_nist_base_profile(connection: sqlite3.Connection) -> str:
+    """Ensure the official NIST base exists as a non-editable UUID-backed source."""
+    name = "NIST CSF 2.0 Base Profile"
+    row = connection.execute("SELECT profile_id FROM csf_profile_definitions WHERE profile_name = ?", (name,)).fetchone()
+    if row is not None:
+        return str(row["profile_id"])
+    profile_id = str(uuid.uuid4())
+    now = utc_now()
+    connection.execute(
+        """INSERT INTO csf_profile_definitions(
+            profile_id, profile_name, profile_kind, context_summary, community_profile_source, created_at, updated_at
+        ) VALUES (?, ?, 'frozen_base', ?, ?, ?, ?)""",
+        (profile_id, name, "Frozen official NIST CSF 2.0 base.", "NIST Cybersecurity Framework 2.0 official catalog.", now, now),
+    )
+    _seed_csf_profile_outcome_rows(connection, name, now)
+    return profile_id
+
+
+def _find_xlsx_header(
+    records: List[Dict[str, str]], required_headers: set[str], *, workbook_label: str,
+) -> Tuple[int, Dict[str, str]]:
+    """Find a row whose cell values contain every required worksheet header."""
+    header_index, headers = next(
+        (
+            (index, {column: str(value or "").strip() for column, value in candidate.items()})
+            for index, candidate in enumerate(records)
+            if required_headers.issubset({str(value or "").strip() for value in candidate.values()})
+        ),
+        (-1, {}),
+    )
+    missing_headers = sorted(required_headers - set(headers.values()))
+    if missing_headers:
+        raise ValueError(f"{workbook_label} is missing required columns: {', '.join(missing_headers)}")
+    return header_index, {name: column for column, name in headers.items()}
+
+
+def _official_csf_subcategory_ids() -> set[str]:
+    return {
+        str(subcategory["id"])
+        for function in csf_catalog.load_official_catalog().get("functions") or []
+        for category in function.get("categories") or []
+        for subcategory in category.get("subcategories") or []
+    }
+
+
+def _clean_community_profile_text(value: Any) -> str:
+    """Normalize extraction artifacts without changing the source's meaning."""
+    return str(value or "").replace("�", "—").strip()
+
+
+def _import_frozen_cyber_ai_community_profile_from_workbook(
+    connection: sqlite3.Connection, *, workbook: Path, sheet_name: str,
+    community_profile_id: str, profile_name: str, publisher: str,
+    publication_status: str, focus: str, source_url: str, focus_area: str = "",
+) -> Dict[str, Any]:
+    """Import a reviewed NIST IR 8596 workbook as an immutable source profile.
+
+    NIST IR 8596 assigns independent guidance to Secure, Defend, and Thwart.
+    A focus-area import creates one profile from one of those columns.
+    """
+    workbook = workbook.resolve()
+    profile_key = str(community_profile_id or "").strip()
+    source_name = str(profile_name or "").strip()
+    requested_focus = str(focus_area or "").strip().lower()
+    if requested_focus and requested_focus not in {"secure", "defend", "thwart"}:
+        raise ValueError("Cyber AI Profile focus area must be Secure, Defend, or Thwart.")
+    workbook_hash = _sha256_file(workbook)
+    existing = connection.execute(
+        "SELECT profile_id, source_sha256 FROM csf_community_profile_frozen_sources WHERE community_profile_id = ?",
+        (profile_key,),
+    ).fetchone()
+    if existing is not None:
+        if str(existing["source_sha256"]) != workbook_hash:
+            raise ValueError(
+                "This frozen Community Profile has a different source workbook. "
+                "Create a separately versioned source artifact instead of overwriting it."
+            )
+        return {"community_profile_id": profile_key, "profile_id": str(existing["profile_id"]), "imported": False, "reason": "already_imported"}
+
+    outcomes_sheet = _xlsx_sheet_rows(workbook, sheet_name)
+    outcome_headers_required = {
+        "CSF Identifier", "Outcome", "General Considerations", "General Example Informative References",
+        "Secure Proposed Priority", "Defend Proposed Priority", "Thwart Proposed Priority", "PDF pages",
+    }
+    outcome_header_index, outcome_columns = _find_xlsx_header(
+        outcomes_sheet, outcome_headers_required, workbook_label="Cyber AI Profile outcomes worksheet",
+    )
+    outcome_rows = [
+        {name: _clean_community_profile_text(row.get(column)) for name, column in outcome_columns.items()}
+        for row in outcomes_sheet[outcome_header_index + 1:]
+        if _clean_community_profile_text(row.get(outcome_columns["CSF Identifier"]))
+    ]
+    outcome_ids = [row["CSF Identifier"].upper() for row in outcome_rows]
+    official_ids = _official_csf_subcategory_ids()
+    invalid_ids = [identifier for identifier in outcome_ids if not _NIST_CSF_SUBCATEGORY_PATTERN.match(identifier)]
+    duplicate_ids = sorted({identifier for identifier in outcome_ids if outcome_ids.count(identifier) > 1})
+    if invalid_ids or duplicate_ids or set(outcome_ids) != official_ids:
+        raise ValueError("Cyber AI Profile outcomes must contain each official CSF Subcategory exactly once: " + json.dumps({
+            "invalid": invalid_ids, "duplicate": duplicate_ids,
+            "missing": sorted(official_ids - set(outcome_ids)), "unknown": sorted(set(outcome_ids) - official_ids),
+        }))
+
+    facet_sheet = _xlsx_sheet_rows(workbook, "Focus area details")
+    facet_headers_required = {
+        "CSF Identifier", "Outcome", "Focus area", "Proposed Priority", "Sample Opportunities",
+        "Sample Focus Area Considerations", "Example Informative References", "PDF pages",
+    }
+    facet_header_index, facet_columns = _find_xlsx_header(
+        facet_sheet, facet_headers_required, workbook_label="Cyber AI Profile focus-area worksheet",
+    )
+    facet_rows = [
+        {name: _clean_community_profile_text(row.get(column)) for name, column in facet_columns.items()}
+        for row in facet_sheet[facet_header_index + 1:]
+        if _clean_community_profile_text(row.get(facet_columns["CSF Identifier"]))
+    ]
+    expected_facets = {"secure", "defend", "thwart"}
+    facet_keys = [(row["CSF Identifier"].upper(), row["Focus area"].lower()) for row in facet_rows]
+    duplicate_facet_keys = sorted({key for key in facet_keys if facet_keys.count(key) > 1})
+    invalid_facet_rows = [
+        {"outcome_id": row["CSF Identifier"], "focus_area": row["Focus area"], "priority": row["Proposed Priority"]}
+        for row in facet_rows
+        if row["CSF Identifier"].upper() not in official_ids
+        or row["Focus area"].lower() not in expected_facets
+        or row["Proposed Priority"] not in {"1", "2", "3"}
+    ]
+    expected_facet_keys = {(outcome_id, focus) for outcome_id in official_ids for focus in expected_facets}
+    if duplicate_facet_keys or invalid_facet_rows or set(facet_keys) != expected_facet_keys:
+        raise ValueError("Cyber AI Profile focus-area details must retain Secure, Defend, and Thwart for every official outcome: " + json.dumps({
+            "duplicate": duplicate_facet_keys, "invalid": invalid_facet_rows,
+            "missing": sorted(expected_facet_keys - set(facet_keys)), "unknown": sorted(set(facet_keys) - expected_facet_keys),
+        }))
+    selected_facets = {
+        row["CSF Identifier"].upper(): row
+        for row in facet_rows
+        if not requested_focus or row["Focus area"].lower() == requested_focus
+    }
+    if requested_focus and set(selected_facets) != official_ids:
+        raise ValueError(f"Cyber AI Profile {requested_focus.title()} focus area is incomplete.")
+
+    name_conflict = connection.execute(
+        "SELECT 1 FROM csf_profile_definitions WHERE profile_name = ?", (source_name,)
+    ).fetchone()
+    if name_conflict is not None:
+        raise ValueError("A Profile with this name already exists.")
+    now = utc_now()
+    frozen_id = str(uuid.uuid4())
+    source_relpath = str(workbook.relative_to(Path(__file__).resolve().parent))
+    with connection:
+        connection.execute(
+            """INSERT INTO csf_community_profile_catalog(
+                community_profile_id, profile_name, publisher, publication_status, focus,
+                source_url, catalog_source_url, catalog_checked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(community_profile_id) DO UPDATE SET
+                profile_name=excluded.profile_name, publisher=excluded.publisher,
+                publication_status=excluded.publication_status, focus=excluded.focus,
+                source_url=excluded.source_url, catalog_source_url=excluded.catalog_source_url,
+                catalog_checked_at=excluded.catalog_checked_at""",
+            (profile_key, source_name, publisher, publication_status, focus, source_url,
+             NIST_CSF_COMMUNITY_PROFILE_CATALOG_URL, now),
+        )
+        connection.execute(
+            """INSERT INTO csf_profile_definitions(
+                profile_id, profile_name, profile_kind, context_summary, community_profile_source, created_at, updated_at
+            ) VALUES (?, ?, 'frozen_community', ?, ?, ?, ?)""",
+            (frozen_id, source_name, "Frozen NIST IR 8596 Community Profile source.", source_url, now, now),
+        )
+        _seed_csf_profile_outcome_rows(connection, source_name, now)
+        for row in outcome_rows:
+            outcome_id = row["CSF Identifier"].upper()
+            selected = selected_facets.get(outcome_id)
+            if selected is not None and requested_focus:
+                consideration = selected["Sample Focus Area Considerations"]
+                # This exact NIST phrase means that the focus area offers no
+                # outcome-specific text, so leave the normal CSF guidance in place.
+                use_base_guidance = bool(re.fullmatch(
+                    r"standard cybersecurity practices apply\.?", consideration.strip(), flags=re.IGNORECASE,
+                ))
+                priorities = selected["Proposed Priority"]
+                supporting_references = selected["Example Informative References"]
+                other_guidance = selected["Sample Opportunities"]
+                locator = f"NIST IR 8596 {selected['Focus area']} focus-area matrix, PDF page(s) {selected['PDF pages']}"
+                notes = "" if use_base_guidance else consideration
+                risk_rationale = row["General Considerations"]
+            else:
+                priorities = "; ".join(
+                    f"{label}: {row[f'{label} Proposed Priority']}" for label in ("Secure", "Defend", "Thwart")
+                )
+                supporting_references = row["General Example Informative References"]
+                other_guidance = ""
+                locator = f"NIST IR 8596 CSF Profile matrix, PDF page(s) {row['PDF pages']}"
+                notes = row["General Considerations"]
+                risk_rationale = ""
+            connection.execute(
+                """UPDATE csf_profiles SET included_in_profile = 1, profile_status = 'included',
+                    community_priority = ?, community_risk_rationale = ?,
+                    community_supporting_references = ?, community_other_guidance = ?,
+                    community_source_locator = ?, notes = ?, updated_at = ?
+                WHERE profile_name = ? AND outcome_id = ?""",
+                (priorities, risk_rationale, supporting_references, other_guidance,
+                 locator, notes, now, source_name, outcome_id),
+            )
+        for row in facet_rows:
+            outcome_id = row["CSF Identifier"].upper()
+            facet_label = row["Focus area"]
+            if requested_focus and facet_label.lower() != requested_focus:
+                continue
+            source_text = "\n".join((
+                f"Proposed Priority: {row['Proposed Priority']}",
+                f"Sample Opportunities: {row['Sample Opportunities']}",
+                f"Sample Focus Area Considerations: {row['Sample Focus Area Considerations']}",
+                f"Example Informative References: {row['Example Informative References']}",
+            ))
+            connection.execute(
+                """INSERT INTO csf_community_profile_outcome_facets(
+                    profile_id, outcome_id, facet_id, facet_label, proposed_priority,
+                    considerations, opportunities, informative_references, source_text,
+                    source_locator, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (frozen_id, outcome_id, facet_label.lower(), facet_label, row["Proposed Priority"],
+                 row["Sample Focus Area Considerations"], row["Sample Opportunities"],
+                 row["Example Informative References"], source_text,
+                 f"NIST IR 8596 CSF Profile matrix, PDF page(s) {row['PDF pages']}", now, now),
+            )
+        _refresh_frozen_profile_category_statuses(connection, source_name)
+        connection.execute(
+            """INSERT INTO csf_community_profile_frozen_sources(
+                community_profile_id, profile_id, source_workbook_path, source_sha256, imported_at
+            ) VALUES (?, ?, ?, ?, ?)""",
+            (profile_key, frozen_id, source_relpath, workbook_hash, now),
+        )
+        base = connection.execute(
+            "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = 'NIST CSF 2.0 Base Profile'"
+        ).fetchone()
+        if base is not None:
+            connection.execute(
+                """INSERT INTO csf_profile_source_lineage(profile_id, source_profile_id, source_role, copied_at)
+                VALUES (?, ?, 'base', ?)""", (frozen_id, base["profile_id"], now)
+            )
+    return {
+        "community_profile_id": profile_key, "profile_id": frozen_id, "imported": True,
+        "source_outcome_count": len(outcome_rows),
+        "focus_area_record_count": len(selected_facets) if requested_focus else len(facet_rows),
+        "focus_area": requested_focus.title() if requested_focus else "",
+        "source_workbook_path": source_relpath, "source_sha256": workbook_hash,
+    }
+
+
+def import_frozen_cyber_ai_focus_profiles_from_workbook(
+    connection: sqlite3.Connection, *, workbook: Path, sheet_name: str, publisher: str,
+    publication_status: str, source_url: str,
+) -> Dict[str, Any]:
+    """Create the three independent NIST IR 8596 Community Profile sources."""
+    profiles = (
+        ("secure", "nist-cyber-ai-secure", "Cyber AI - Secure", "Cybersecurity of AI systems"),
+        ("defend", "nist-cyber-ai-defend", "Cyber AI - Defend", "Defending against AI-enabled cyber threats"),
+        ("thwart", "nist-cyber-ai-thwart", "Cyber AI - Thwart", "Thwarting AI-enabled cyber threats"),
+    )
+    results = [
+        _import_frozen_cyber_ai_community_profile_from_workbook(
+            connection, workbook=workbook, sheet_name=sheet_name,
+            community_profile_id=profile_id, profile_name=profile_name, publisher=publisher,
+            publication_status=publication_status, focus=focus, source_url=source_url,
+            focus_area=focus_area,
+        )
+        for focus_area, profile_id, profile_name, focus in profiles
+    ]
+    # The initial combined import was a provisional interpretation of the
+    # source. Retain it and its provenance, but no longer offer it as a
+    # selectable baseline now that the three source profiles exist.
+    legacy = connection.execute(
+        """SELECT frozen.profile_id FROM csf_community_profile_frozen_sources AS frozen
+        JOIN csf_profile_definitions AS definition ON definition.profile_id = frozen.profile_id
+        WHERE frozen.community_profile_id = 'nist-cyber-ai'
+          AND definition.profile_name = 'NIST IR 8596 Cyber AI Profile'
+          AND definition.archived_at IS NULL"""
+    ).fetchone()
+    if legacy is not None:
+        archived_at = utc_now()
+        with connection:
+            connection.execute(
+                "UPDATE csf_profile_definitions SET archived_at = ?, updated_at = ? WHERE profile_id = ?",
+                (archived_at, archived_at, legacy["profile_id"]),
+            )
+    return {"profiles": results, "legacy_combined_profile_archived": legacy is not None}
+
+
+def import_frozen_community_profile_from_workbook(
+    connection: sqlite3.Connection, *, workbook: Path, sheet_name: str,
+    community_profile_id: str, profile_name: str, publisher: str,
+    publication_status: str, focus: str, source_url: str,
+) -> Dict[str, Any]:
+    """Import a reviewed Community Profile worksheet as an immutable source.
+
+    The source worksheet retains its own priority, threat/risk, and supporting
+    reference fields.  Only its concise Notes field is used as Tile 2's
+    outcome-specific community guidance.
+    """
+    workbook = workbook.resolve()
+    if not workbook.exists():
+        raise ValueError(f"Community Profile workbook does not exist: {workbook}")
+    profile_key = str(community_profile_id or "").strip()
+    source_name = str(profile_name or "").strip()
+    if not profile_key or not source_name:
+        raise ValueError("Community Profile id and profile name are required.")
+    # The reviewed Cyber AI intermediate workbook has a second, mandatory
+    # worksheet of per-focus-area content. Route it to the importer that can
+    # retain those separate source records.
+    workbook_records = _xlsx_sheet_rows(workbook, sheet_name)
+    workbook_values = {str(value or "").strip() for row in workbook_records for value in row.values()}
+    if {"General Considerations", "Secure Proposed Priority", "Defend Proposed Priority", "Thwart Proposed Priority"}.issubset(workbook_values):
+        return _import_frozen_cyber_ai_community_profile_from_workbook(
+            connection, workbook=workbook, sheet_name=sheet_name,
+            community_profile_id=profile_key, profile_name=source_name, publisher=publisher,
+            publication_status=publication_status, focus=focus, source_url=source_url,
+        )
+    workbook_hash = _sha256_file(workbook)
+    existing = connection.execute(
+        "SELECT profile_id, source_sha256 FROM csf_community_profile_frozen_sources WHERE community_profile_id = ?",
+        (profile_key,),
+    ).fetchone()
+    if existing is not None:
+        if str(existing["source_sha256"]) != workbook_hash:
+            raise ValueError(
+                "This frozen Community Profile has a different source workbook. "
+                "Create a separately versioned source artifact instead of overwriting it."
+            )
+        return {"community_profile_id": profile_key, "profile_id": str(existing["profile_id"]), "imported": False, "reason": "already_imported"}
+
+    records = workbook_records
+    if not records:
+        raise ValueError("Community Profile worksheet is empty.")
+    required_headers = {
+        "CSF Identifier", "Outcome", "Priority", "O-RAN Threat Analysis TR Risk Score (Rationale)",
+        "O-RAN ALLIANCE TS/TR that Support Outcome", "Other Guidance that may Support Outcome", "Notes",
+    }
+    header_index, header_columns = _find_xlsx_header(
+        records, required_headers, workbook_label="Community Profile worksheet",
+    )
+    source_rows = [
+        {name: str(row.get(column) or "").strip() for name, column in header_columns.items()}
+        for row in records[header_index + 1:]
+        if str(row.get(header_columns["CSF Identifier"]) or "").strip()
+    ]
+    outcome_ids = [str(row["CSF Identifier"]).upper() for row in source_rows]
+    invalid_ids = [identifier for identifier in outcome_ids if not _NIST_CSF_SUBCATEGORY_PATTERN.match(identifier)]
+    duplicate_ids = sorted({identifier for identifier in outcome_ids if outcome_ids.count(identifier) > 1})
+    official_ids = _official_csf_subcategory_ids()
+    unknown_ids = sorted(set(outcome_ids) - official_ids)
+    if invalid_ids or duplicate_ids or unknown_ids:
+        raise ValueError(
+            "Community Profile identifiers are invalid: "
+            + json.dumps({"invalid": invalid_ids, "duplicate": duplicate_ids, "unknown": unknown_ids})
+        )
+    name_conflict = connection.execute(
+        "SELECT 1 FROM csf_profile_definitions WHERE profile_name = ?", (source_name,)
+    ).fetchone()
+    if name_conflict is not None:
+        raise ValueError("A Profile with this name already exists.")
+
+    now = utc_now()
+    frozen_id = str(uuid.uuid4())
+    source_relpath = str(workbook.relative_to(Path(__file__).resolve().parent))
+    with connection:
+        connection.execute(
+            """INSERT INTO csf_community_profile_catalog(
+                community_profile_id, profile_name, publisher, publication_status, focus,
+                source_url, catalog_source_url, catalog_checked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(community_profile_id) DO UPDATE SET
+                profile_name=excluded.profile_name, publisher=excluded.publisher,
+                publication_status=excluded.publication_status, focus=excluded.focus,
+                source_url=excluded.source_url, catalog_source_url=excluded.catalog_source_url,
+                catalog_checked_at=excluded.catalog_checked_at""",
+            (profile_key, source_name, publisher, publication_status, focus, source_url,
+             NIST_CSF_COMMUNITY_PROFILE_CATALOG_URL, now),
+        )
+        connection.execute(
+            """INSERT INTO csf_profile_definitions(
+                profile_id, profile_name, profile_kind, context_summary, community_profile_source, created_at, updated_at
+            ) VALUES (?, ?, 'frozen_community', ?, ?, ?, ?)""",
+            (frozen_id, source_name, "Frozen Community Profile source.", source_url, now, now),
+        )
+        _seed_csf_profile_outcome_rows(connection, source_name, now)
+        connection.execute(
+            """UPDATE csf_profiles SET included_in_profile = 0, profile_status = 'not_selected', updated_at = ?
+            WHERE profile_name = ?""", (now, source_name)
+        )
+        for row in source_rows:
+            outcome_id = str(row["CSF Identifier"]).upper()
+            page = str(row.get("PDF page") or "").strip()
+            locator = f"Appendix A, PDF page {page}" if page else "Appendix A"
+            connection.execute(
+                """UPDATE csf_profiles SET included_in_profile = 1, profile_status = 'included',
+                    community_priority = ?, community_risk_rationale = ?,
+                    community_supporting_references = ?, community_other_guidance = ?,
+                    community_source_locator = ?, notes = ?, updated_at = ?
+                WHERE profile_name = ? AND outcome_id = ?""",
+                (
+                    row["Priority"], row["O-RAN Threat Analysis TR Risk Score (Rationale)"],
+                    row["O-RAN ALLIANCE TS/TR that Support Outcome"],
+                    row["Other Guidance that may Support Outcome"], locator, row["Notes"], now,
+                    source_name, outcome_id,
+                ),
+            )
+        _refresh_frozen_profile_category_statuses(connection, source_name)
+        connection.execute(
+            """INSERT INTO csf_community_profile_frozen_sources(
+                community_profile_id, profile_id, source_workbook_path, source_sha256, imported_at
+            ) VALUES (?, ?, ?, ?, ?)""",
+            (profile_key, frozen_id, source_relpath, workbook_hash, now),
+        )
+        base = connection.execute(
+            "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = 'NIST CSF 2.0 Base Profile'"
+        ).fetchone()
+        if base is not None:
+            connection.execute(
+                """INSERT INTO csf_profile_source_lineage(profile_id, source_profile_id, source_role, copied_at)
+                VALUES (?, ?, 'base', ?)""", (frozen_id, base["profile_id"], now)
+            )
+    return {
+        "community_profile_id": profile_key, "profile_id": frozen_id, "imported": True,
+        "source_outcome_count": len(source_rows), "source_workbook_path": source_relpath,
+        "source_sha256": workbook_hash,
+    }
+
+
+def _seed_frozen_ransomware_community_profile(connection: sqlite3.Connection) -> None:
+    """Import the supplied NIST ransomware selection as an immutable source Profile."""
+    workbook = Path(__file__).resolve().parent / "output" / "nist-ir-8374r1-ransomware-community-profile.xlsx"
+    if not workbook.exists():
+        return
+    frozen_name = "NIST IR 8374 Rev. 1 Ransomware Community Profile"
+    existing = connection.execute(
+        "SELECT profile_id FROM csf_community_profile_frozen_sources WHERE community_profile_id = 'nist-ransomware'"
+    ).fetchone()
+    if existing is None:
+        frozen_id = str(uuid.uuid4())
+        now = utc_now()
+        connection.execute(
+            """INSERT INTO csf_profile_definitions(
+                profile_id, profile_name, profile_kind, context_summary, community_profile_source, created_at, updated_at
+            ) VALUES (?, ?, 'frozen_community', ?, ?, ?, ?)""",
+            (frozen_id, frozen_name, "Frozen NIST Community Profile source.",
+             "NIST IR 8374 Rev. 1; Table 1; June 2026.", now, now),
+        )
+        _seed_csf_profile_outcome_rows(connection, frozen_name, now)
+        rows = _xlsx_sheet_rows(workbook, "Ransomware Profile")
+        selected = [row for row in rows if str(row.get("B") or "").strip().lower() == "yes"]
+        connection.execute(
+            """UPDATE csf_profiles SET included_in_profile = 0, profile_status = 'not_selected', updated_at = ?
+            WHERE profile_name = ?""", (now, frozen_name)
+        )
+        for row in selected:
+            outcome_id = str(row.get("A") or "").strip().upper()
+            # Preserve the official source wording while correcting a known
+            # transcription typo in the supplied profile workbook.
+            application = str(row.get("C") or "").strip().replace(
+                "Communicationregarding", "Communication regarding"
+            )
+            source_page = str(row.get("D") or "").strip()
+            connection.execute(
+                """UPDATE csf_profiles SET included_in_profile = 1, profile_status = 'included',
+                    notes = ?, considerations = ?, updated_at = ? WHERE profile_name = ? AND outcome_id = ?""",
+                (application, f"NIST IR 8374 Rev. 1, Table 1, page {source_page}.", now, frozen_name, outcome_id),
+            )
+        connection.execute(
+            """UPDATE csf_profiles AS category SET included_in_profile = 1, profile_status = 'included', updated_at = ?
+            WHERE category.profile_name = ? AND category.outcome_type = 'category' AND EXISTS (
+                SELECT 1 FROM csf_profiles AS outcome
+                WHERE outcome.profile_name = category.profile_name
+                  AND outcome.outcome_type = 'subcategory'
+                  AND outcome.profile_status = 'included'
+                  AND outcome.outcome_id LIKE category.outcome_id || '-%'
+            )""", (now, frozen_name)
+        )
+        connection.execute(
+            """INSERT INTO csf_community_profile_frozen_sources(
+                community_profile_id, profile_id, source_workbook_path, source_sha256, imported_at
+            ) VALUES ('nist-ransomware', ?, ?, ?, ?)""",
+            (frozen_id, str(workbook.relative_to(Path(__file__).resolve().parent)), _sha256_file(workbook), now),
+        )
+        base = connection.execute(
+            "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = 'NIST CSF 2.0 Base Profile'"
+        ).fetchone()
+        if base is not None:
+            connection.execute(
+                """INSERT OR IGNORE INTO csf_profile_source_lineage(profile_id, source_profile_id, source_role, copied_at)
+                VALUES (?, ?, 'base', ?)""", (frozen_id, base["profile_id"], now)
+            )
+
+
+def _refresh_frozen_profile_category_statuses(connection: sqlite3.Connection, profile_name: str) -> None:
+    """Derive frozen Profile Category selection from its selected Subcategories."""
+    now = utc_now()
+    connection.execute(
+        """UPDATE csf_profiles SET included_in_profile = 0, profile_status = 'not_selected', updated_at = ?
+        WHERE profile_name = ? AND outcome_type = 'category'""", (now, profile_name)
+    )
+    connection.execute(
+        """UPDATE csf_profiles AS category SET included_in_profile = 1, profile_status = 'included', updated_at = ?
+        WHERE category.profile_name = ? AND category.outcome_type = 'category' AND EXISTS (
+            SELECT 1 FROM csf_profiles AS outcome
+            WHERE outcome.profile_name = category.profile_name
+              AND outcome.outcome_type = 'subcategory'
+              AND outcome.profile_status = 'included'
+              AND outcome.outcome_id LIKE category.outcome_id || '-%'
+        )""", (now, profile_name)
+    )
+
+
+def record_csf_profile_audit_event(
+    connection: sqlite3.Connection, *, profile_name: str, event_type: str,
+    outcome_id: Optional[str] = None, field_name: Optional[str] = None,
+    old_value: Any = None, new_value: Any = None, rationale: str = "", recorded_by: str = "",
+    supporting_evidence_reference: str = "",
+) -> Dict[str, Any]:
+    """Record an immutable profile lifecycle or tailoring event."""
+    event = {
+        "profile_audit_event_id": str(uuid.uuid4()), "profile_name": profile_name,
+        "event_type": event_type, "outcome_id": outcome_id, "field_name": field_name,
+        "old_value_json": json.dumps(old_value) if old_value is not None else None,
+        "new_value_json": json.dumps(new_value if new_value is not None else {}),
+        "rationale": rationale, "recorded_by": recorded_by or None,
+        "supporting_evidence_reference": str(supporting_evidence_reference or "").strip(),
+        "recorded_at": utc_now(),
+    }
+    connection.execute("""INSERT INTO csf_profile_audit_events (
+        profile_audit_event_id, profile_name, event_type, outcome_id, field_name,
+        old_value_json, new_value_json, rationale, recorded_by, supporting_evidence_reference, recorded_at
+    ) VALUES (
+        :profile_audit_event_id,:profile_name,:event_type,:outcome_id,:field_name,
+        :old_value_json,:new_value_json,:rationale,:recorded_by,:supporting_evidence_reference,:recorded_at)""", event)
+    return event
+
+
+def list_csf_profile_audit_events(connection: sqlite3.Connection, profile_name: str) -> List[Dict[str, Any]]:
+    return [dict(row) for row in connection.execute(
+        "SELECT * FROM csf_profile_audit_events WHERE profile_name = ? ORDER BY recorded_at, rowid",
+        (profile_name,),
+    ).fetchall()]
+
+
+def list_csf_profile_outcomes(connection: sqlite3.Connection, profile_name: str) -> List[Dict[str, Any]]:
+    rows = [dict(row) for row in connection.execute(
+        """SELECT outcome.*, target.target_assessment_level
+        FROM csf_profiles outcome
+        JOIN csf_profile_definitions definition ON definition.profile_name = outcome.profile_name
+        LEFT JOIN csf_profile_outcome_targets target
+            ON target.profile_id = definition.profile_id AND target.subcategory_id = outcome.outcome_id
+        WHERE outcome.profile_name = ?""", (profile_name,)
+    ).fetchall()]
+    order: Dict[str, int] = {}
+    position = 0
+    for function in csf_catalog.load_official_catalog().get("functions") or []:
+        for category in function.get("categories") or []:
+            order[str(category["id"])] = position
+            position += 1
+            for subcategory in category.get("subcategories") or []:
+                order[str(subcategory["id"])] = position
+                position += 1
+    return sorted(rows, key=lambda row: order.get(str(row.get("outcome_id") or ""), position))
+
+
+def set_csf_profile_outcome_status(connection: sqlite3.Connection, profile_name: str, outcome_id: str, profile_status: str, recorded_by: str = "") -> None:
+    allowed = {"not_selected", "included", "inherited", "out_of_scope"}
+    if profile_status not in allowed:
+        raise ValueError("Invalid profile status.")
+    row = connection.execute("SELECT profile_status, outcome_type FROM csf_profiles WHERE profile_name = ? AND outcome_id = ?", (profile_name, outcome_id)).fetchone()
+    if row is None:
+        raise ValueError("Profile outcome not found.")
+    old = str(row["profile_status"] or "not_selected")
+    if old == profile_status:
+        return
+    profile_row = connection.execute(
+        "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = ? AND archived_at IS NULL",
+        (profile_name,),
+    ).fetchone()
+    if profile_row is None:
+        raise ValueError("Profile is not available.")
+    profile_id = str(profile_row["profile_id"])
+    target_row = connection.execute(
+        """SELECT target_assessment_level FROM csf_profile_outcome_targets
+        WHERE profile_id = ? AND subcategory_id = ?""", (profile_id, outcome_id)
+    ).fetchone()
+    old_target = str(target_row["target_assessment_level"]) if target_row is not None else ""
+    with connection:
+        connection.execute("UPDATE csf_profiles SET profile_status=?, included_in_profile=?, updated_at=? WHERE profile_name=? AND outcome_id=?", (profile_status, int(profile_status in {"included", "inherited"}), utc_now(), profile_name, outcome_id))
+        record_csf_profile_audit_event(connection, profile_name=profile_name, event_type="outcome_status_changed", outcome_id=outcome_id, field_name="profile_status", old_value=old, new_value=profile_status, rationale="Profile tailoring", recorded_by=recorded_by)
+        if str(row["outcome_type"]) == "subcategory":
+            if profile_status in {"out_of_scope", "not_selected"}:
+                connection.execute("DELETE FROM csf_profile_outcome_targets WHERE profile_id = ? AND subcategory_id = ?", (profile_id, outcome_id))
+                if old_target:
+                    record_csf_profile_audit_event(connection, profile_name=profile_name, event_type="outcome_target_cleared", outcome_id=outcome_id, field_name="target_assessment_level", old_value=old_target, new_value=None, rationale="Outcome is not a selected Profile target.", recorded_by=recorded_by)
+            elif not old_target:
+                connection.execute("""INSERT INTO csf_profile_outcome_targets(profile_id, subcategory_id, target_assessment_level, updated_by, updated_at)
+                VALUES (?, ?, 'fully_implemented', ?, ?)""", (profile_id, outcome_id, recorded_by or None, utc_now()))
+                record_csf_profile_audit_event(connection, profile_name=profile_name, event_type="outcome_target_initialized", outcome_id=outcome_id, field_name="target_assessment_level", old_value=None, new_value="fully_implemented", rationale="Included Profile outcomes start with a fully implemented target.", recorded_by=recorded_by)
+
+
+def set_csf_profile_outcome_target(
+    connection: sqlite3.Connection, profile_name: str, subcategory_id: str,
+    target_assessment_level: str, rationale: str, recorded_by: str = "", supporting_evidence_reference: str = ""
+) -> None:
+    """Set a Profile's desired assessment for one included Subcategory."""
+    level = _optional_csf_audit_value(target_assessment_level, "target_assessment_level", CSF_ASSESSMENT_LEVELS)
+    if level is None:
+        raise ValueError("target_assessment_level is required.")
+    reason = _csf_record_text(rationale, "Target rationale", required=True, maximum=2000)
+    profile = connection.execute(
+        "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = ? AND archived_at IS NULL", (profile_name,)
+    ).fetchone()
+    outcome = connection.execute(
+        "SELECT profile_status, outcome_type FROM csf_profiles WHERE profile_name = ? AND outcome_id = ?", (profile_name, subcategory_id)
+    ).fetchone()
+    if profile is None or outcome is None or outcome["outcome_type"] != "subcategory":
+        raise ValueError("Profile Subcategory was not found.")
+    if str(outcome["profile_status"]) not in {"included", "inherited"}:
+        raise ValueError("Include the outcome before setting its Target assessment.")
+    profile_id = str(profile["profile_id"])
+    previous = connection.execute(
+        "SELECT target_assessment_level FROM csf_profile_outcome_targets WHERE profile_id = ? AND subcategory_id = ?", (profile_id, subcategory_id)
+    ).fetchone()
+    old = str(previous["target_assessment_level"]) if previous is not None else None
+    if old == level:
+        with connection:
+            connection.execute(
+                "UPDATE csf_profiles SET rationale = ?, updated_at = ? WHERE profile_name = ? AND outcome_id = ?",
+                (reason, utc_now(), profile_name, subcategory_id),
+            )
+            record_csf_profile_audit_event(
+                connection, profile_name=profile_name,
+                event_type="outcome_target_rationale_recorded", outcome_id=subcategory_id,
+                field_name="target_assessment_level", old_value=level, new_value=level,
+                rationale=reason, recorded_by=recorded_by,
+                supporting_evidence_reference=supporting_evidence_reference,
+            )
+        return
+    with connection:
+        connection.execute(
+            "UPDATE csf_profiles SET rationale = ?, updated_at = ? WHERE profile_name = ? AND outcome_id = ?",
+            (reason, utc_now(), profile_name, subcategory_id),
+        )
+        connection.execute(
+            """INSERT INTO csf_profile_outcome_targets(profile_id, subcategory_id, target_assessment_level, updated_by, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, subcategory_id) DO UPDATE SET target_assessment_level=excluded.target_assessment_level,
+                updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+            (profile_id, subcategory_id, level, recorded_by or None, utc_now()),
+        )
+        record_csf_profile_audit_event(connection, profile_name=profile_name, event_type="outcome_target_changed", outcome_id=subcategory_id, field_name="target_assessment_level", old_value=old, new_value=level, rationale=reason, recorded_by=recorded_by, supporting_evidence_reference=supporting_evidence_reference)
+
+
+def list_csf_profile_outcome_targets(connection: sqlite3.Connection, profile_id: str) -> Dict[str, Dict[str, Any]]:
+    identifier = _active_csf_profile_id(connection, profile_id)
+    return {
+        str(row["selected_subcategory_id"]): dict(row)
+        for row in connection.execute(
+            """SELECT target.*, outcome.outcome_id AS selected_subcategory_id,
+                outcome.rationale AS profile_outcome_reason,
+                outcome.community_priority AS community_priority,
+                (
+                    SELECT audit.rationale
+                    FROM csf_profile_audit_events audit
+                    JOIN csf_profile_definitions definition
+                        ON definition.profile_name = audit.profile_name
+                    WHERE definition.profile_id = target.profile_id
+                      AND audit.outcome_id = target.subcategory_id
+                      AND audit.event_type IN ('outcome_target_changed', 'outcome_target_rationale_recorded')
+                    ORDER BY audit.recorded_at DESC, audit.rowid DESC
+                    LIMIT 1
+                ) AS target_reason
+            FROM csf_profile_definitions definition
+            JOIN csf_profiles outcome
+                ON outcome.profile_name = definition.profile_name
+               AND outcome.outcome_type = 'subcategory'
+            LEFT JOIN csf_profile_outcome_targets target
+                ON target.profile_id = definition.profile_id
+               AND target.subcategory_id = outcome.outcome_id
+            WHERE definition.profile_id = ?""",
+            (identifier,),
+        ).fetchall()
+    }
+
+
+def upsert_csf_profile_action_guidance(
+    connection: sqlite3.Connection, *, profile_id: str, subcategory_id: str,
+    action_title_example: str, action_details_example: str, action_rationale_example: str,
+    source_kind: str = "", prompt_version: str = "",
+) -> None:
+    """Store profile-specific, non-binding examples for the Add Action form."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    outcome_id = str(subcategory_id or "").strip().upper()
+    if outcome_id not in _official_csf_subcategory_ids():
+        raise ValueError("subcategory_id must identify an official CSF Subcategory.")
+    title = _local_csf_text(action_title_example, "action_title_example", required=False, maximum=240)
+    details = _local_csf_text(action_details_example, "action_details_example", required=False, maximum=4000)
+    rationale = _local_csf_text(action_rationale_example, "action_rationale_example", required=False, maximum=4000)
+    source = _local_csf_text(source_kind, "source_kind", required=False, maximum=120)
+    prompt = _local_csf_text(prompt_version, "prompt_version", required=False, maximum=120)
+    now = utc_now()
+    connection.execute(
+        """INSERT INTO csf_profile_action_guidance(
+            profile_id, subcategory_id, action_title_example, action_details_example,
+            action_rationale_example, source_kind, prompt_version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(profile_id, subcategory_id) DO UPDATE SET
+            action_title_example=excluded.action_title_example,
+            action_details_example=excluded.action_details_example,
+            action_rationale_example=excluded.action_rationale_example,
+            source_kind=excluded.source_kind, prompt_version=excluded.prompt_version,
+            updated_at=excluded.updated_at""",
+        (profile, outcome_id, title, details, rationale, source, prompt, now, now),
+    )
+
+
+def list_csf_profile_action_guidance(connection: sqlite3.Connection, profile_id: str) -> Dict[str, Dict[str, str]]:
+    """Return non-empty profile-specific templates keyed by official outcome."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    return {
+        str(row["subcategory_id"]): {
+            "title": str(row["action_title_example"] or ""),
+            "details": str(row["action_details_example"] or ""),
+            "rationale": str(row["action_rationale_example"] or ""),
+            "source_kind": str(row["source_kind"] or ""),
+            "prompt_version": str(row["prompt_version"] or ""),
+        }
+        for row in connection.execute(
+            """SELECT subcategory_id, action_title_example, action_details_example,
+                      action_rationale_example, source_kind, prompt_version
+            FROM csf_profile_action_guidance WHERE profile_id = ?""", (profile,)
+        ).fetchall()
+    }
+
+
+def import_csf_profile_action_guidance_outputs(
+    connection: sqlite3.Connection,
+    output_paths: List[Path],
+    profile_id: str,
+    source_kind: str = "nist_ir_8596_cyber_ai_batch",
+) -> Dict[str, Any]:
+    """Import completed Responses Batch action templates for one frozen profile.
+
+    Files are processed in the supplied order so a later retry artifact replaces
+    an earlier response for the same profile outcome.  Incomplete batch results
+    are retained in their source artifact but never become UI guidance.
+    """
+    profile = _active_csf_profile_id(connection, profile_id)
+    fields = (
+        ("action_title_example", 72),
+        ("action_details_example", 220),
+        ("action_rationale_example", 220),
+    )
+    selected: Dict[str, Tuple[Dict[str, str], str]] = {}
+    completed_rows = skipped_incomplete = skipped_other_profile = 0
+
+    for path in output_paths:
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            envelope = json.loads(line)
+            body = envelope.get("response", {}).get("body", {})
+            if body.get("status") != "completed":
+                skipped_incomplete += 1
+                continue
+            output_text = next(
+                (
+                    content.get("text")
+                    for output in body.get("output", [])
+                    if output.get("type") == "message"
+                    for content in output.get("content", [])
+                    if content.get("type") == "output_text"
+                ),
+                None,
+            )
+            if not output_text:
+                skipped_incomplete += 1
+                continue
+            parts = str(envelope.get("custom_id", "")).split("|", 2)
+            if len(parts) != 3:
+                raise ValueError(f"{path}:{line_number} has an invalid action-guidance custom_id.")
+            response_profile_id, outcome_id, prompt_version = parts
+            if response_profile_id != profile:
+                skipped_other_profile += 1
+                continue
+            template = json.loads(output_text)
+            if not isinstance(template, dict):
+                raise ValueError(f"{path}:{line_number} must return a JSON object.")
+            cleaned: Dict[str, str] = {}
+            for field_name, maximum in fields:
+                value = template.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{path}:{line_number} is missing {field_name}.")
+                value = value.strip()
+                if len(value) > maximum:
+                    raise ValueError(f"{path}:{line_number} {field_name} exceeds {maximum} characters.")
+                cleaned[field_name] = value
+            selected[outcome_id] = (cleaned, prompt_version)
+            completed_rows += 1
+
+    with connection:
+        for outcome_id, (template, prompt_version) in selected.items():
+            upsert_csf_profile_action_guidance(
+                connection,
+                profile_id=profile,
+                subcategory_id=outcome_id,
+                action_title_example=template["action_title_example"],
+                action_details_example=template["action_details_example"],
+                action_rationale_example=template["action_rationale_example"],
+                source_kind=source_kind,
+                prompt_version=prompt_version,
+            )
+
+    return {
+        "profile_id": profile,
+        "outputs_read": len(output_paths),
+        "completed_rows": completed_rows,
+        "unique_outcomes_imported": len(selected),
+        "skipped_incomplete": skipped_incomplete,
+        "skipped_other_profile": skipped_other_profile,
+        "source_kind": source_kind,
+    }
+
+
+def create_csf_profile_definition(
+    connection: sqlite3.Connection,
+    profile_name: Any,
+    context_summary: Any,
+    community_profile_source: Any = "",
+    community_profile_id: Any = "",
+    source_profile_id: Any = "",
+    control_framework_ids: Optional[Iterable[Any]] = None,
+    recorded_by: str = "",
+) -> Dict[str, Any]:
+    """Create and select a defined Profile with its complete official outcome rows."""
+    name = str(profile_name or "").strip()
+    context = str(context_summary or "").strip()
+    source = str(community_profile_source or "").strip()
+    catalog_profile_id = str(community_profile_id or "").strip()
+    requested_source_profile_id = str(source_profile_id or "").strip()
+    requested_framework_ids = None if control_framework_ids is None else {
+        str(value or "").strip() for value in control_framework_ids if str(value or "").strip()
+    }
+    if not name:
+        raise ValueError("Profile name is required.")
+    if not context:
+        raise ValueError("Profile context is required.")
+    catalog_profile = None
+    if catalog_profile_id:
+        catalog_profile = connection.execute(
+            """SELECT profile_name, publisher, source_url
+            FROM csf_community_profile_catalog WHERE community_profile_id = ?""",
+            (catalog_profile_id,),
+        ).fetchone()
+        if catalog_profile is None:
+            raise ValueError("The selected Community Profile is not in the catalog.")
+        source = f"{catalog_profile['profile_name']} ({catalog_profile['publisher']}) — {catalog_profile['source_url']}"
+    now = utc_now()
+    try:
+        with connection:
+            connection.execute(
+                """INSERT INTO csf_profile_definitions(
+                    profile_id, profile_name, context_summary, community_profile_source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), name, context, source, now, now),
+            )
+            _seed_csf_profile_outcome_rows(connection, name, now)
+            frozen_profile_id = ""
+            if catalog_profile is not None:
+                connection.execute(
+                    """INSERT INTO csf_profile_community_profile_sources(
+                        profile_name, community_profile_id, selected_at
+                    ) VALUES (?, ?, ?)""",
+                    (name, catalog_profile_id, now),
+                )
+                frozen = connection.execute(
+                    "SELECT profile_id FROM csf_community_profile_frozen_sources WHERE community_profile_id = ?",
+                    (catalog_profile_id,),
+                ).fetchone()
+                if frozen is not None:
+                    frozen_profile_id = str(frozen["profile_id"])
+                    connection.execute(
+                        """UPDATE csf_profiles SET included_in_profile = 0, profile_status = 'not_selected',
+                            rationale = '', notes = '', considerations = '', updated_at = ?
+                        WHERE profile_name = ?""", (now, name)
+                    )
+                    connection.execute(
+                        """UPDATE csf_profiles AS destination
+                        SET included_in_profile = 1, profile_status = 'inherited',
+                            notes = source.notes, considerations = source.considerations, updated_at = ?
+                        FROM csf_profiles AS source
+                        JOIN csf_profile_definitions frozen_definition ON frozen_definition.profile_name = source.profile_name
+                        WHERE destination.profile_name = ?
+                          AND frozen_definition.profile_id = ?
+                          AND source.profile_status = 'included'
+                          AND destination.outcome_id = source.outcome_id""",
+                        (now, name, frozen_profile_id),
+                    )
+            if requested_source_profile_id:
+                source_definition = connection.execute(
+                    """SELECT profile_id, profile_kind FROM csf_profile_definitions
+                    WHERE profile_id = ? AND archived_at IS NULL""", (requested_source_profile_id,)
+                ).fetchone()
+                if source_definition is None or str(source_definition["profile_kind"]) != "organizational":
+                    raise ValueError("The selected source Organizational Profile is not available.")
+                connection.execute(
+                    """UPDATE csf_profiles AS destination
+                    SET included_in_profile = source.included_in_profile, profile_status = source.profile_status,
+                        rationale = source.rationale, notes = source.notes, considerations = source.considerations,
+                        updated_at = ?
+                    FROM csf_profiles AS source
+                    JOIN csf_profile_definitions source_definition ON source_definition.profile_name = source.profile_name
+                    WHERE destination.profile_name = ? AND source_definition.profile_id = ?
+                      AND destination.outcome_id = source.outcome_id""",
+                    (now, name, requested_source_profile_id),
+                )
+                frozen_profile_id = requested_source_profile_id
+            elif not frozen_profile_id:
+                base = connection.execute(
+                    "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = 'NIST CSF 2.0 Base Profile'"
+                ).fetchone()
+                frozen_profile_id = str(base["profile_id"]) if base is not None else ""
+            created_profile_id = connection.execute(
+                "SELECT profile_id FROM csf_profile_definitions WHERE profile_name = ?", (name,)
+            ).fetchone()["profile_id"]
+            if requested_source_profile_id:
+                connection.execute(
+                    """INSERT OR IGNORE INTO csf_profile_control_catalogs(
+                        profile_id, framework_id, is_enabled, configured_by, configured_at
+                    )
+                    SELECT ?, framework_id, is_enabled, ?, ?
+                    FROM csf_profile_control_catalogs
+                    WHERE profile_id = ?""",
+                    (created_profile_id, recorded_by or None, now, requested_source_profile_id),
+                )
+            else:
+                connection.execute(
+                    """INSERT OR IGNORE INTO csf_profile_control_catalogs(
+                        profile_id, framework_id, is_enabled, configured_by, configured_at
+                    )
+                    SELECT ?, framework_id, is_enabled, ?, ? FROM csf_control_catalogs""",
+                    (created_profile_id, recorded_by or None, now),
+                )
+            if requested_framework_ids is not None:
+                registered_framework_ids = {
+                    str(row[0]) for row in connection.execute("SELECT framework_id FROM csf_control_catalogs")
+                }
+                unknown_framework_ids = requested_framework_ids - registered_framework_ids
+                if unknown_framework_ids:
+                    raise ValueError("The selected control catalog is not registered.")
+                for framework_id in registered_framework_ids:
+                    connection.execute(
+                        """UPDATE csf_profile_control_catalogs
+                        SET is_enabled = ?, configured_by = ?, configured_at = ?
+                        WHERE profile_id = ? AND framework_id = ?""",
+                        (1 if framework_id in requested_framework_ids else 0, recorded_by or None, now,
+                         created_profile_id, framework_id),
+                    )
+            if frozen_profile_id:
+                connection.execute(
+                    """INSERT OR IGNORE INTO csf_profile_source_lineage(profile_id, source_profile_id, source_role, copied_at)
+                    VALUES (?, ?, ?, ?)""",
+                    (created_profile_id, frozen_profile_id, "organizational_copy" if requested_source_profile_id else "base_or_community", now),
+                )
+            record_csf_profile_audit_event(
+                connection, profile_name=name, event_type="profile_created",
+                new_value={"base": "NIST CSF 2.0", "community_profile_id": catalog_profile_id or None,
+                           "frozen_source_profile_id": frozen_profile_id or None,
+                           "context_summary": context,
+                           "control_framework_ids": sorted(requested_framework_ids) if requested_framework_ids is not None else None},
+                rationale="Profile creation", recorded_by=recorded_by
+            )
+            connection.execute(
+                """INSERT INTO csf_active_profile(selection_id, profile_name, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(selection_id) DO UPDATE SET profile_name=excluded.profile_name,
+                    updated_at=excluded.updated_at""",
+                (name, now),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("A profile with that name already exists.") from exc
+    return get_active_csf_profile(connection)
 
 
 def _csf_record_text(value: Any, field_name: str, *, required: bool, maximum: int) -> str:
     return _local_csf_text(value, field_name, required=required, maximum=maximum)
 
 
+def _record_csf_evidence_link_audit_event(
+    connection: sqlite3.Connection,
+    *,
+    profile_id: str,
+    basis_id: str,
+    target_type: str,
+    target_id: str,
+    event_type: str,
+    link_role: str = "",
+    assertion_text: str = "",
+    applicability_note: str = "",
+    recorded_by: Optional[str] = None,
+    recorded_at: Optional[str] = None,
+) -> None:
+    """Append one immutable record of a change to an evidence-use link."""
+    connection.execute(
+        """INSERT INTO csf_evidence_link_audit_events(
+            evidence_link_audit_event_id, profile_id, basis_id, target_type,
+            target_id, event_type, link_role, assertion_text,
+            applicability_note, recorded_by, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(uuid.uuid4()), profile_id, basis_id, target_type, target_id,
+            event_type, link_role, assertion_text, applicability_note,
+            recorded_by, recorded_at or utc_now(),
+        ),
+    )
+
+
+def list_csf_evidence_link_audit_events(
+    connection: sqlite3.Connection,
+    profile_id: Any,
+    *,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """Return append-only evidence-link changes, newest first."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer.")
+    clauses = ["event.profile_id = ?"]
+    values: List[Any] = [profile]
+    if target_type is not None:
+        clauses.append("event.target_type = ?")
+        values.append(str(target_type))
+    if target_id is not None:
+        clauses.append("event.target_id = ?")
+        values.append(str(target_id))
+    values.append(limit)
+    rows = connection.execute(
+        """SELECT event.*, evidence.title AS evidence_title
+        FROM csf_evidence_link_audit_events event
+        JOIN csf_supporting_basis evidence ON evidence.basis_id = event.basis_id
+        WHERE """ + " AND ".join(clauses) + " ORDER BY event.recorded_at DESC, event.evidence_link_audit_event_id DESC LIMIT ?",
+        tuple(values),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_csf_profile_activity_log(
+    connection: sqlite3.Connection, profile_id: Any, limit: int = 500
+) -> List[Dict[str, Any]]:
+    """Return one chronological, profile-scoped view across core CSF audit ledgers."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer.")
+    definition = connection.execute(
+        "SELECT profile_name FROM csf_profile_definitions WHERE profile_id = ?", (profile,)
+    ).fetchone()
+    profile_name = str(definition["profile_name"]) if definition is not None else ""
+    rows = connection.execute(
+        """SELECT * FROM (
+            SELECT recorded_at, 'profile' AS log_kind, event_type,
+                COALESCE(outcome_id, profile_name) AS subject,
+                TRIM(COALESCE(field_name, '') || CASE WHEN rationale <> '' THEN ': ' || rationale ELSE '' END) AS summary,
+                recorded_by
+            FROM csf_profile_audit_events
+            WHERE profile_name = ?
+            UNION ALL
+            SELECT recorded_at,
+                CASE WHEN related_record_type = 'evidence' THEN 'evidence' ELSE 'assessment' END AS log_kind,
+                event_type,
+                subcategory_id AS subject,
+                CASE WHEN related_record_type = 'evidence'
+                    THEN rationale_note
+                    ELSE 'Current assessment: ' || REPLACE(COALESCE(current_assessment_level, ''), '_', ' ') ||
+                        CASE WHEN rationale_note <> '' THEN ' — ' || rationale_note ELSE '' END
+                END AS summary,
+                recorded_by
+            FROM csf_outcome_audit_events
+            WHERE profile_id = ? AND related_record_type IN ('current_assessment', 'evidence')
+            UNION ALL
+            SELECT event.recorded_at, 'evidence' AS log_kind, event.event_type,
+                event.target_type || ': ' || event.target_id AS subject,
+                evidence.title || CASE WHEN event.link_role <> '' THEN ' — ' || REPLACE(event.link_role, '_', ' ') ELSE '' END AS summary,
+                event.recorded_by
+            FROM csf_evidence_link_audit_events event
+            JOIN csf_supporting_basis evidence ON evidence.basis_id = event.basis_id
+            WHERE event.profile_id = ?
+            UNION ALL
+            SELECT update_record.recorded_at, 'action' AS log_kind, 'action_updated' AS event_type,
+                action.subcategory_id || ': ' || action.title AS subject,
+                REPLACE(update_record.action_status, '_', ' ') ||
+                    CASE WHEN COALESCE(update_record.progress_note, '') <> '' THEN ' — ' || update_record.progress_note ELSE '' END AS summary,
+                update_record.recorded_by
+            FROM csf_reviewed_action_updates update_record
+            JOIN csf_reviewed_actions action ON action.action_id = update_record.action_id
+            WHERE action.profile_id = ?
+        ) activity
+        ORDER BY recorded_at DESC, log_kind, event_type
+        LIMIT ?""",
+        (profile_name, profile, profile, profile, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def create_csf_supporting_basis(
     connection: sqlite3.Connection,
     *,
+    profile_id: Any,
     subcategory_id: Any,
     basis_type: Any,
     title: Any,
@@ -1064,9 +3001,13 @@ def create_csf_supporting_basis(
     recorded_on: Any = "",
     review_on: Any = "",
     created_by: Any = "",
+    outcome_link_role: Any = "supports_outcome",
+    assertion_text: Any = "",
+    applicability_note: Any = "",
     basis_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create one mutable supporting-basis record for an official CSF Subcategory."""
+    """Create a Profile-scoped evidence artifact and its first outcome-use link."""
+    profile = _active_csf_profile_id(connection, profile_id)
     subcategory = str(subcategory_id or "").strip().upper()
     if not subcategory:
         raise ValueError("subcategory_id is required.")
@@ -1075,6 +3016,13 @@ def create_csf_supporting_basis(
     )
     if normalized_type is None:
         raise ValueError("basis_type is required.")
+    link_role = _optional_csf_audit_value(
+        outcome_link_role,
+        "outcome_link_role",
+        {"supports_outcome", "supports_current_assessment", "supports_target_rationale"},
+    )
+    if link_role is None:
+        raise ValueError("outcome_link_role is required.")
     record_id = str(basis_id or uuid.uuid4()).strip()
     if not record_id:
         raise ValueError("basis_id must not be blank.")
@@ -1083,12 +3031,13 @@ def create_csf_supporting_basis(
         connection.execute(
             """
             INSERT INTO csf_supporting_basis (
-                basis_id, subcategory_id, basis_type, title, details, reference_location, recorded_on, review_on,
+                basis_id, profile_id, subcategory_id, basis_type, title, details, reference_location, recorded_on, review_on,
                 created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
+                profile,
                 subcategory,
                 normalized_type,
                 _csf_record_text(title, "Title", required=True, maximum=240),
@@ -1101,13 +3050,45 @@ def create_csf_supporting_basis(
                 now,
             ),
         )
+        connection.execute(
+            """INSERT INTO csf_evidence_outcome_links(
+                evidence_outcome_link_id, basis_id, profile_id, subcategory_id,
+                link_role, assertion_text, applicability_note, linked_by,
+                linked_at, reviewed_at, review_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')""",
+            (
+                str(uuid.uuid4()), record_id, profile, subcategory,
+                link_role,
+                _csf_record_text(assertion_text, "Assertion", required=False, maximum=4000),
+                _csf_record_text(applicability_note, "Applicability note", required=False, maximum=4000),
+                _csf_record_text(created_by, "Created by", required=False, maximum=240) or None,
+                now,
+            ),
+        )
+        record_csf_outcome_audit_event(
+            connection,
+            subcategory_id=subcategory,
+            event_type="evidence_linked",
+            profile_id=profile,
+            related_record_type="evidence",
+            related_record_id=record_id,
+            rationale_note="Evidence created and linked to this outcome.",
+            payload={
+                "title": _csf_record_text(title, "Title", required=True, maximum=240),
+                "basis_type": normalized_type,
+                "outcome_link_role": link_role,
+            },
+            recorded_by=created_by,
+            recorded_at=now,
+        )
     row = connection.execute("SELECT * FROM csf_supporting_basis WHERE basis_id = ?", (record_id,)).fetchone()
     return dict(row) if row else {}
 
 
 def list_csf_supporting_basis(
-    connection: sqlite3.Connection, subcategory_id: Any, limit: int = 200
+    connection: sqlite3.Connection, profile_id: Any, subcategory_id: Any, limit: int = 200
 ) -> List[Dict[str, Any]]:
+    profile = _active_csf_profile_id(connection, profile_id)
     subcategory = str(subcategory_id or "").strip().upper()
     if not subcategory:
         raise ValueError("subcategory_id is required.")
@@ -1117,19 +3098,230 @@ def list_csf_supporting_basis(
         dict(row)
         for row in connection.execute(
             """
-            SELECT * FROM csf_supporting_basis
-            WHERE subcategory_id = ?
-            ORDER BY updated_at DESC, basis_id
+            SELECT DISTINCT evidence.*
+            FROM csf_supporting_basis evidence
+            WHERE evidence.profile_id = ? AND evidence.basis_id IN (
+                SELECT link.basis_id
+                FROM csf_evidence_outcome_links link
+                WHERE link.profile_id = ? AND link.subcategory_id = ?
+                UNION
+                SELECT action_link.basis_id
+                FROM csf_reviewed_action_basis_links action_link
+                JOIN csf_reviewed_actions action ON action.action_id = action_link.action_id
+                WHERE action.profile_id = ? AND action.subcategory_id = ?
+            )
+            ORDER BY evidence.updated_at DESC, evidence.basis_id
             LIMIT ?
             """,
-            (subcategory, limit),
+            (profile, profile, subcategory, profile, subcategory, limit),
         ).fetchall()
     ]
+
+
+def link_csf_evidence_to_outcome(
+    connection: sqlite3.Connection,
+    *,
+    basis_id: Any,
+    profile_id: Any,
+    subcategory_id: Any,
+    link_role: Any = "supports_outcome",
+    assertion_text: Any = "",
+    applicability_note: Any = "",
+    linked_by: Any = "",
+    reviewed_at: Any = "",
+    review_note: Any = "",
+) -> Dict[str, Any]:
+    """Link a Profile-scoped evidence artifact to an outcome with a distinct assertion."""
+    record_id = str(basis_id or "").strip()
+    profile = _active_csf_profile_id(connection, profile_id)
+    subcategory = str(subcategory_id or "").strip().upper()
+    if not record_id or not subcategory:
+        raise ValueError("basis_id and subcategory_id are required.")
+    role = _optional_csf_audit_value(
+        link_role, "link_role", {"supports_outcome", "supports_current_assessment", "supports_target_rationale"}
+    )
+    if role is None:
+        raise ValueError("link_role is required.")
+    evidence = connection.execute(
+        "SELECT profile_id FROM csf_supporting_basis WHERE basis_id = ?", (record_id,)
+    ).fetchone()
+    if evidence is None or evidence["profile_id"] != profile:
+        raise ValueError("Evidence can be linked only within the same Profile.")
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """INSERT INTO csf_evidence_outcome_links(
+                evidence_outcome_link_id, basis_id, profile_id, subcategory_id,
+                link_role, assertion_text, applicability_note, linked_by,
+                linked_at, reviewed_at, review_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(basis_id, subcategory_id, link_role) DO UPDATE SET
+                assertion_text=excluded.assertion_text,
+                applicability_note=excluded.applicability_note,
+                linked_by=excluded.linked_by,
+                linked_at=excluded.linked_at,
+                reviewed_at=excluded.reviewed_at,
+                review_note=excluded.review_note""",
+            (
+                str(uuid.uuid4()), record_id, profile, subcategory, role,
+                _csf_record_text(assertion_text, "Assertion", required=False, maximum=4000),
+                _csf_record_text(applicability_note, "Applicability note", required=False, maximum=4000),
+                _csf_record_text(linked_by, "Linked by", required=False, maximum=240) or None,
+                now,
+                _csf_record_text(reviewed_at, "Reviewed at", required=False, maximum=64) or None,
+                _csf_record_text(review_note, "Review note", required=False, maximum=4000),
+            ),
+        )
+    row = connection.execute(
+        """SELECT * FROM csf_evidence_outcome_links
+        WHERE basis_id = ? AND subcategory_id = ? AND link_role = ?""",
+        (record_id, subcategory, role),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def list_csf_evidence_library(
+    connection: sqlite3.Connection, profile_id: Any, limit: int = 500
+) -> List[Dict[str, Any]]:
+    """Return each evidence artifact once, with counts of its current uses."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer.")
+    rows = connection.execute(
+        """SELECT evidence.*,
+            COUNT(DISTINCT outcome_link.evidence_outcome_link_id) AS outcome_link_count,
+            COUNT(DISTINCT action_link.action_id) AS action_link_count,
+            COUNT(DISTINCT update_link.action_update_id) AS action_update_link_count
+        FROM csf_supporting_basis evidence
+        LEFT JOIN csf_evidence_outcome_links outcome_link ON outcome_link.basis_id = evidence.basis_id
+        LEFT JOIN csf_reviewed_action_basis_links action_link ON action_link.basis_id = evidence.basis_id
+        LEFT JOIN csf_reviewed_action_update_basis_links update_link ON update_link.basis_id = evidence.basis_id
+        WHERE evidence.profile_id = ?
+        GROUP BY evidence.basis_id
+        ORDER BY evidence.updated_at DESC, evidence.basis_id
+        LIMIT ?""",
+        (profile, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_csf_evidence_detail(
+    connection: sqlite3.Connection, profile_id: Any, basis_id: Any
+) -> Dict[str, Any]:
+    """Return one Profile evidence artifact and every current, auditable use of it."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    record_id = str(basis_id or "").strip()
+    if not record_id:
+        raise ValueError("basis_id is required.")
+    evidence_row = connection.execute(
+        "SELECT * FROM csf_supporting_basis WHERE basis_id = ? AND profile_id = ?",
+        (record_id, profile),
+    ).fetchone()
+    if evidence_row is None:
+        raise ValueError("Evidence was not found in the selected Profile.")
+    outcome_uses = connection.execute(
+        """SELECT subcategory_id, link_role, assertion_text, applicability_note,
+            linked_by, linked_at, reviewed_at, review_note
+        FROM csf_evidence_outcome_links
+        WHERE basis_id = ? AND profile_id = ?
+        ORDER BY subcategory_id, link_role""",
+        (record_id, profile),
+    ).fetchall()
+    action_uses = connection.execute(
+        """SELECT action.action_id, action.subcategory_id, action.title,
+            action.action_status, link.link_role, link.assertion_text,
+            link.applicability_note, link.linked_by, link.linked_at,
+            link.reviewed_at, link.review_note
+        FROM csf_reviewed_action_basis_links link
+        JOIN csf_reviewed_actions action ON action.action_id = link.action_id
+        WHERE link.basis_id = ? AND action.profile_id = ?
+        ORDER BY action.updated_at DESC, action.action_id""",
+        (record_id, profile),
+    ).fetchall()
+    update_uses = connection.execute(
+        """SELECT update_record.action_update_id, action.action_id,
+            action.subcategory_id, action.title, update_record.action_status,
+            update_record.progress_note, update_record.recorded_by,
+            update_record.recorded_at, link.assertion_text,
+            link.applicability_note, link.linked_by, link.linked_at,
+            link.reviewed_at, link.review_note
+        FROM csf_reviewed_action_update_basis_links link
+        JOIN csf_reviewed_action_updates update_record ON update_record.action_update_id = link.action_update_id
+        JOIN csf_reviewed_actions action ON action.action_id = update_record.action_id
+        WHERE link.basis_id = ? AND action.profile_id = ?
+        ORDER BY update_record.recorded_at DESC, update_record.action_update_id DESC""",
+        (record_id, profile),
+    ).fetchall()
+    return {
+        "evidence": dict(evidence_row),
+        "outcome_uses": [dict(row) for row in outcome_uses],
+        "action_uses": [dict(row) for row in action_uses],
+        "action_update_uses": [dict(row) for row in update_uses],
+    }
+
+
+def link_csf_evidence_to_action_update(
+    connection: sqlite3.Connection,
+    *,
+    action_update_id: Any,
+    basis_id: Any,
+    assertion_text: Any = "",
+    applicability_note: Any = "",
+    linked_by: Any = "",
+    reviewed_at: Any = "",
+    review_note: Any = "",
+) -> Dict[str, Any]:
+    """Link evidence to one immutable action-update assertion within its Profile."""
+    update_id = str(action_update_id or "").strip()
+    record_id = str(basis_id or "").strip()
+    if not update_id or not record_id:
+        raise ValueError("action_update_id and basis_id are required.")
+    row = connection.execute(
+        """SELECT action.profile_id AS action_profile_id, evidence.profile_id AS evidence_profile_id
+        FROM csf_reviewed_action_updates update_record
+        JOIN csf_reviewed_actions action ON action.action_id = update_record.action_id
+        JOIN csf_supporting_basis evidence ON evidence.basis_id = ?
+        WHERE update_record.action_update_id = ?""",
+        (record_id, update_id),
+    ).fetchone()
+    if row is None or row["action_profile_id"] != row["evidence_profile_id"]:
+        raise ValueError("Evidence and action update must belong to the same Profile.")
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """INSERT INTO csf_reviewed_action_update_basis_links(
+                action_update_id, basis_id, assertion_text, applicability_note,
+                linked_by, linked_at, reviewed_at, review_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(action_update_id, basis_id) DO UPDATE SET
+                assertion_text=excluded.assertion_text,
+                applicability_note=excluded.applicability_note,
+                linked_by=excluded.linked_by,
+                linked_at=excluded.linked_at,
+                reviewed_at=excluded.reviewed_at,
+                review_note=excluded.review_note""",
+            (
+                update_id, record_id,
+                _csf_record_text(assertion_text, "Assertion", required=False, maximum=4000),
+                _csf_record_text(applicability_note, "Applicability note", required=False, maximum=4000),
+                _csf_record_text(linked_by, "Linked by", required=False, maximum=240) or None,
+                now,
+                _csf_record_text(reviewed_at, "Reviewed at", required=False, maximum=64) or None,
+                _csf_record_text(review_note, "Review note", required=False, maximum=4000),
+            ),
+        )
+    linked = connection.execute(
+        """SELECT * FROM csf_reviewed_action_update_basis_links
+        WHERE action_update_id = ? AND basis_id = ?""",
+        (update_id, record_id),
+    ).fetchone()
+    return dict(linked) if linked else {}
 
 
 def create_csf_reviewed_action(
     connection: sqlite3.Connection,
     *,
+    profile_id: Any,
     subcategory_id: Any,
     title: Any,
     action_status: Any,
@@ -1143,7 +3335,8 @@ def create_csf_reviewed_action(
     framework_id: str = "nist-sp-800-53-r5.2.0",
     action_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a reviewed action and optional same-outcome supporting-basis links."""
+    """Create a reviewed action and optional Profile-scoped evidence links."""
+    profile = _active_csf_profile_id(connection, profile_id)
     subcategory = str(subcategory_id or "").strip().upper()
     if not subcategory:
         raise ValueError("subcategory_id is required.")
@@ -1157,11 +3350,11 @@ def create_csf_reviewed_action(
     if linked_basis_ids:
         placeholders = ", ".join("?" for _ in linked_basis_ids)
         basis_rows = connection.execute(
-            f"SELECT basis_id, subcategory_id FROM csf_supporting_basis WHERE basis_id IN ({placeholders})",
+            f"SELECT basis_id, profile_id FROM csf_supporting_basis WHERE basis_id IN ({placeholders})",
             linked_basis_ids,
         ).fetchall()
-        if len(basis_rows) != len(linked_basis_ids) or any(row["subcategory_id"] != subcategory for row in basis_rows):
-            raise ValueError("Reviewed actions can link only existing supporting-basis records for the same Subcategory.")
+        if len(basis_rows) != len(linked_basis_ids) or any(row["profile_id"] != profile for row in basis_rows):
+            raise ValueError("Reviewed actions can link only evidence from the same Profile.")
     if selected_control_id:
         mapping = connection.execute(
             """SELECT 1 FROM csf_subcategory_control_mappings
@@ -1171,9 +3364,11 @@ def create_csf_reviewed_action(
         if mapping is None:
             raise ValueError("Choose a control mapped to the selected CSF Subcategory.")
         existing_link = connection.execute(
-            """SELECT action_id FROM csf_reviewed_action_control_links
-            WHERE framework_id = ? AND control_id = ? AND subcategory_id = ?""",
-            (framework_id, selected_control_id, subcategory),
+            """SELECT link.action_id FROM csf_reviewed_action_control_links link
+            JOIN csf_reviewed_actions action ON action.action_id = link.action_id
+            WHERE link.framework_id = ? AND link.control_id = ? AND link.subcategory_id = ?
+              AND action.profile_id = ?""",
+            (framework_id, selected_control_id, subcategory, profile),
         ).fetchone()
         if existing_link is not None:
             raise ValueError("This mapped control already has an action for the selected CSF Subcategory.")
@@ -1188,12 +3383,13 @@ def create_csf_reviewed_action(
         connection.execute(
             """
             INSERT INTO csf_reviewed_actions (
-                action_id, subcategory_id, title, details, rationale, action_status, completed_at,
+                action_id, profile_id, subcategory_id, title, details, rationale, action_status, completed_at,
                 created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
+                profile,
                 subcategory,
                 _csf_record_text(title, "Title", required=True, maximum=240),
                 _csf_record_text(details, "Details", required=False, maximum=8000) or None,
@@ -1206,9 +3402,27 @@ def create_csf_reviewed_action(
             ),
         )
         connection.executemany(
-            "INSERT INTO csf_reviewed_action_basis_links(action_id, basis_id, linked_at) VALUES (?, ?, ?)",
-            [(record_id, basis_id, now) for basis_id in linked_basis_ids],
+            """INSERT INTO csf_reviewed_action_basis_links(
+                action_id, basis_id, link_role, assertion_text, applicability_note,
+                linked_by, linked_at, reviewed_at, review_note
+            ) VALUES (?, ?, 'supports_action', '', '', ?, ?, NULL, '')""",
+            [
+                (
+                    record_id, basis_id,
+                    _csf_record_text(created_by, "Created by", required=False, maximum=240) or None,
+                    now,
+                )
+                for basis_id in linked_basis_ids
+            ],
         )
+        for linked_basis_id in linked_basis_ids:
+            _record_csf_evidence_link_audit_event(
+                connection, profile_id=profile, basis_id=linked_basis_id,
+                target_type="action", target_id=record_id, event_type="linked",
+                link_role="supports_action",
+                recorded_by=_csf_record_text(created_by, "Created by", required=False, maximum=240) or None,
+                recorded_at=now,
+            )
         if selected_control_id:
             connection.execute(
                 """INSERT INTO csf_reviewed_action_control_links(
@@ -1246,12 +3460,20 @@ def list_csf_reviewed_action_updates(
     if not isinstance(limit, int) or limit < 1:
         raise ValueError("limit must be a positive integer.")
     return [
-        dict(row)
+        {
+            **dict(row),
+            "basis_titles": str(row["basis_titles"] or "").split(",") if row["basis_titles"] else [],
+        }
         for row in connection.execute(
             """
-            SELECT * FROM csf_reviewed_action_updates
-            WHERE action_id = ?
-            ORDER BY recorded_at DESC, action_update_id DESC
+            SELECT update_record.*, GROUP_CONCAT(DISTINCT evidence.title) AS basis_titles
+            FROM csf_reviewed_action_updates update_record
+            LEFT JOIN csf_reviewed_action_update_basis_links link
+                ON link.action_update_id = update_record.action_update_id
+            LEFT JOIN csf_supporting_basis evidence ON evidence.basis_id = link.basis_id
+            WHERE update_record.action_id = ?
+            GROUP BY update_record.action_update_id
+            ORDER BY update_record.recorded_at DESC, update_record.action_update_id DESC
             LIMIT ?
             """,
             (record_id, limit),
@@ -1269,8 +3491,9 @@ def update_csf_reviewed_action(
     rationale: Any = "",
     progress_note: Any = "",
     updated_by: Any = "",
+    basis_ids: Optional[Iterable[Any]] = None,
 ) -> Dict[str, Any]:
-    """Update an action's working state and append one immutable progress entry."""
+    """Update an action and reconcile its current Profile evidence links."""
     record_id = str(action_id or "").strip()
     if not record_id:
         raise ValueError("action_id is required.")
@@ -1280,15 +3503,34 @@ def update_csf_reviewed_action(
     if status is None:
         raise ValueError("action_status is required.")
     current = connection.execute(
-        "SELECT completed_at, updated_at FROM csf_reviewed_actions WHERE action_id = ?", (record_id,)
+        "SELECT profile_id, completed_at, updated_at FROM csf_reviewed_actions WHERE action_id = ?", (record_id,)
     ).fetchone()
     if current is None:
         raise ValueError("Reviewed action was not found.")
+    linked_basis_ids = None if basis_ids is None else sorted(
+        {str(value or "").strip() for value in basis_ids if str(value or "").strip()}
+    )
+    if linked_basis_ids:
+        placeholders = ", ".join("?" for _ in linked_basis_ids)
+        basis_rows = connection.execute(
+            f"SELECT basis_id, profile_id FROM csf_supporting_basis WHERE basis_id IN ({placeholders})",
+            linked_basis_ids,
+        ).fetchall()
+        if len(basis_rows) != len(linked_basis_ids) or any(row["profile_id"] != current["profile_id"] for row in basis_rows):
+            raise ValueError("Action updates can link only evidence from the same Profile.")
+    existing_basis_ids = {
+        str(row["basis_id"])
+        for row in connection.execute(
+            "SELECT basis_id FROM csf_reviewed_action_basis_links WHERE action_id = ?",
+            (record_id,),
+        ).fetchall()
+    }
     now = utc_now()
     previous_updated_at = datetime.fromisoformat(str(current["updated_at"]))
     if datetime.fromisoformat(now) <= previous_updated_at:
         now = (previous_updated_at + timedelta(microseconds=1)).isoformat()
     completed_at = current["completed_at"] or (now if status == "completed" else None)
+    update_id = str(uuid.uuid4())
     with connection:
         connection.execute(
             """
@@ -1306,6 +3548,44 @@ def update_csf_reviewed_action(
                 record_id,
             ),
         )
+        if linked_basis_ids is not None:
+            requested_basis_ids = set(linked_basis_ids)
+            removed_basis_ids = sorted(existing_basis_ids - requested_basis_ids)
+            added_basis_ids = sorted(requested_basis_ids - existing_basis_ids)
+            connection.executemany(
+                "DELETE FROM csf_reviewed_action_basis_links WHERE action_id = ? AND basis_id = ?",
+                [(record_id, basis_id) for basis_id in removed_basis_ids],
+            )
+            connection.executemany(
+                """INSERT INTO csf_reviewed_action_basis_links(
+                    action_id, basis_id, link_role, assertion_text, applicability_note,
+                    linked_by, linked_at, reviewed_at, review_note
+                ) VALUES (?, ?, 'supports_action', '', '', ?, ?, NULL, '')""",
+                [
+                    (
+                        record_id, basis_id,
+                        _csf_record_text(updated_by, "Updated by", required=False, maximum=240) or None,
+                        now,
+                    )
+                    for basis_id in added_basis_ids
+                ],
+            )
+            for removed_basis_id in removed_basis_ids:
+                _record_csf_evidence_link_audit_event(
+                    connection, profile_id=str(current["profile_id"]), basis_id=removed_basis_id,
+                    target_type="action", target_id=record_id, event_type="unlinked",
+                    link_role="supports_action",
+                    recorded_by=_csf_record_text(updated_by, "Updated by", required=False, maximum=240) or None,
+                    recorded_at=now,
+                )
+            for added_basis_id in added_basis_ids:
+                _record_csf_evidence_link_audit_event(
+                    connection, profile_id=str(current["profile_id"]), basis_id=added_basis_id,
+                    target_type="action", target_id=record_id, event_type="linked",
+                    link_role="supports_action",
+                    recorded_by=_csf_record_text(updated_by, "Updated by", required=False, maximum=240) or None,
+                    recorded_at=now,
+                )
         connection.execute(
             """
             INSERT INTO csf_reviewed_action_updates(
@@ -1313,7 +3593,7 @@ def update_csf_reviewed_action(
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()),
+                update_id,
                 record_id,
                 status,
                 _csf_record_text(progress_note, "Progress note", required=False, maximum=8000) or None,
@@ -1350,8 +3630,9 @@ def delete_csf_reviewed_action(
 
 
 def list_csf_reviewed_actions(
-    connection: sqlite3.Connection, subcategory_id: Any, limit: int = 200
+    connection: sqlite3.Connection, profile_id: Any, subcategory_id: Any, limit: int = 200
 ) -> List[Dict[str, Any]]:
+    profile = _active_csf_profile_id(connection, profile_id)
     subcategory = str(subcategory_id or "").strip().upper()
     if not subcategory:
         raise ValueError("subcategory_id is required.")
@@ -1360,38 +3641,153 @@ def list_csf_reviewed_actions(
     rows = connection.execute(
         """
         SELECT a.*, GROUP_CONCAT(link.basis_id) AS basis_ids,
+            GROUP_CONCAT(DISTINCT evidence.title) AS basis_titles,
             control_link.framework_id AS control_framework_id,
             control_link.control_id AS control_id,
-            control.title AS control_title
+            control.title AS control_title,
+            catalog.display_name AS control_catalog_name
         FROM csf_reviewed_actions a
         LEFT JOIN csf_reviewed_action_basis_links link ON link.action_id = a.action_id
+        LEFT JOIN csf_supporting_basis evidence ON evidence.basis_id = link.basis_id
         LEFT JOIN csf_reviewed_action_control_links control_link ON control_link.action_id = a.action_id
         LEFT JOIN csf_reference_controls control
             ON control.framework_id = control_link.framework_id AND control.control_id = control_link.control_id
-        WHERE a.subcategory_id = ?
+        LEFT JOIN csf_control_catalogs catalog ON catalog.framework_id = control_link.framework_id
+        WHERE a.profile_id = ? AND a.subcategory_id = ?
         GROUP BY a.action_id
         ORDER BY a.updated_at DESC, a.action_id
         LIMIT ?
         """,
-        (subcategory, limit),
+        (profile, subcategory, limit),
     ).fetchall()
     return [
-        {**dict(row), "basis_ids": str(row["basis_ids"] or "").split(",") if row["basis_ids"] else []}
+        {
+            **dict(row),
+            "basis_ids": str(row["basis_ids"] or "").split(",") if row["basis_ids"] else [],
+            "basis_titles": str(row["basis_titles"] or "").split(",") if row["basis_titles"] else [],
+        }
         for row in rows
     ]
 
 
-def list_csf_mapped_controls_for_subcategory(
-    connection: sqlite3.Connection, subcategory_id: Any, framework_id: str = "nist-sp-800-53-r5.2.0"
+def list_csf_control_catalogs(connection: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Return registered control catalogs with their imported control and mapping counts."""
+    rows = connection.execute(
+        """SELECT catalog.*,
+            COUNT(DISTINCT control.control_id) AS control_count,
+            COUNT(DISTINCT mapping.control_id || '|' || mapping.subcategory_id) AS mapping_count
+        FROM csf_control_catalogs catalog
+        LEFT JOIN csf_reference_controls control ON control.framework_id = catalog.framework_id
+        LEFT JOIN csf_subcategory_control_mappings mapping ON mapping.framework_id = catalog.framework_id
+        GROUP BY catalog.framework_id
+        ORDER BY catalog.display_name, catalog.framework_id"""
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_csf_profile_control_catalogs(
+    connection: sqlite3.Connection, profile_id: Any
 ) -> List[Dict[str, Any]]:
-    """Return official mapped controls and any action already using each exact mapping."""
+    """Return catalog availability for one Profile, with imported-data counts."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    rows = connection.execute(
+        """SELECT catalog.*, selection.is_enabled AS profile_is_enabled,
+            selection.configured_by, selection.configured_at,
+            COUNT(DISTINCT control.control_id) AS control_count,
+            COUNT(DISTINCT mapping.control_id || '|' || mapping.subcategory_id) AS mapping_count
+        FROM csf_control_catalogs catalog
+        JOIN csf_profile_control_catalogs selection
+            ON selection.framework_id = catalog.framework_id AND selection.profile_id = ?
+        LEFT JOIN csf_reference_controls control ON control.framework_id = catalog.framework_id
+        LEFT JOIN csf_subcategory_control_mappings mapping ON mapping.framework_id = catalog.framework_id
+        GROUP BY catalog.framework_id
+        ORDER BY catalog.display_name, catalog.framework_id""",
+        (profile,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_csf_profile_control_catalog_enabled(
+    connection: sqlite3.Connection,
+    profile_id: Any,
+    framework_id: Any,
+    is_enabled: Any,
+    configured_by: Any = "",
+) -> Dict[str, Any]:
+    """Enable or disable one catalog for one editable Organizational Profile."""
+    profile = _active_csf_profile_id(connection, profile_id)
+    framework = str(framework_id or "").strip()
+    if not framework:
+        raise ValueError("framework_id is required.")
+    definition = connection.execute(
+        "SELECT profile_kind FROM csf_profile_definitions WHERE profile_id = ?", (profile,)
+    ).fetchone()
+    if definition is None or str(definition["profile_kind"]) != "organizational":
+        raise ValueError("Control catalogs can be changed only for an Organizational Profile.")
+    catalog = connection.execute(
+        "SELECT 1 FROM csf_control_catalogs WHERE framework_id = ?", (framework,)
+    ).fetchone()
+    if catalog is None:
+        raise ValueError("The selected control catalog is not registered.")
+    enabled = 1 if bool(is_enabled) else 0
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """INSERT INTO csf_profile_control_catalogs(
+                profile_id, framework_id, is_enabled, configured_by, configured_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, framework_id) DO UPDATE SET
+                is_enabled=excluded.is_enabled,
+                configured_by=excluded.configured_by,
+                configured_at=excluded.configured_at""",
+            (
+                profile, framework, enabled,
+                _csf_record_text(configured_by, "Configured by", required=False, maximum=240) or None,
+                now,
+            ),
+        )
+    row = connection.execute(
+        "SELECT * FROM csf_profile_control_catalogs WHERE profile_id = ? AND framework_id = ?",
+        (profile, framework),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def set_csf_control_catalog_enabled(
+    connection: sqlite3.Connection, framework_id: Any, is_enabled: Any
+) -> Dict[str, Any]:
+    """Enable or disable a catalog without modifying its source data or linked actions."""
+    identifier = str(framework_id or "").strip()
+    if not identifier:
+        raise ValueError("framework_id is required.")
+    enabled = 1 if str(is_enabled).strip().lower() in {"1", "true", "yes", "on"} else 0
+    now = utc_now()
+    with connection:
+        result = connection.execute(
+            "UPDATE csf_control_catalogs SET is_enabled = ?, updated_at = ? WHERE framework_id = ?",
+            (enabled, now, identifier),
+        )
+    if result.rowcount != 1:
+        raise ValueError("The selected control catalog is not registered.")
+    row = connection.execute(
+        "SELECT * FROM csf_control_catalogs WHERE framework_id = ?", (identifier,)
+    ).fetchone()
+    return dict(row) if row is not None else {}
+
+
+def list_csf_mapped_controls_for_subcategory(
+    connection: sqlite3.Connection, profile_id: Any, subcategory_id: Any, framework_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return controls from enabled catalogs mapped to a subcategory and any linked action."""
+    profile = _active_csf_profile_id(connection, profile_id)
     subcategory = str(subcategory_id or "").strip().upper()
     if not subcategory:
         raise ValueError("subcategory_id is required.")
     return [
         dict(row)
         for row in connection.execute(
-            """SELECT mapping.control_id, control.title, control.statement_text,
+            """SELECT mapping.framework_id, catalog.display_name AS catalog_name,
+                mapping.control_id, control.title, control.statement_text,
                 mapping.interpretation_text, mapping.suggested_action_text, mapping.action_title_example,
                 mapping.action_details_example, mapping.action_rationale_example, mapping.confidence_note,
                 mapping.interpretation_source,
@@ -1400,14 +3796,24 @@ def list_csf_mapped_controls_for_subcategory(
             FROM csf_subcategory_control_mappings mapping
             JOIN csf_reference_controls control
                 ON control.framework_id = mapping.framework_id AND control.control_id = mapping.control_id
+            JOIN csf_control_catalogs catalog
+                ON catalog.framework_id = mapping.framework_id
+            JOIN csf_profile_control_catalogs selection
+                ON selection.framework_id = mapping.framework_id
+                AND selection.profile_id = ? AND selection.is_enabled = 1
             LEFT JOIN csf_reviewed_action_control_links action_link
                 ON action_link.framework_id = mapping.framework_id
                 AND action_link.control_id = mapping.control_id
                 AND action_link.subcategory_id = mapping.subcategory_id
-            LEFT JOIN csf_reviewed_actions action ON action.action_id = action_link.action_id
-            WHERE mapping.framework_id = ? AND mapping.subcategory_id = ?
-            ORDER BY mapping.control_id""",
-            (framework_id, subcategory),
+                AND action_link.action_id IN (
+                    SELECT action_id FROM csf_reviewed_actions WHERE profile_id = ?
+                )
+            LEFT JOIN csf_reviewed_actions action
+                ON action.action_id = action_link.action_id
+            WHERE mapping.subcategory_id = ?
+                AND (? IS NULL OR mapping.framework_id = ?)
+            ORDER BY catalog.display_name, mapping.control_id""",
+            (profile, profile, subcategory, framework_id, framework_id),
         ).fetchall()
     ]
 
@@ -3336,7 +5742,11 @@ def _xlsx_sheet_rows(workbook_path: Path, sheet_name: str) -> List[Dict[str, str
         )
         if relationship is None:
             raise ValueError(f"Workbook relationship for worksheet {sheet_name!r} is missing.")
-        sheet_path = "xl/" + relationship.attrib["Target"].lstrip("/")
+        # Relationship targets may be package-root paths (``/xl/...``),
+        # workbook-relative paths (``worksheets/...``), or explicit
+        # ``xl/...`` paths. Normalize all three forms.
+        target = relationship.attrib["Target"].lstrip("/")
+        sheet_path = target if target.startswith("xl/") else "xl/" + target
         sheet_root = ElementTree.fromstring(archive.read(sheet_path))
 
     rows: List[Dict[str, str]] = []
@@ -3556,6 +5966,33 @@ def import_nist_sp800_53_csf_2_mappings(
                 for subcategory_id, control_id in sorted(mappings)
             ],
         )
+        # The composite relationship key includes role and information ID, so
+        # remove only superseded maintained seed rows before inserting them.
+        for item in CONTROL_MAPPING_RELATIONSHIPS:
+            if item["framework_id"] == framework_id:
+                connection.execute(
+                    "DELETE FROM csf_control_mapping_relationships WHERE framework_id=? AND control_id=? AND subcategory_id=? AND source_label='product-authored-v1'",
+                    (item["framework_id"], item["control_id"], item["subcategory_id"]),
+                )
+        connection.executemany(
+            """INSERT INTO csf_control_mapping_relationships(
+                framework_id, control_id, subcategory_id, relationship_role, information_id,
+                relationship_scope, rationale, review_status, source_label, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'reviewed', 'product-authored-v1', ?)
+            ON CONFLICT(framework_id, control_id, subcategory_id, relationship_role, information_id)
+            DO UPDATE SET relationship_scope=excluded.relationship_scope,
+                rationale=excluded.rationale, review_status=excluded.review_status,
+                source_label=excluded.source_label, updated_at=excluded.updated_at""",
+            [
+                (
+                    item["framework_id"], item["control_id"], item["subcategory_id"],
+                    item["relationship_role"], item["information_id"], item["relationship_scope"],
+                    item["rationale"], now,
+                )
+                for item in CONTROL_MAPPING_RELATIONSHIPS
+                if item["framework_id"] == framework_id
+            ],
+        )
     return {
         "framework_id": framework_id,
         "catalog_version": catalog_metadata["version"],
@@ -3566,6 +6003,59 @@ def import_nist_sp800_53_csf_2_mappings(
         "workbook_path": str(workbook_path),
         "catalog_path": str(catalog_path),
     }
+
+
+CONTROL_MAPPING_V7_REVIEW_DECISIONS: Dict[Tuple[str, str, str], Dict[str, str]] = {
+    ("CA-07", "DE.AE-02", "nist-sp-800-53-r5.2.0"): {"relationship_role": "produces_outcome_information", "information_id": "monitoring_findings", "relationship_scope": "partial", "rationale": "CA-07 produces monitoring and assessment information that DE.AE-02 can analyze, but it does not require the outcome's full adverse-event and associated-activity analysis."},
+    ("SC-07", "DE.CM-01", "nist-sp-800-53-r5.2.0"): {"relationship_role": "enables_outcome_capability", "information_id": "", "relationship_scope": "partial", "rationale": "SC-07 requires monitoring communications at managed network boundaries, but it does not require adverse-event detection across all networks and network services."},
+    ("CM-10", "DE.CM-03", "nist-sp-800-53-r5.2.0"): {"relationship_role": "context_only", "information_id": "", "relationship_scope": "indirect", "rationale": "CM-10 tracks licensing and peer-to-peer use for copyright and contract compliance, not for identifying cybersecurity-relevant potentially adverse events."},
+    ("CM-11", "DE.CM-03", "nist-sp-800-53-r5.2.0"): {"relationship_role": "context_only", "information_id": "", "relationship_scope": "indirect", "rationale": "CM-11 monitors compliance with user software-installation policy, a configuration-management activity rather than monitoring to identify potentially adverse events."},
+    ("AU-12", "DE.CM-09", "nist-sp-800-53-r5.2.0"): {"relationship_role": "produces_outcome_information", "information_id": "log_records", "relationship_scope": "partial", "rationale": "AU-12 directly generates audit records that continuous monitoring can use, but it does not itself identify potentially adverse events."},
+    ("CM-06", "DE.CM-09", "nist-sp-800-53-r5.2.0"): {"relationship_role": "enables_outcome_capability", "information_id": "", "relationship_scope": "partial", "rationale": "CM-06 establishes secure settings, identifies deviations, and monitors configuration changes, directly covering part of DE.CM-09's configuration-deviation monitoring example."},
+    ("PL-02", "ID.AM-08", "nist-sp-800-53-r5.2.0"): {"relationship_role": "produces_outcome_information", "information_id": "asset_inventory", "relationship_scope": "partial", "rationale": "PL-02 requires documented system components and information types, producing partial asset-inventory information."},
+    ("PM-11", "RC.RP-04", "nist-sp-800-53-r5.2.0"): {"relationship_role": "produces_outcome_information", "information_id": "organizational_mission", "relationship_scope": "indirect", "rationale": "PM-11 directly produces mission and business-process information, but using it to identify critical functions and establish post-incident operational norms requires product interpretation."},
+    ("IR-05", "RS.MA-04", "nist-sp-800-53-r5.2.0"): {"relationship_role": "enables_outcome_capability", "information_id": "", "relationship_scope": "partial", "rationale": "IR-05 requires tracking incidents, directly covering part of the RS.MA-04 example, but does not validate status, decide on escalation, or coordinate escalation."},
+}
+
+
+def import_control_mapping_relationship_outputs(connection: sqlite3.Connection, output_paths: List[Path], prompt_version: str) -> Dict[str, Any]:
+    """Import valid Responses Batch results without changing official NIST mappings."""
+    rows: Dict[Tuple[str, str, str], Tuple[Dict[str, Any], Path]] = {}
+    skipped_incomplete = 0
+    for path in output_paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            envelope = json.loads(line)
+            body = envelope.get("response", {}).get("body", {})
+            if body.get("status") != "completed":
+                skipped_incomplete += 1
+                continue
+            output_text = next((item.get("text") for item in body.get("output", [])[-1].get("content", []) if item.get("type") == "output_text"), None)
+            if not output_text:
+                skipped_incomplete += 1
+                continue
+            classification = json.loads(output_text)
+            framework_id, control_id, subcategory_id, _ = envelope["custom_id"].split("|", 3)
+            key = (framework_id, control_id, subcategory_id)
+            rows[key] = ({"envelope": envelope, "classification": classification}, path)
+    now = utc_now()
+    imported_drafts = imported_reviewed = preserved_reviewed = 0
+    with connection:
+        for (framework_id, control_id, subcategory_id), (item, path) in rows.items():
+            decision = CONTROL_MAPPING_V7_REVIEW_DECISIONS.get((control_id, subcategory_id, framework_id))
+            classification = decision or item["classification"]
+            status = "reviewed" if decision else "draft"
+            source_kind = "human_reviewed_decision" if decision else "ai_assisted_draft"
+            existing_reviewed = connection.execute("SELECT 1 FROM csf_control_mapping_relationships WHERE framework_id=? AND control_id=? AND subcategory_id=? AND review_status='reviewed'", (framework_id, control_id, subcategory_id)).fetchone()
+            if existing_reviewed:
+                preserved_reviewed += 1
+                continue
+            connection.execute("""INSERT INTO csf_control_mapping_relationships(framework_id, control_id, subcategory_id, relationship_role, information_id, relationship_scope, rationale, review_status, source_label, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(framework_id, control_id, subcategory_id, relationship_role, information_id) DO UPDATE SET relationship_scope=excluded.relationship_scope, rationale=excluded.rationale, review_status=excluded.review_status, source_label=excluded.source_label, updated_at=excluded.updated_at""", (framework_id, control_id, subcategory_id, classification["relationship_role"], classification["information_id"], classification["relationship_scope"], classification["rationale"], status, f"gpt-6-sol:{prompt_version}", now))
+            connection.execute("""INSERT INTO csf_control_mapping_relationship_sources(framework_id, control_id, subcategory_id, source_artifact, request_custom_id, model_name, prompt_version, source_kind, response_json, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(framework_id, control_id, subcategory_id, source_artifact) DO UPDATE SET request_custom_id=excluded.request_custom_id, model_name=excluded.model_name, prompt_version=excluded.prompt_version, source_kind=excluded.source_kind, response_json=excluded.response_json, imported_at=excluded.imported_at""", (framework_id, control_id, subcategory_id, str(path), item["envelope"]["custom_id"], item["envelope"]["response"]["body"].get("model", "unknown"), prompt_version, source_kind, json.dumps(item["envelope"], ensure_ascii=True), now))
+            if decision: imported_reviewed += 1
+            else: imported_drafts += 1
+    return {"outputs_read": len(output_paths), "unique_mappings": len(rows), "imported_drafts": imported_drafts, "imported_reviewed": imported_reviewed, "preserved_reviewed": preserved_reviewed, "skipped_incomplete": skipped_incomplete}
 
 
 def get_app_state(connection: sqlite3.Connection, namespace: str, state_key: str) -> Dict[str, Any]:
@@ -3834,6 +6324,41 @@ def build_parser() -> argparse.ArgumentParser:
     nist_mapping_parser.add_argument("--workbook", required=True, help="Path to csf-2.0-informative-references.xlsx.")
     nist_mapping_parser.add_argument("--catalog", required=True, help="Path to the NIST SP 800-53 Rev. 5 OSCAL JSON catalog.")
 
+    relationship_import_parser = subparsers.add_parser("import-control-mapping-relationship-outputs", help="Import AI-assisted relationship classifications from Responses Batch JSONL outputs.")
+    relationship_import_parser.add_argument("--output", action="append", required=True, help="Batch output JSONL path; repeat for each artifact.")
+    relationship_import_parser.add_argument("--prompt-version", required=True, help="Prompt version retained with each imported source record.")
+
+    action_guidance_import_parser = subparsers.add_parser(
+        "import-profile-action-guidance-outputs",
+        help="Import completed Responses Batch Add Action templates for one CSF profile.",
+    )
+    action_guidance_import_parser.add_argument("--output", action="append", required=True, help="Batch output JSONL path; repeat in original-to-retry order.")
+    action_guidance_import_parser.add_argument("--profile-id", required=True, help="Frozen or organizational profile UUID expected in every batch custom_id.")
+    action_guidance_import_parser.add_argument("--source-kind", default="nist_ir_8596_cyber_ai_batch", help="Provenance label retained with imported templates.")
+
+    community_profile_import_parser = subparsers.add_parser(
+        "import-community-profile-workbook",
+        help="Import a reviewed Community Profile worksheet as a frozen, read-only source artifact.",
+    )
+    community_profile_import_parser.add_argument("--workbook", required=True, help="Path to the reviewed Community Profile workbook.")
+    community_profile_import_parser.add_argument("--sheet", required=True, help="Worksheet containing the Community Profile outcomes.")
+    community_profile_import_parser.add_argument("--community-profile-id", required=True, help="Stable catalog identifier for the source profile.")
+    community_profile_import_parser.add_argument("--profile-name", required=True, help="Display name for the frozen source profile.")
+    community_profile_import_parser.add_argument("--publisher", required=True, help="Source publisher.")
+    community_profile_import_parser.add_argument("--publication-status", required=True, help="Source publication status.")
+    community_profile_import_parser.add_argument("--focus", required=True, help="Short source-profile focus description.")
+    community_profile_import_parser.add_argument("--source-url", required=True, help="Official source URL for the profile.")
+
+    cyber_ai_profile_import_parser = subparsers.add_parser(
+        "import-cyber-ai-focus-profiles",
+        help="Import the reviewed NIST IR 8596 Secure, Defend, and Thwart profiles as separate frozen source artifacts.",
+    )
+    cyber_ai_profile_import_parser.add_argument("--workbook", required=True, help="Path to the reviewed Cyber AI Profile workbook.")
+    cyber_ai_profile_import_parser.add_argument("--sheet", default="Profile outcomes", help="Worksheet containing the Cyber AI Profile outcomes.")
+    cyber_ai_profile_import_parser.add_argument("--publisher", default="NIST", help="Source publisher.")
+    cyber_ai_profile_import_parser.add_argument("--publication-status", default="Initial Preliminary Draft", help="Source publication status.")
+    cyber_ai_profile_import_parser.add_argument("--source-url", default="https://csrc.nist.gov/pubs/ir/8596/iprd", help="Official source URL for the profile.")
+
     import_parser = subparsers.add_parser("import-json", help="Import normalized indicators from a JSON file.")
     import_parser.add_argument("--input", required=True, help="Path to a normalized indicator JSON file.")
 
@@ -3940,6 +6465,41 @@ def main() -> int:
             connection,
             Path(args.workbook),
             Path(args.catalog),
+        )
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "import-control-mapping-relationship-outputs":
+        payload = import_control_mapping_relationship_outputs(connection, [Path(path).resolve() for path in args.output], args.prompt_version)
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "import-profile-action-guidance-outputs":
+        payload = import_csf_profile_action_guidance_outputs(
+            connection,
+            [Path(path).resolve() for path in args.output],
+            args.profile_id,
+            args.source_kind,
+        )
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "import-community-profile-workbook":
+        payload = import_frozen_community_profile_from_workbook(
+            connection,
+            workbook=Path(args.workbook), sheet_name=args.sheet,
+            community_profile_id=args.community_profile_id, profile_name=args.profile_name,
+            publisher=args.publisher, publication_status=args.publication_status,
+            focus=args.focus, source_url=args.source_url,
+        )
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "import-cyber-ai-focus-profiles":
+        payload = import_frozen_cyber_ai_focus_profiles_from_workbook(
+            connection, workbook=Path(args.workbook), sheet_name=args.sheet,
+            publisher=args.publisher, publication_status=args.publication_status,
+            source_url=args.source_url,
         )
         print(json.dumps(payload, indent=2))
         return 0

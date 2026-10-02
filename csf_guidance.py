@@ -5,6 +5,9 @@ what an outcome means for one Windows PC; it is not NIST text or a claim of
 CSF compliance.
 """
 
+from csf_catalog import SUBCATEGORY_SHORT_DESCRIPTIONS
+from csf_profile import SUBCATEGORY_PROFILE_METADATA_EN_US
+
 _ALL_DRAFT_GUIDANCE_EN_US = {
     "GV.OC-01": "Know what this PC is used for and which work, records, or services depend on it.",
     "GV.OC-02": "Consider who relies on this PC and what security expectations they have.",
@@ -453,3 +456,152 @@ _MISSING_PRODUCT_EXAMPLES = {
 }
 if _MISSING_PRODUCT_EXAMPLES:
     raise ValueError(f"Product examples are missing active CSF Subcategories: {sorted(_MISSING_PRODUCT_EXAMPLES)}")
+
+
+def _generic_action_title(subcategory_id: str) -> str:
+    """Make a short product title from the assessment method and compact topic."""
+    topic = SUBCATEGORY_SHORT_DESCRIPTIONS[subcategory_id].lower()
+    method = SUBCATEGORY_PROFILE_METADATA_EN_US[subcategory_id]["assessment_method"]
+    if method == "review":
+        topic = topic[:-7] if topic.endswith(" review") else topic
+        return f"Review {topic}"
+    if method == "evidence":
+        return f"Collect evidence for {topic}"
+    if method == "attestation":
+        return f"Confirm {topic}"
+    return f"Review and record {topic}"
+
+
+# Product-authored generic starting titles used when an action is not based on
+# a selected mapped control. The assessment method supplies the verb and the
+# shared short subcategory description supplies the subject.
+GENERIC_ACTION_TITLE_EN_US = {
+    identifier: _generic_action_title(identifier)
+    for identifier in PLAIN_ENGLISH_GUIDANCE_EN_US
+}
+
+
+def _generic_action_rationale(subcategory_id: str) -> str:
+    topic = SUBCATEGORY_SHORT_DESCRIPTIONS[subcategory_id].lower()
+    return f"This helps assess whether {topic} is addressed for this PC."
+
+
+# The plain-English outcome supplies the no-catalog action detail.  It is
+# already visible on Tile 3 and is reshaped here only as a form placeholder.
+GENERIC_ACTION_DETAILS_EN_US = dict(PLAIN_ENGLISH_GUIDANCE_EN_US)
+GENERIC_ACTION_RATIONALE_EN_US = {
+    "GV.OC-01": "A current mission statement helps keep PC security decisions aligned with the work the organization is trying to accomplish.",
+    "GV.OC-02": "Knowing stakeholder needs helps make PC decisions that account for the people who rely on its use.",
+    "GV.OC-03": "Clear requirements help protect the data, work, and people affected by the PC.",
+    "GV.OC-04": "Knowing critical services helps focus protection and recovery on the work that matters most.",
+    "GV.OC-05": "Knowing external dependencies helps prevent unnoticed service failures from disrupting the PC's work.",
+    "GV.OV-01": "Regular oversight helps ensure security decisions remain appropriate for the PC's changing risks.",
+    "GV.OV-02": "Reviewing strategy helps keep PC security priorities aligned with organizational direction.",
+    "GV.OV-03": "Performance measures show whether PC security work is producing the intended results.",
+    "GV.PO-01": "Clear policy gives people consistent direction for protecting and using the PC.",
+    "GV.PO-02": "Updating policy keeps PC rules useful when its use, risks, or requirements change.",
+    "GV.RM-01": "Risk objectives help people make PC security decisions toward agreed outcomes.",
+    "GV.RM-02": "Risk appetite helps people distinguish acceptable PC risk from risk that needs action.",
+    "GV.RM-03": "Connecting PC risks to business decisions prevents security concerns from being considered in isolation.",
+    "GV.RM-04": "Known response options help people choose a deliberate response to each PC risk.",
+    "GV.RM-05": "Clear communication paths help the right people receive PC risk information in time to act.",
+    "GV.RM-06": "A consistent method makes PC risk decisions easier to compare and explain.",
+    "GV.RM-07": "Considering opportunities can improve both PC security and the work it supports.",
+    "GV.RR-01": "Clear accountability ensures someone can make and support PC security decisions.",
+    "GV.RR-02": "Defined roles prevent gaps and confusion in who uses, supports, and secures the PC.",
+    "GV.RR-03": "Adequate resources make it possible to maintain the PC safely over time.",
+    "GV.RR-04": "People practices help keep PC access and responsibilities safe through staffing changes.",
+    "GV.SC-01": "A supply-chain program gives PC supplier risks consistent attention.",
+    "GV.SC-02": "Clear supplier roles help people know who is responsible when a provider affects the PC.",
+    "GV.SC-03": "Including supplier risks prevents dependencies from being missed in PC risk decisions.",
+    "GV.SC-04": "Knowing critical suppliers helps prioritize attention when a provider fails or changes.",
+    "GV.SC-05": "Supplier requirements set security expectations before products or services affect the PC.",
+    "GV.SC-06": "Due diligence helps avoid trusting a product or provider before its risks are understood.",
+    "GV.SC-07": "Ongoing monitoring helps identify supplier changes that could affect the PC.",
+    "GV.SC-08": "Supplier involvement helps incident and recovery work include people who may be needed.",
+    "GV.SC-09": "Life-cycle review helps ensure supplier practices remain suitable as services change.",
+    "GV.SC-10": "Exit planning helps protect PC access and data when a supplier relationship ends.",
+    "ID.AM-01": "An accurate hardware inventory helps protect, support, and recover the devices that matter.",
+    "ID.AM-02": "A software and service inventory helps identify what must be secured and maintained.",
+    "ID.AM-03": "Knowing network and data flows helps identify where PC information can travel or be exposed.",
+    "ID.AM-04": "Knowing supplier services helps the organization manage outside dependencies affecting the PC.",
+    "ID.AM-05": "Asset criticality helps prioritize protection and recovery for the most important PC functions.",
+    "ID.AM-07": "A data inventory helps people protect information according to its sensitivity and use.",
+    "ID.AM-08": "Life-cycle planning helps keep the PC and its data secure from setup through disposal.",
+    "ID.IM-01": "Evaluation findings turn completed reviews into specific improvements for the PC.",
+    "ID.IM-02": "Exercise findings help improve PC response and recovery before a real incident occurs.",
+    "ID.IM-03": "Operational lessons help improve PC practices using what people learned from real work.",
+    "ID.IM-04": "Documented improvements help ensure lessons lead to planned changes rather than being forgotten.",
+    "ID.RA-01": "Finding weaknesses early helps prevent PC risks from being ignored until harm occurs.",
+    "ID.RA-02": "Relevant threat information helps focus PC security work on realistic risks.",
+    "ID.RA-03": "Identifying threats helps people prepare for the ways the PC could be harmed.",
+    "ID.RA-04": "Risk analysis helps people understand which PC problems are most likely and consequential.",
+    "ID.RA-05": "Risk prioritization helps direct limited time and resources to the most important PC risks.",
+    "ID.RA-06": "A documented response helps ensure important PC risks have an owner and a next step.",
+    "ID.RA-07": "Change-risk review helps prevent new PC changes and exceptions from creating unnoticed risk.",
+    "ID.RA-08": "A disclosure process helps the organization act when suppliers report weaknesses.",
+    "ID.RA-09": "Authenticity checks reduce the chance that untrusted technology affects the PC.",
+    "ID.RA-10": "Supplier risk assessment helps identify concerns before the PC depends on a provider.",
+    "PR.AA-01": "Managing identities and credentials helps ensure only appropriate people can use the PC.",
+    "PR.AA-02": "Identity proofing helps prevent access from being granted to the wrong person.",
+    "PR.AA-03": "Authentication helps verify that a person or service is who it claims to be.",
+    "PR.AA-04": "Reliable identity assertions help connected services make sound access decisions.",
+    "PR.AA-05": "Appropriate permissions limit PC access to the people and services that need it.",
+    "PR.AA-06": "Physical access controls help protect the PC from unauthorized local use or removal.",
+    "PR.AT-01": "User awareness helps people avoid actions that could put the PC or its information at risk.",
+    "PR.AT-02": "Specialized training helps administrators and security staff carry out their PC responsibilities safely.",
+    "PR.DS-01": "Protecting stored data reduces harm if the PC or its storage is accessed without permission.",
+    "PR.DS-02": "Protecting data in transit reduces exposure while PC information moves between systems.",
+    "PR.DS-10": "Protecting data in use reduces exposure while the PC is actively processing information.",
+    "PR.DS-11": "Usable backups help restore PC information after loss, damage, or a security incident.",
+    "PR.IR-01": "Network protection helps prevent unwanted access and disruption through PC connections.",
+    "PR.IR-02": "Environmental protection helps keep the PC available despite physical or site-related threats.",
+    "PR.IR-03": "Resilience mechanisms help the PC continue or recover when part of its environment fails.",
+    "PR.IR-04": "Resource capacity helps prevent PC services from failing when demand increases.",
+    "PR.PS-01": "Configuration management helps keep PC settings known, controlled, and appropriate.",
+    "PR.PS-02": "Software maintenance helps keep PC software supported and protected from known weaknesses.",
+    "PR.PS-03": "Hardware maintenance helps keep PC equipment reliable and safe to use.",
+    "PR.PS-04": "Log records provide evidence for investigating PC activity and security events.",
+    "PR.PS-05": "Unauthorized software prevention reduces the chance that unsafe programs affect the PC.",
+    "PR.PS-06": "Secure development practices reduce the chance that new PC software introduces weaknesses.",
+    "DE.AE-02": "Event analysis helps distinguish meaningful PC security events from harmless activity.",
+    "DE.AE-03": "Comparing evidence helps produce a more reliable understanding of a suspicious PC event.",
+    "DE.AE-04": "Knowing impact and scope helps people choose a response proportional to a PC event.",
+    "DE.AE-06": "Timely event information helps the right people and tools review or respond to PC risks.",
+    "DE.AE-07": "Threat context helps people understand whether PC activity matches a known attack pattern.",
+    "DE.AE-08": "Clear incident criteria help ensure serious PC events receive the response they need.",
+    "DE.CM-01": "Network monitoring helps identify PC connection activity that may signal a security problem.",
+    "DE.CM-02": "Physical monitoring helps reveal tampering, loss, or unsafe conditions near the PC.",
+    "DE.CM-03": "Use monitoring helps identify PC activity that may be unauthorized or unsafe.",
+    "DE.CM-06": "Provider monitoring helps identify service issues and changes that could affect the PC.",
+    "DE.CM-09": "Technology monitoring helps reveal PC changes that may signal a security problem.",
+    "RS.AN-03": "Incident investigation helps identify what caused a PC incident and what must be addressed.",
+    "RS.AN-06": "Investigation records preserve the facts needed to coordinate and learn from PC incidents.",
+    "RS.AN-07": "Incident data helps people make response decisions using verified information.",
+    "RS.AN-08": "Knowing incident scope helps people contain the problem and protect affected work.",
+    "RS.CO-02": "Incident notifications help ensure required people receive timely information about PC incidents.",
+    "RS.CO-03": "Clear communications help stakeholders understand a PC incident and the response underway.",
+    "RS.MA-01": "A response plan gives people a coordinated way to handle PC incidents.",
+    "RS.MA-02": "Incident triage helps determine which reported PC events need action first.",
+    "RS.MA-03": "Incident prioritization helps focus response effort on the most serious PC incidents.",
+    "RS.MA-04": "Escalation ensures serious PC incidents reach people with the authority to act.",
+    "RS.MA-05": "Recovery initiation helps restore the PC deliberately when incident conditions require it.",
+    "RS.MI-01": "Containment limits the spread and impact of a PC incident.",
+    "RS.MI-02": "Eradication removes the cause of a PC incident before normal work resumes.",
+    "RC.CO-03": "Recovery communications help people understand the PC's recovery status and next steps.",
+    "RC.CO-04": "Public recovery updates help external audiences receive accurate information when needed.",
+    "RC.RP-01": "A recovery plan gives people a coordinated path to restore PC work after disruption.",
+    "RC.RP-02": "Recovery priorities help restore the most important PC work first.",
+    "RC.RP-03": "Asset verification helps ensure recovered PC components are safe and ready to use.",
+    "RC.RP-04": "Post-incident operations help the organization return the PC to appropriate normal use.",
+    "RC.RP-05": "Restoration verification helps confirm the PC works safely after recovery.",
+    "RC.RP-06": "Recovery completion confirms the PC can leave recovery activities and resume normal oversight.",
+}
+
+_MISSING_GENERIC_ACTION_TITLES = {
+    identifier for identifier, title in GENERIC_ACTION_TITLE_EN_US.items() if not title
+}
+if _MISSING_GENERIC_ACTION_TITLES:
+    raise ValueError(f"Generic action titles are missing active CSF Subcategories: {sorted(_MISSING_GENERIC_ACTION_TITLES)}")
+if set(GENERIC_ACTION_RATIONALE_EN_US) != set(PLAIN_ENGLISH_GUIDANCE_EN_US):
+    raise ValueError("Generic action rationales must cover exactly the active CSF Subcategories.")

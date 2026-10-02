@@ -40,3 +40,12 @@ vm-transfer/
 vm-win11-fresh/
 codex-vm2-*.png
 *-VirtualBoxVM-*.log
+
+# Local dependencies, generated batch material, and recoverable working output
+node_modules/
+backups/
+tmp/
+output/
+reference-data/NIST/batches/
+NIST-CSF-800-53-learning-pack/
+NIST-CSF-800-53-learning-pack.zip

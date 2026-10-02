@@ -9,6 +9,7 @@ from pathlib import Path
 
 import codex_monitor_store as ioc_store
 from csf_capability_dependencies import CAPABILITY_DEPENDENCIES
+from csf_control_mapping_relationships import CONTROL_MAPPING_RELATIONSHIPS
 
 
 class IocStoreTests(unittest.TestCase):
@@ -20,6 +21,7 @@ class IocStoreTests(unittest.TestCase):
         self.conn = ioc_store.connect_db(self.db_path)
         self.addCleanup(self.conn.close)
         ioc_store.init_db(self.conn)
+        self.profile_id = ioc_store.get_active_csf_profile(self.conn)["profile_id"]
 
     def test_init_creates_indicator_and_app_state_tables(self) -> None:
         rows = self.conn.execute(
@@ -41,13 +43,27 @@ class IocStoreTests(unittest.TestCase):
             "csf_subcategory_profile_metadata",
             "csf_outcome_audit_events",
             "csf_current_assessments",
+            "csf_profile_definitions",
+            "csf_active_profile",
+            "csf_community_profile_catalog",
+            "csf_profile_community_profile_sources",
+            "csf_community_profile_frozen_sources",
+            "csf_community_profile_outcome_facets",
+            "csf_profile_audit_events",
+            "csf_profiles",
+            "csf_profile_action_guidance",
             "csf_supporting_basis",
+            "csf_evidence_outcome_links",
             "csf_reviewed_actions",
             "csf_reviewed_action_updates",
             "csf_reviewed_action_basis_links",
+            "csf_reviewed_action_update_basis_links",
             "csf_reference_frameworks",
+            "csf_control_catalogs",
+            "csf_profile_control_catalogs",
             "csf_reference_controls",
             "csf_subcategory_control_mappings",
+            "csf_control_mapping_relationships",
             "csf_reviewed_action_control_links",
             "csf_information_items",
             "csf_subcategory_information_sources",
@@ -65,7 +81,73 @@ class IocStoreTests(unittest.TestCase):
         migrations = self.conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        self.assertEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], [row["version"] for row in migrations])
+        self.assertEqual(list(range(1, 45)), [row["version"] for row in migrations])
+        self.assertEqual("Single-PC baseline", ioc_store.get_active_csf_profile(self.conn)["profile_name"])
+        profile_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(csf_profiles)").fetchall()}
+        self.assertTrue({
+            "profile_name", "outcome_id", "outcome_type", "outcome_description", "included_in_profile",
+            "rationale", "current_priority", "current_status", "current_policies_processes_procedures",
+            "current_internal_practices", "current_roles_responsibilities", "current_selected_informative_references",
+            "current_artifacts_evidence", "target_priority", "target_csf_tier",
+            "target_policies_processes_procedures", "target_internal_practices",
+            "target_roles_responsibilities", "target_selected_informative_references",
+            "community_priority", "community_risk_rationale", "community_supporting_references",
+            "community_other_guidance", "community_source_locator", "notes", "considerations",
+        }.issubset(profile_columns))
+        catalogs = ioc_store.list_csf_control_catalogs(self.conn)
+        self.assertEqual(1, len(catalogs))
+        self.assertEqual("nist-sp-800-53-r5.2.0", catalogs[0]["framework_id"])
+        self.assertEqual(1, catalogs[0]["is_enabled"])
+        community_profiles = ioc_store.list_csf_community_profiles(self.conn)
+        self.assertEqual(1, len(community_profiles))
+        self.assertEqual("nist-ransomware", community_profiles[0]["community_profile_id"])
+
+    def test_active_csf_profile_must_be_a_defined_profile(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not defined"):
+            ioc_store.set_active_csf_profile(self.conn, "Missing profile")
+        selected = ioc_store.create_csf_profile_definition(
+            self.conn, "Customer-data handling", "PC use involving customer data.",
+            community_profile_id="nist-ransomware",
+        )
+        self.assertEqual("Customer-data handling", selected["profile_name"])
+        self.assertEqual(
+            128,
+            self.conn.execute(
+                "SELECT COUNT(*) FROM csf_profiles WHERE profile_name = 'Customer-data handling'"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            22,
+            self.conn.execute(
+                "SELECT COUNT(*) FROM csf_profiles WHERE profile_name = 'Customer-data handling' AND outcome_type = 'category'"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            106,
+            self.conn.execute(
+                "SELECT COUNT(*) FROM csf_profiles WHERE profile_name = 'Customer-data handling' AND outcome_type = 'subcategory'"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            "nist-ransomware",
+            self.conn.execute(
+                "SELECT community_profile_id FROM csf_profile_community_profile_sources WHERE profile_name = 'Customer-data handling'"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            43,
+            self.conn.execute(
+                "SELECT COUNT(*) FROM csf_profiles WHERE profile_name = 'Customer-data handling' AND outcome_type = 'subcategory' AND profile_status = 'inherited'"
+            ).fetchone()[0],
+        )
+        frozen = self.conn.execute(
+            "SELECT profile_id FROM csf_community_profile_frozen_sources WHERE community_profile_id = 'nist-ransomware'"
+        ).fetchone()
+        self.assertIsNotNone(frozen)
+        self.assertIn(
+            frozen["profile_id"],
+            [profile["profile_id"] for profile in ioc_store.list_csf_profile_definitions(self.conn)],
+        )
         self.assertNotIn(
             "single_pc_scope_note",
             {row["name"] for row in self.conn.execute("PRAGMA table_info(csf_subcategory_guidance)").fetchall()},
@@ -104,6 +186,171 @@ class IocStoreTests(unittest.TestCase):
             },
             {row["name"] for row in indexes},
         )
+
+    def test_imports_oran_workbook_as_frozen_community_profile(self) -> None:
+        workbook = Path(__file__).resolve().parents[1] / "output" / "nist-ir-8623-oran-community-profile.intermediate.xlsx"
+        result = ioc_store.import_frozen_community_profile_from_workbook(
+            self.conn,
+            workbook=workbook,
+            sheet_name="Profile outcomes",
+            community_profile_id="nist-oran-2026-draft",
+            profile_name="Federal Agency Open Radio Access Network (O-RAN) Deployment",
+            publisher="NIST",
+            publication_status="Initial Public Draft",
+            focus="Federal agency O-RAN deployment",
+            source_url="https://csrc.nist.gov/pubs/ir/8623/ipd",
+        )
+        self.assertTrue(result["imported"])
+        self.assertEqual(93, result["source_outcome_count"])
+        profile = self.conn.execute(
+            "SELECT profile_kind FROM csf_profile_definitions WHERE profile_id = ?", (result["profile_id"],)
+        ).fetchone()
+        self.assertEqual("frozen_community", profile["profile_kind"])
+        outcome = self.conn.execute(
+            """SELECT profile_status, community_priority, community_risk_rationale,
+                      community_supporting_references, community_other_guidance, notes
+            FROM csf_profiles WHERE profile_name = ? AND outcome_id = 'GV.OC-01'""",
+            ("Federal Agency Open Radio Access Network (O-RAN) Deployment",),
+        ).fetchone()
+        self.assertEqual("included", outcome["profile_status"])
+        self.assertEqual("N/A", outcome["community_priority"])
+        self.assertEqual("OutOfScope", outcome["community_risk_rationale"])
+        self.assertIn("O-RAN ALLIANCE Threat Analysis", outcome["community_supporting_references"])
+        self.assertIn("Program Management", outcome["community_other_guidance"])
+        self.assertIn("Low for O-RAN deployment", outcome["notes"])
+
+    def test_imports_cyber_ai_workbook_with_distinct_focus_area_records(self) -> None:
+        workbook = Path(__file__).resolve().parents[1] / "output" / "nist-ir-8596-cyber-ai-community-profile.intermediate.xlsx"
+        result = ioc_store.import_frozen_community_profile_from_workbook(
+            self.conn,
+            workbook=workbook,
+            sheet_name="Profile outcomes",
+            community_profile_id="nist-cyber-ai",
+            profile_name="NIST IR 8596 Cyber AI Profile",
+            publisher="NIST",
+            publication_status="Initial Preliminary Draft",
+            focus="Cybersecurity of AI and AI for cybersecurity",
+            source_url="https://csrc.nist.gov/pubs/ir/8596/iprd",
+        )
+        self.assertTrue(result["imported"])
+        self.assertEqual(106, result["source_outcome_count"])
+        self.assertEqual(318, result["focus_area_record_count"])
+        self.assertEqual(
+            318,
+            self.conn.execute(
+                "SELECT COUNT(*) FROM csf_community_profile_outcome_facets WHERE profile_id = ?", (result["profile_id"],)
+            ).fetchone()[0],
+        )
+        outcome = self.conn.execute(
+            """SELECT profile_status, community_priority, community_supporting_references, notes
+            FROM csf_profiles WHERE profile_name = ? AND outcome_id = 'GV.OC-02'""",
+            ("NIST IR 8596 Cyber AI Profile",),
+        ).fetchone()
+        self.assertEqual("included", outcome["profile_status"])
+        self.assertEqual("Secure: 3; Defend: 2; Thwart: 2", outcome["community_priority"])
+        self.assertIn("Collaboration across these areas", outcome["notes"])
+        self.assertIn("PM-09", outcome["community_supporting_references"])
+        defend = self.conn.execute(
+            """SELECT proposed_priority, considerations, source_text
+            FROM csf_community_profile_outcome_facets
+            WHERE profile_id = ? AND outcome_id = 'GV.OC-02' AND facet_id = 'defend'""",
+            (result["profile_id"],),
+        ).fetchone()
+        self.assertEqual("2", defend["proposed_priority"])
+        self.assertTrue(defend["source_text"].startswith("Proposed Priority: 2"))
+
+    def test_imports_cyber_ai_as_three_focus_profiles_with_base_guidance_fallback(self) -> None:
+        workbook = Path(__file__).resolve().parents[1] / "output" / "nist-ir-8596-cyber-ai-community-profile.intermediate.xlsx"
+        result = ioc_store.import_frozen_cyber_ai_focus_profiles_from_workbook(
+            self.conn, workbook=workbook, sheet_name="Profile outcomes", publisher="NIST",
+            publication_status="Initial Preliminary Draft", source_url="https://csrc.nist.gov/pubs/ir/8596/iprd",
+        )
+        self.assertFalse(result["legacy_combined_profile_archived"])
+        self.assertEqual(["Secure", "Defend", "Thwart"], [profile["focus_area"] for profile in result["profiles"]])
+        self.assertEqual(
+            3,
+            self.conn.execute(
+                """SELECT COUNT(1) FROM csf_profile_definitions
+                WHERE profile_name IN ('Cyber AI - Secure', 'Cyber AI - Defend', 'Cyber AI - Thwart')
+                  AND profile_kind = 'frozen_community'"""
+            ).fetchone()[0],
+        )
+        secure_standard = self.conn.execute(
+            """SELECT notes, community_priority, community_supporting_references
+            FROM csf_profiles WHERE profile_name = 'Cyber AI - Secure' AND outcome_id = 'GV.OC-01'"""
+        ).fetchone()
+        self.assertEqual("", secure_standard["notes"])
+        self.assertEqual("3", secure_standard["community_priority"])
+        self.assertIn("OWASP", secure_standard["community_supporting_references"])
+        secure_specific = self.conn.execute(
+            "SELECT notes FROM csf_profiles WHERE profile_name = 'Cyber AI - Secure' AND outcome_id = 'GV.OC-03'"
+        ).fetchone()
+        self.assertNotEqual("", secure_specific["notes"])
+        self.assertEqual(
+            106,
+            self.conn.execute(
+                """SELECT COUNT(1) FROM csf_community_profile_outcome_facets AS facet
+                JOIN csf_profile_definitions AS definition ON definition.profile_id = facet.profile_id
+                WHERE definition.profile_name = 'Cyber AI - Thwart' AND facet.facet_id = 'thwart'"""
+            ).fetchone()[0],
+        )
+
+    def test_profile_action_guidance_is_scoped_by_profile_uuid(self) -> None:
+        ioc_store.upsert_csf_profile_action_guidance(
+            self.conn,
+            profile_id=self.profile_id,
+            subcategory_id="GV.OC-01",
+            action_title_example="Confirm the mission statement",
+            action_details_example="Review the mission statement and record the current approved version.",
+            action_rationale_example="This keeps cybersecurity decisions connected to the mission.",
+            source_kind="community_sample_opportunity",
+            prompt_version="pending-batch-v1",
+        )
+        stored = ioc_store.list_csf_profile_action_guidance(self.conn, self.profile_id)["GV.OC-01"]
+        self.assertEqual("Confirm the mission statement", stored["title"])
+        self.assertEqual("community_sample_opportunity", stored["source_kind"])
+        another_profile = ioc_store.create_csf_profile_definition(
+            self.conn, "Separate action templates", "A separate profile for action-template scoping.",
+        )
+        self.assertNotIn(
+            "GV.OC-01",
+            ioc_store.list_csf_profile_action_guidance(self.conn, another_profile["profile_id"]),
+        )
+
+    def test_import_profile_action_guidance_uses_later_retry(self) -> None:
+        def batch_envelope(prompt_version: str, title: str) -> dict:
+            return {
+                "custom_id": f"{self.profile_id}|GV.OC-01|{prompt_version}",
+                "response": {
+                    "body": {
+                        "status": "completed",
+                        "output": [{
+                            "type": "message",
+                            "content": [{
+                                "type": "output_text",
+                                "text": json.dumps({
+                                    "action_title_example": title,
+                                    "action_details_example": "Review the mission statement and identify any security risk to its work.",
+                                    "action_rationale_example": "This connects security work on the PC to the organization’s mission.",
+                                }),
+                            }],
+                        }],
+                    },
+                },
+            }
+
+        original = self.root / "original.jsonl"
+        retry = self.root / "retry.jsonl"
+        original.write_text(json.dumps(batch_envelope("v1", "Review the mission")) + "\n", encoding="utf-8")
+        retry.write_text(json.dumps(batch_envelope("v2", "Review the current mission")) + "\n", encoding="utf-8")
+        result = ioc_store.import_csf_profile_action_guidance_outputs(
+            self.conn, [original, retry], self.profile_id,
+        )
+        self.assertEqual(2, result["completed_rows"])
+        self.assertEqual(1, result["unique_outcomes_imported"])
+        stored = ioc_store.list_csf_profile_action_guidance(self.conn, self.profile_id)["GV.OC-01"]
+        self.assertEqual("Review the current mission", stored["title"])
+        self.assertEqual("v2", stored["prompt_version"])
 
     def test_import_nist_sp800_53_final_csf_mappings_is_idempotent(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -158,27 +405,50 @@ class IocStoreTests(unittest.TestCase):
         )
         self.assertEqual(payload["mapping_count"], repeated["mapping_count"])
         self.assertEqual(737, self.conn.execute("SELECT COUNT(*) FROM csf_subcategory_control_mappings").fetchone()[0])
+        relationship_count = self.conn.execute("SELECT COUNT(*) FROM csf_control_mapping_relationships").fetchone()[0]
+        self.assertEqual(len(CONTROL_MAPPING_RELATIONSHIPS), relationship_count)
+        notification_relationship = self.conn.execute(
+            """SELECT relationship_role, information_id, relationship_scope, rationale, review_status
+            FROM csf_control_mapping_relationships
+            WHERE framework_id = ? AND control_id = ? AND subcategory_id = ?""",
+            ("nist-sp-800-53-r5.2.0", "SR-08", "GV.OC-02"),
+        ).fetchone()
+        self.assertEqual("context_only", notification_relationship["relationship_role"])
+        self.assertEqual("", notification_relationship["information_id"])
+        self.assertEqual("indirect", notification_relationship["relationship_scope"])
+        self.assertEqual("reviewed", notification_relationship["review_status"])
+        self.assertIn("does not expressly require", notification_relationship["rationale"])
 
         action = ioc_store.create_csf_reviewed_action(
             self.conn,
+            profile_id=self.profile_id,
             subcategory_id="GV.OC-01",
             title="Address PM-11 — Mission and Business Process Definition",
             action_status="planned",
             control_id="PM-11",
         )
-        controls = ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, "GV.OC-01")
+        controls = ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, self.profile_id, "GV.OC-01")
         self.assertEqual("PM-11", controls[0]["control_id"])
         self.assertEqual(action["action_id"], controls[0]["action_id"])
         with self.assertRaisesRegex(ValueError, "already has an action"):
             ioc_store.create_csf_reviewed_action(
                 self.conn,
+                profile_id=self.profile_id,
                 subcategory_id="GV.OC-01",
                 title="Duplicate PM-11 action",
                 action_status="planned",
                 control_id="PM-11",
             )
         ioc_store.delete_csf_reviewed_action(self.conn, action["action_id"])
-        self.assertIsNone(ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, "GV.OC-01")[0]["action_id"])
+        self.assertIsNone(ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, self.profile_id, "GV.OC-01")[0]["action_id"])
+        ioc_store.set_csf_profile_control_catalog_enabled(
+            self.conn, self.profile_id, "nist-sp-800-53-r5.2.0", False
+        )
+        self.assertEqual([], ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, self.profile_id, "GV.OC-01"))
+        ioc_store.set_csf_profile_control_catalog_enabled(
+            self.conn, self.profile_id, "nist-sp-800-53-r5.2.0", True
+        )
+        self.assertEqual("PM-11", ioc_store.list_csf_mapped_controls_for_subcategory(self.conn, self.profile_id, "GV.OC-01")[0]["control_id"])
 
     def test_csf_outcome_audit_events_are_append_only_and_preserve_assessment_context(self) -> None:
         recorded = ioc_store.record_csf_outcome_audit_event(
@@ -242,27 +512,31 @@ class IocStoreTests(unittest.TestCase):
         self.assertTrue(guidance["plain_english_text"])
         self.assertNotEqual("[]", guidance["examples_json"])
 
-    def test_current_csf_assessment_is_updatable_without_creating_an_audit_event(self) -> None:
+    def test_current_csf_assessment_changes_are_append_only_audit_events(self) -> None:
         saved = ioc_store.set_current_csf_assessment(
-            self.conn, "gv.oc-01", "partly_implemented", "local-user"
+            self.conn, self.profile_id, "gv.oc-01", "partly_implemented", "local-user"
         )
         updated = ioc_store.set_current_csf_assessment(
-            self.conn, "GV.OC-01", "fully_implemented", "local-user"
+            self.conn, self.profile_id, "GV.OC-01", "fully_implemented", "local-user"
         )
 
         self.assertEqual("partly_implemented", saved["assessment_level"])
         self.assertEqual("fully_implemented", updated["assessment_level"])
         self.assertEqual(
             "fully_implemented",
-            ioc_store.list_current_csf_assessments(self.conn)["GV.OC-01"]["assessment_level"],
+            ioc_store.list_current_csf_assessments(self.conn, self.profile_id)["GV.OC-01"]["assessment_level"],
         )
-        self.assertEqual(0, self.conn.execute("SELECT COUNT(*) FROM csf_outcome_audit_events").fetchone()[0])
+        events = ioc_store.list_csf_outcome_audit_events(self.conn, "GV.OC-01")
+        self.assertEqual(["assessment_recorded", "assessment_superseded"], [event["event_type"] for event in events])
+        self.assertEqual("partly_implemented", json.loads(events[1]["payload_json"])["previous_current_assessment_level"])
+        self.assertEqual("fully_implemented", events[1]["current_assessment_level"])
         with self.assertRaisesRegex(ValueError, "assessment_level"):
-            ioc_store.set_current_csf_assessment(self.conn, "GV.OC-01", "undecided")
+            ioc_store.set_current_csf_assessment(self.conn, self.profile_id, "GV.OC-01", "undecided")
 
-    def test_supporting_basis_and_reviewed_actions_link_to_the_same_subcategory(self) -> None:
+    def test_evidence_can_support_multiple_outcomes_and_actions_within_a_profile(self) -> None:
         basis = ioc_store.create_csf_supporting_basis(
             self.conn,
+            profile_id=self.profile_id,
             basis_id="basis-001",
             subcategory_id="gv.oc-01",
             basis_type="document",
@@ -273,6 +547,7 @@ class IocStoreTests(unittest.TestCase):
         )
         action = ioc_store.create_csf_reviewed_action(
             self.conn,
+            profile_id=self.profile_id,
             action_id="action-001",
             subcategory_id="GV.OC-01",
             title="Share the mission statement with staff",
@@ -282,24 +557,166 @@ class IocStoreTests(unittest.TestCase):
         )
 
         self.assertEqual("GV.OC-01", basis["subcategory_id"])
-        self.assertEqual(["basis-001"], [item["basis_id"] for item in ioc_store.list_csf_supporting_basis(self.conn, "GV.OC-01")])
+        evidence_events = [
+            event for event in ioc_store.list_csf_outcome_audit_events(self.conn, "GV.OC-01")
+            if event["event_type"] == "evidence_linked"
+        ]
+        self.assertEqual(1, len(evidence_events))
+        self.assertEqual("evidence", evidence_events[0]["related_record_type"])
+        self.assertEqual("basis-001", evidence_events[0]["related_record_id"])
+        self.assertEqual(["basis-001"], [item["basis_id"] for item in ioc_store.list_csf_supporting_basis(self.conn, self.profile_id, "GV.OC-01")])
         self.assertEqual("in_progress", action["action_status"])
         self.assertEqual(
             ["basis-001"],
-            ioc_store.list_csf_reviewed_actions(self.conn, "GV.OC-01")[0]["basis_ids"],
+            ioc_store.list_csf_reviewed_actions(self.conn, self.profile_id, "GV.OC-01")[0]["basis_ids"],
         )
-        with self.assertRaisesRegex(ValueError, "same Subcategory"):
-            ioc_store.create_csf_reviewed_action(
-                self.conn,
-                subcategory_id="GV.OV-01",
-                title="Invalid cross-outcome link",
-                action_status="planned",
-                basis_ids=[basis["basis_id"]],
+        outcome_link = ioc_store.link_csf_evidence_to_outcome(
+            self.conn,
+            basis_id=basis["basis_id"],
+            profile_id=self.profile_id,
+            subcategory_id="GV.OV-01",
+            assertion_text="The mission statement identifies the accountable owner.",
+            linked_by="local-user",
+        )
+        cross_outcome_action = ioc_store.create_csf_reviewed_action(
+            self.conn,
+            profile_id=self.profile_id,
+            subcategory_id="GV.OV-01",
+            title="Use the accountable owner in governance review",
+            action_status="planned",
+            basis_ids=[basis["basis_id"]],
+        )
+        initial_update = ioc_store.list_csf_reviewed_action_updates(self.conn, action["action_id"])[0]
+        update_link = ioc_store.link_csf_evidence_to_action_update(
+            self.conn,
+            action_update_id=initial_update["action_update_id"],
+            basis_id=basis["basis_id"],
+            assertion_text="This evidence supports the recorded action status.",
+        )
+        self.assertEqual("GV.OV-01", outcome_link["subcategory_id"])
+        self.assertEqual(["basis-001"], [item["basis_id"] for item in ioc_store.list_csf_supporting_basis(self.conn, self.profile_id, "GV.OV-01")])
+        self.assertEqual(["basis-001"], ioc_store.list_csf_reviewed_actions(self.conn, self.profile_id, "GV.OV-01")[0]["basis_ids"])
+        self.assertEqual(initial_update["action_update_id"], update_link["action_update_id"])
+        library = ioc_store.list_csf_evidence_library(self.conn, self.profile_id)
+        self.assertEqual(2, library[0]["outcome_link_count"])
+        self.assertEqual(2, library[0]["action_link_count"])
+        self.assertEqual(1, library[0]["action_update_link_count"])
+        detail = ioc_store.get_csf_evidence_detail(self.conn, self.profile_id, basis["basis_id"])
+        self.assertEqual("Mission statement", detail["evidence"]["title"])
+        self.assertEqual({"GV.OC-01", "GV.OV-01"}, {item["subcategory_id"] for item in detail["outcome_uses"]})
+        self.assertEqual(2, len(detail["action_uses"]))
+        self.assertEqual(1, len(detail["action_update_uses"]))
+
+    def test_tile_three_records_are_isolated_by_profile_uuid(self) -> None:
+        other_profile = ioc_store.create_csf_profile_definition(
+            self.conn, "Second profile", "A separate test context."
+        )
+        other_profile_id = other_profile["profile_id"]
+        ioc_store.set_current_csf_assessment(
+            self.conn, self.profile_id, "GV.OC-01", "fully_implemented", "local-user"
+        )
+        ioc_store.set_current_csf_assessment(
+            self.conn, other_profile_id, "GV.OC-01", "not_implemented", "local-user"
+        )
+        base_basis = ioc_store.create_csf_supporting_basis(
+            self.conn, profile_id=self.profile_id, subcategory_id="GV.OC-01",
+            basis_type="document", title="Base evidence",
+        )
+        other_basis = ioc_store.create_csf_supporting_basis(
+            self.conn, profile_id=other_profile_id, subcategory_id="GV.OC-01",
+            basis_type="document", title="Other evidence",
+        )
+        self.assertEqual(
+            "fully_implemented",
+            ioc_store.list_current_csf_assessments(self.conn, self.profile_id)["GV.OC-01"]["assessment_level"],
+        )
+        self.assertEqual(
+            "not_implemented",
+            ioc_store.list_current_csf_assessments(self.conn, other_profile_id)["GV.OC-01"]["assessment_level"],
+        )
+        self.assertEqual([base_basis["basis_id"]], [row["basis_id"] for row in ioc_store.list_csf_supporting_basis(self.conn, self.profile_id, "GV.OC-01")])
+        self.assertEqual([other_basis["basis_id"]], [row["basis_id"] for row in ioc_store.list_csf_supporting_basis(self.conn, other_profile_id, "GV.OC-01")])
+
+    def test_action_evidence_checklist_reconciles_links(self) -> None:
+        evidence = ioc_store.create_csf_supporting_basis(
+            self.conn, profile_id=self.profile_id, subcategory_id="GV.OC-01",
+            basis_type="document", title="Mission approval",
+        )
+        action = ioc_store.create_csf_reviewed_action(
+            self.conn, profile_id=self.profile_id, subcategory_id="GV.OC-01",
+            title="Document mission", action_status="planned", basis_ids=[evidence["basis_id"]],
+        )
+        self.assertEqual([evidence["basis_id"]], ioc_store.list_csf_reviewed_actions(
+            self.conn, self.profile_id, "GV.OC-01"
+        )[0]["basis_ids"])
+        ioc_store.update_csf_reviewed_action(
+            self.conn, action_id=action["action_id"], title="Document mission",
+            details="", rationale="", action_status="planned", basis_ids=[],
+        )
+        self.assertEqual([], ioc_store.list_csf_reviewed_actions(
+            self.conn, self.profile_id, "GV.OC-01"
+        )[0]["basis_ids"])
+        events = ioc_store.list_csf_evidence_link_audit_events(
+            self.conn, self.profile_id, target_type="action", target_id=action["action_id"]
+        )
+        self.assertEqual(["unlinked", "linked"], [event["event_type"] for event in events])
+
+    def test_profile_target_change_requires_a_rationale_and_is_audited(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Target rationale"):
+            ioc_store.set_csf_profile_outcome_target(
+                self.conn, "Single-PC baseline", "GV.OC-01", "partly_implemented", ""
             )
+        ioc_store.set_csf_profile_outcome_target(
+            self.conn, "Single-PC baseline", "GV.OC-01", "partly_implemented",
+            "The PC is being transitioned in two phases.", "local-user", "Transition plan v2",
+        )
+        self.assertEqual(
+            "partly_implemented",
+            ioc_store.list_csf_profile_outcome_targets(self.conn, self.profile_id)["GV.OC-01"]["target_assessment_level"],
+        )
+        events = ioc_store.list_csf_profile_audit_events(self.conn, "Single-PC baseline")
+        self.assertEqual("The PC is being transitioned in two phases.", events[-1]["rationale"])
+        self.assertEqual("local-user", events[-1]["recorded_by"])
+        self.assertEqual("Transition plan v2", events[-1]["supporting_evidence_reference"])
+        self.assertEqual(
+            "The PC is being transitioned in two phases.",
+            self.conn.execute(
+                "SELECT rationale FROM csf_profiles WHERE profile_name = ? AND outcome_id = ?",
+                ("Single-PC baseline", "GV.OC-01"),
+            ).fetchone()["rationale"],
+        )
+        ioc_store.set_csf_profile_outcome_target(
+            self.conn, "Single-PC baseline", "GV.OC-01", "partly_implemented",
+            "The phased target remains appropriate after review.", "local-user",
+        )
+        events = ioc_store.list_csf_profile_audit_events(self.conn, "Single-PC baseline")
+        self.assertEqual("outcome_target_rationale_recorded", events[-1]["event_type"])
+        self.assertEqual("The phased target remains appropriate after review.", events[-1]["rationale"])
+        self.assertEqual(
+            "The phased target remains appropriate after review.",
+            ioc_store.list_csf_profile_outcome_targets(self.conn, self.profile_id)["GV.OC-01"]["target_reason"],
+        )
+
+    def test_profile_inclusion_precedes_its_automatic_target_event(self) -> None:
+        ioc_store.set_csf_profile_outcome_status(
+            self.conn, "Single-PC baseline", "GV.OC-01", "not_selected", "local-user"
+        )
+        ioc_store.set_csf_profile_outcome_status(
+            self.conn, "Single-PC baseline", "GV.OC-01", "included", "local-user"
+        )
+        events = [
+            event for event in ioc_store.list_csf_profile_audit_events(self.conn, "Single-PC baseline")
+            if event["outcome_id"] == "GV.OC-01"
+        ]
+        self.assertEqual(
+            ["outcome_status_changed", "outcome_target_cleared", "outcome_status_changed", "outcome_target_initialized"],
+            [event["event_type"] for event in events],
+        )
 
     def test_reviewed_action_updates_are_append_only_and_set_first_completion_time(self) -> None:
         action = ioc_store.create_csf_reviewed_action(
             self.conn,
+            profile_id=self.profile_id,
             action_id="action-update-001",
             subcategory_id="GV.OC-01",
             title="Share the mission statement with staff",
@@ -332,7 +749,7 @@ class IocStoreTests(unittest.TestCase):
         deleted = ioc_store.delete_csf_reviewed_action(self.conn, action["action_id"])
         self.assertEqual(action["action_id"], deleted["action_id"])
         self.assertEqual([], ioc_store.list_csf_reviewed_action_updates(self.conn, action["action_id"]))
-        self.assertEqual([], ioc_store.list_csf_reviewed_actions(self.conn, "GV.OC-01"))
+        self.assertEqual([], ioc_store.list_csf_reviewed_actions(self.conn, self.profile_id, "GV.OC-01"))
 
     def test_local_csf_extensions_are_scoped_and_advisory_only(self) -> None:
         category = ioc_store.create_local_csf_category(

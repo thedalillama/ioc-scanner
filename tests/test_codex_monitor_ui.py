@@ -84,6 +84,7 @@ class CodexMonitorUiTests(unittest.TestCase):
             protection_profile="microsoft_baseline",
             ui_persona=ui_persona,
             repo_root=Path(__file__).resolve().parent.parent,
+            app_mode="monitoring",
         )
 
     def make_tripwire_report(self, root: Path) -> Path:
@@ -450,7 +451,10 @@ class CodexMonitorUiTests(unittest.TestCase):
             config = self.make_config(root, "advanced_user")
             snapshot = self.make_snapshot(root, report_path)
 
-            self.assertIn("Today", ui.render_dashboard(config, snapshot))
+            dashboard = ui.render_dashboard(config, snapshot)
+            self.assertIn("Records", dashboard)
+            self.assertIn("Evidence library", dashboard)
+            self.assertNotIn("Review automation", dashboard)
             detect_page = ui.render_detect_page(config, snapshot)
             respond_page = ui.render_respond_page(config, snapshot)
             self.assertIn("DETECT", detect_page)

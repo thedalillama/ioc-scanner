@@ -220,9 +220,19 @@ The SQLite control-layer tables are intentionally separate from the maps:
 - `csf_reference_frameworks`
 - `csf_reference_controls`
 - `csf_subcategory_control_mappings`
+- `csf_control_mapping_relationships`
 - `csf_reviewed_action_control_links`
 
 The mapping table can store product-authored interpretation text, suggested action text, field-specific action examples, a confidence note, source label, and update timestamp. Existing guidance remains exploratory and requires review; it should not be treated as finished teaching guidance.
+
+`csf_control_mapping_relationships` stores reviewed product-authored direction separately from both the official mapping and the exploratory prose. Its composite key is framework, control, Subcategory, relationship role, and information item. It records:
+
+- `relationship_role`: `produces_outcome_information`, `consumes_outcome_information`, `enables_outcome_capability`, or `context_only`;
+- `information_id`: a specific information-flow item when the role produces or consumes information, otherwise empty;
+- `relationship_scope`: `direct`, `partial`, or `indirect`;
+- rationale, review status, provenance label, and timestamp.
+
+Migration 21 creates this table. The SP 800-53 importer seeds it only after the official controls and mappings are present. As of this update, eight relationships have been specifically reviewed and seeded: `PM-11 × GV.OC-01` and `PM-09`, `PM-18`, `PM-30`, `SR-03`, `SR-05`, `SR-06`, and `SR-08` × `GV.OC-02`. The other informative mappings deliberately remain unclassified.
 
 ### What the batch experiments taught us
 
@@ -329,9 +339,9 @@ The expected action asks the person who defines or communicates the mission to c
 
 The expected action first identifies how the PC is used and who relies on its information, then records their needs and compares them with strategy direction. It explicitly identifies PM-09 as indirect because the control requires a security and privacy risk strategy, not a stakeholder list.
 
-### Deferred next step for the control layer
+### Next step for the control layer
 
-Do not mass-generate additional control guidance yet. First classify each informative mapping relative to the relevant CSF flow/capability relationship:
+Do not mass-generate additional control guidance yet. First classify each informative mapping relative to the relevant CSF flow/capability relationship. The table and seed catalog now exist for that work:
 
 | Classification | Meaning for product guidance |
 | --- | --- |
@@ -340,7 +350,7 @@ Do not mass-generate additional control guidance yet. First classify each inform
 | Enables | The control makes the outcome easier or safer to carry out but does not produce the outcome’s result. |
 | Context only | The official informative mapping is broad or indirect in the selected context; show official context, not an invented action. |
 
-This classification must remain product-authored and reviewable. It is the missing structural step that should precede a new batch prompt or a large guidance run.
+This classification remains product-authored and reviewable. It is the structural step that must precede a new batch prompt or a large guidance run.
 
 ## Change control
 
